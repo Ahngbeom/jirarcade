@@ -1,0 +1,43 @@
+import Foundation
+
+/// 게임이 이해하는 진행 단계. 조직의 상태명과 1:1이 아니며 WorkflowMap을 통해서만 변환된다.
+public enum Stage: String, Codable, Sendable, CaseIterable {
+    case backlog, active, review, verify, done
+
+    /// 전진/후퇴 판정에 쓰는 순서값.
+    public var order: Int {
+        switch self {
+        case .backlog: 0
+        case .active:  1
+        case .review:  2
+        case .verify:  3
+        case .done:    4
+        }
+    }
+}
+
+public struct WorkflowMap: Codable, Sendable, Equatable {
+    public var statusToStage: [String: Stage]
+
+    public init(statusToStage: [String: Stage]) {
+        self.statusToStage = statusToStage
+    }
+
+    /// 매핑은 사용자가 설정 화면에서 지정한다 — Jira 인스턴스마다 상태명이 다르므로
+    /// 특정 조직의 워크플로를 기본값으로 내장하지 않는다.
+    ///
+    /// 매핑되지 않은 상태는 nil을 돌려준다. 임의의 단계로 폴백하면 점수가 조용히 틀린다.
+    public func stage(for statusName: String) -> Stage? {
+        statusToStage[statusName]
+    }
+
+    /// 입력에 등장한 상태 중 매핑되지 않은 것을 최초 등장 순서대로, 중복 없이 돌려준다.
+    public func unmappedStatuses(in statusNames: [String]) -> [String] {
+        var seen = Set<String>()
+        var result: [String] = []
+        for name in statusNames where statusToStage[name] == nil {
+            if seen.insert(name).inserted { result.append(name) }
+        }
+        return result
+    }
+}

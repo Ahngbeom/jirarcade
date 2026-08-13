@@ -1,0 +1,31 @@
+{
+  "issues": [
+    { "key": "DEMO-9613", "fields": {
+        "summary": "[Web] Add a button to screen A",
+        "status": { "name": "In Progress" }, "issuetype": { "name": "개선" },
+        "priority": { "name": "Medium" },
+        "assignee": { "accountId": "acc-me", "displayName": "bahn" },
+        "updated": "2026-08-12T15:04:05.000+0900" } },
+    { "key": "DEMO-9610", "fields": {
+        "summary": "[Web] Add completion screen",
+        "status": { "name": "In Review" }, "issuetype": { "name": "개선" },
+        "priority": { "name": "Medium" },
+        "assignee": { "accountId": "acc-me", "displayName": "bahn" },
+        "duedate": "2026-08-12",
+        "updated": "2026-08-12T11:00:00.000+0900" } },
+    { "key": "DEMO-9074", "fields": {
+        "summary": "[Mobile] Provide stats-based insights",
+        "status": { "name": "To Do" }, "issuetype": { "name": "새 기능" },
+        "priority": { "name": "Medium" },
+        "assignee": { "accountId": "acc-me", "displayName": "bahn" },
+        "updated": "2026-08-07T09:00:00.000+0900" } },
+    { "key": "DEMO-8984", "fields": {
+        "summary": "[Mobile] Improve server performance and fix memory leak",
+        "status": { "name": "Verifying" }, "issuetype": { "name": "개선" },
+        "priority": { "name": "Medium" },
+        "assignee": { "accountId": "acc-me", "displayName": "bahn" },
+        "updated": "2026-08-07T09:00:00.000+0900" } },
+    { "key": "DEMO-BROKEN", "fields": {
+        "summary": "상태 필드가 없어 파싱에 실패해야 하는 행" } }
+  ]
+}
