@@ -1,0 +1,10 @@
+.DS_Store
+.build/
+.swiftpm/
+DerivedData/
+*.xcuserstate
+
+# 사용자별 Jira 연동·설정 — 저장소에 올리지 않는다.
+# 사이트 주소·API 토큰은 Keychain에, 워크플로 매핑과 규칙은 아래 경로에 둔다.
+.jirarcade/
+*.local.json
