@@ -20,7 +20,7 @@ let package = Package(
             resources: [.process("Fixtures")]
         ),
         .target(name: "ArcadeApp", dependencies: ["ArcadeCore", "JiraKit"]),
-        .target(name: "ArcadeUI", dependencies: ["ArcadeApp"]),
+        .target(name: "ArcadeUI", dependencies: ["ArcadeApp", "ArcadeCore"]),
         .executableTarget(name: "JirarcadeApp", dependencies: ["ArcadeUI"]),
         .testTarget(name: "ArcadeAppTests", dependencies: ["ArcadeApp"]),
     ]

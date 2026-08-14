@@ -4,6 +4,9 @@ import ArcadeCore
 /// 팔레트 토큰을 SwiftUI Color로 옮긴 것.
 /// hex는 PaletteTokens에만 있고 대비 검증도 거기서 끝난다 — 여기서는 변환만 한다.
 public struct ArcadeTheme: Sendable {
+    /// `color(forToken:)`가 팔레트를 다시 조회할 때 쓴다.
+    public let appearance: PaletteTokens.Appearance
+
     public let surfaceBase, surfaceRaised, line: Color
     public let inkPrimary, inkSecondary, inkTertiary: Color
     public let accent, boss, danger, good: Color
@@ -17,6 +20,7 @@ public struct ArcadeTheme: Sendable {
             Color(hex: PaletteTokens.hex(token, in: appearance))
         }
         return ArcadeTheme(
+            appearance: appearance,
             surfaceBase: color("surfaceBase"),
             surfaceRaised: color("surfaceRaised"),
             line: color("line"),
@@ -33,14 +37,9 @@ public struct ArcadeTheme: Sendable {
     }
 
     /// 토큰 이름으로 색을 얻는다. `Cabinet.accentToken`처럼 문자열로 색을 지정하는 곳에서 쓴다.
+    /// 알 수 없는 토큰은 `PaletteTokens`가 fatalError로 잡는다 — 틀린 색이 화면에 닿는 것보다 낫다.
     public func color(forToken token: String) -> Color {
-        switch token {
-        case "accent": accent
-        case "boss":   boss
-        case "danger": danger
-        case "good":   good
-        default:       inkSecondary
-        }
+        Color(hex: PaletteTokens.hex(token, in: appearance))
     }
 }
 
