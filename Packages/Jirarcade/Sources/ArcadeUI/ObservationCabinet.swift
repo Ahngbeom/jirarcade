@@ -4,10 +4,10 @@ import ArcadeApp
 /// 앱이 지금 무엇을 알고 있는지 보여준다. 2b에서 퀘스트 보드가 생겨도 남는다 —
 /// 동기화가 실제로 도는지 확인하는 유일한 창이다.
 @MainActor
-struct ObservationCabinet: @MainActor Cabinet {
+struct ObservationCabinet: Cabinet {
     let model: AppModel
 
-    var id: String { "observation" }
+    nonisolated var id: String { "observation" }
     var title: String { "OBSERVATION" }
     var accentToken: String { "good" }
 
@@ -44,6 +44,10 @@ private struct ObservationDetailView: View {
                 stat("레벨", "LV.\(summary.level)")
                 stat("경험치", "\(summary.totalXP) XP")
                 stat("다음 레벨까지", "\(summary.xpForNextLevel - summary.xpIntoLevel) XP")
+            } else {
+                Text("아직 동기화 전입니다. 첫 동기화가 끝나면 레벨과 경험치가 여기 나타납니다.")
+                    .font(.callout)
+                    .foregroundStyle(theme.inkTertiary)
             }
             if let sync = model.lastSync {
                 stat("마지막 동기화 티켓", "\(sync.observedIssueCount)건")
