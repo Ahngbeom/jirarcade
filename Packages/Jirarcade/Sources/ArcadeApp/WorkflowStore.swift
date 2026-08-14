@@ -41,8 +41,22 @@ public final class InMemoryWorkflowStore: WorkflowStore, @unchecked Sendable {
     private var stored: WorkflowMap?
     private let lock = NSLock()
 
+    /// 설정하면 `load()`가 저장된 값 대신 이 에러를 던진다.
+    public var loadError: (any Error)?
+    /// 설정하면 `save(_:)`가 값을 저장하지 않고 이 에러를 던진다.
+    /// `InMemoryCredentialStore`와 대칭이다 — `confirmMapping`의 저장 실패 처리를
+    /// 테스트하려면 이 훅이 있어야 한다.
+    public var saveError: (any Error)?
+
     public init(seeded: WorkflowMap? = nil) { self.stored = seeded }
 
-    public func load() throws -> WorkflowMap? { lock.withLock { stored } }
-    public func save(_ map: WorkflowMap) throws { lock.withLock { stored = map } }
+    public func load() throws -> WorkflowMap? {
+        if let loadError { throw loadError }
+        return lock.withLock { stored }
+    }
+
+    public func save(_ map: WorkflowMap) throws {
+        if let saveError { throw saveError }
+        lock.withLock { stored = map }
+    }
 }
