@@ -81,8 +81,13 @@ public final class SyncEngine {
         } catch {
             // try?인 이유: 이력 기록이 실패해도 원래 에러를 삼키면 안 된다.
             // 이중 실패는 드물지만 그때가 진단이 가장 필요한 순간이다.
+            //
+            // failureMessage에는 원본 에러가 아니라 redactedErrorDescription(_:)의 결과만
+            // 적는다 — 이 필드는 SwiftData로 디스크에 남고 loadSyncRuns()로 진단 화면에
+            // 노출될 예정이라, JiraError.transitionRejected(reason:) 같은 케이스가 담을 수
+            // 있는 Jira 응답 본문(이메일 등)을 그대로 적으면 평문 DB에 영구히 남는다.
             try? store.finishSyncRun(runID, at: now, issueCount: 0,
-                                     failure: String(describing: error))
+                                     failure: redactedErrorDescription(error))
             throw error
         }
 

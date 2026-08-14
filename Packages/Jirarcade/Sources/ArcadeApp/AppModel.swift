@@ -245,30 +245,13 @@ public final class AppModel {
 
 /// `performSync()`가 던지는, 이미 안전하게 줄여둔 실패. `SyncScheduler`는 이 문자열을
 /// `String(describing:)`으로 그대로 `lastFailure`에 담아 UI가 읽으므로, 여기 담기는 순간
-/// 그 값은 화면에 노출될 수 있는 것으로 취급한다 — 그래서 원본 에러의 페이로드(응답 본문
-/// 조각, 디코더 debugDescription 등)는 버리고 타입 이름과 `JiraError` 케이스 이름만 남긴다.
+/// 그 값은 화면에 노출될 수 있는 것으로 취급한다. 실제 축약은 `JiraKit`의
+/// `redactedErrorDescription(_:)` 하나뿐이다 — `SyncEngine`이 동기화 이력에 적을 때도
+/// 같은 함수를 쓰므로, 이 두 곳이 서로 다른 기준으로 새는 일이 없다.
 private struct SyncFailure: Error, CustomStringConvertible {
     let description: String
 
     init(redacting error: Error) {
-        if let jira = error as? JiraError {
-            description = "JiraError.\(Self.caseName(jira))"
-        } else {
-            description = String(describing: type(of: error))
-        }
-    }
-
-    private static func caseName(_ error: JiraError) -> String {
-        switch error {
-        case .invalidSite: return "invalidSite"
-        case .offline: return "offline"
-        case .unauthorized: return "unauthorized"
-        case .forbidden: return "forbidden"
-        case .notFound: return "notFound"
-        case .rateLimited: return "rateLimited"
-        case .transitionRejected: return "transitionRejected"
-        case .server: return "server"
-        case .decoding: return "decoding"
-        }
+        description = redactedErrorDescription(error)
     }
 }

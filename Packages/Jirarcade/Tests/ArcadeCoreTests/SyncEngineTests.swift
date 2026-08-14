@@ -243,3 +243,28 @@ private func makeEngine(_ source: ScriptedSource) throws -> (SyncEngine, ArcadeS
 
     #expect(try store.loadMirror().count == 1, "실패해도 마지막 미러는 남는다")
 }
+
+/// `finishSyncRun`의 `failureMessage`는 SwiftData로 디스크에 남고, `loadSyncRuns()`로
+/// (문서에 적힌 대로) 진단 화면에 노출될 예정이다. `JiraError.transitionRejected(reason:)`의
+/// `reason`은 Jira 응답의 `errorMessages`를 그대로 담으므로, 원본 에러를 그대로 적으면
+/// 응답 본문 조각(이메일 등)이 평문 DB에 영구히 남는다. `SyncEngine`이 반드시
+/// `redactedErrorDescription(_:)`을 거친 문자열만 적는지 고정한다.
+@MainActor
+@Test func failedSyncRecordsARedactedFailureMessageNotRawResponseContent() async throws {
+    let day = iso("2026-08-12T09:00:00Z")
+    let source = ScriptedSource([])
+    let (engine, store) = try makeEngine(source)
+
+    let leakedEmail = "leaked-user@example.com"
+    let reason = "JQL referenced unknown user \(leakedEmail)"
+    source.error = JiraError.transitionRejected(reason: reason)
+
+    await #expect(throws: JiraError.transitionRejected(reason: reason)) {
+        _ = try await engine.sync(jql: "q", now: day)
+    }
+
+    let runs = try store.loadSyncRuns()
+    let failure = try #require(runs.last?.failureMessage)
+    #expect(!failure.contains(leakedEmail), "Jira 응답 본문이 failureMessage로 새면 안 된다")
+    #expect(failure == "JiraError.transitionRejected", "타입/케이스 이름만 남아야 한다")
+}
