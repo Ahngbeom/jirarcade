@@ -239,6 +239,43 @@ private func assertDoesNotLeak(
     #expect(try store.loadMirror().isEmpty, "다른 계정의 XP와 섞이면 복구할 수 없다")
 }
 
+/// 이메일 비교가 반전되면(다른 계정인데 리셋 안 함) 위 테스트가 잡아낸다.
+/// 비교 자체가 통째로 사라져 "무조건 리셋"이 되는 뮤테이션은 위 테스트만으로는 잡히지
+/// 않는다 — 그 테스트는 어차피 미러가 비어 있길 기대하기 때문이다. 같은 계정으로 다시
+/// 로그인했을 때 미러가 살아남는지를 확인해야 그 뮤테이션도 잡을 수 있다.
+@MainActor
+@Test func signingInAsTheSameAccountAgainKeepsTheMirror() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "same@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try store.applySync(
+        issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
+                               issueType: "Task", priority: nil, assigneeAccountId: nil,
+                               assigneeName: nil, dueDate: nil,
+                               jiraUpdatedAt: iso("2026-08-14T09:00:00Z"))],
+        events: [], observedAt: iso("2026-08-14T09:00:00Z")
+    )
+    #expect(try store.loadMirror().count == 1)
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    let model = AppModel(
+        store: store, credentials: creds, workflow: workflow,
+        clientFactory: { auth in
+            JiraClient(auth: auth, http: ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+            ]))
+        },
+        clock: { iso("2026-08-14T09:00:00Z") }, calendar: utc
+    )
+
+    await model.signIn(site: "example.atlassian.net", email: "same@e.com", token: "new-token")
+
+    #expect(try store.loadMirror().count == 1, "같은 계정으로 다시 로그인해도 미러를 지우면 안 된다")
+}
+
 @MainActor
 @Test func signInWithFailedCredentialSaveStillReachesReadyButWarns() async throws {
     let creds = InMemoryCredentialStore()
