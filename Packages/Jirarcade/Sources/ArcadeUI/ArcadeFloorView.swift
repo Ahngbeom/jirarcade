@@ -1,4 +1,5 @@
 import SwiftUI
+import AppKit
 import ArcadeApp
 
 struct ArcadeFloorView: View {
@@ -21,6 +22,11 @@ struct ArcadeFloorView: View {
             statusBar
         }
         .background(theme.surfaceBase)
+        .onReceive(NotificationCenter.default.publisher(
+            for: NSApplication.didBecomeActiveNotification
+        )) { _ in
+            Task { await model.syncNow(reason: .foreground) }
+        }
         .sheet(item: Binding(
             get: { openCabinetID.map(OpenCabinet.init) },
             set: { openCabinetID = $0?.id }
@@ -132,6 +138,11 @@ struct ArcadeFloorView: View {
     }
 
     private var syncText: String {
+        // 실패 배지가 "아직 동기화하지 않았습니다"보다 먼저 와야 한다 — 한 번도 성공한 적
+        // 없이 계속 실패 중인 사용자에게 "아직 안 했다"는 태평한 문구는 오해를 준다.
+        if model.schedulerState.shouldSurfaceFailure {
+            return "⚠ Jira에 연결하지 못했습니다"
+        }
         guard let sync = model.lastSync, let finished = sync.finishedAt else {
             return "아직 동기화하지 않았습니다"
         }
