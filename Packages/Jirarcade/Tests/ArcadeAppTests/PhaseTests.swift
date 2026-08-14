@@ -19,7 +19,8 @@ import Testing
 @Test(arguments: [
     Phase.launching, .validating, .mappingWorkflow(candidates: ["To Do"]),
 ])
-func transientPhasesAreNotWritable(phase: Phase) {
+func transientPhasesShowNothingAndWriteNothing(phase: Phase) {
+    #expect(phase.showsMirror == false, "온보딩 중에는 캐비닛이 보이지 않는다")
     #expect(phase.allowsWriting == false)
 }
 
