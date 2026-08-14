@@ -87,6 +87,11 @@ public final class AppModel {
     }
 
     public func signOut() async {
+        // 로그아웃의 첫 번째 의미는 "Jira와 더 이상 말하지 않는다"이다 — 자격증명/phase를
+        // 지우기 전에 먼저 루프를 멈춘다. client를 nil로 만들기만 해서는 부족하다: 루프가
+        // 계속 돌면 매 틱마다 performSync()가 `guard let client`에서 조용히 return할 뿐
+        // 깨어나기는 계속 깨어나 — 로그아웃 후에도 타이머가 무한히 도는 낭비가 남는다.
+        stopSyncing()
         try? credentials.clear()
         client = nil
         summary = nil

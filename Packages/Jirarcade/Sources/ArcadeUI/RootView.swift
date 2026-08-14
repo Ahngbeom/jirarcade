@@ -38,6 +38,16 @@ private struct RootContent: View {
             // 여기서 또 startSyncing()을 부르면 타이머를 취소하고 다시 만들어 백오프
             // 상태를 리셋하고, syncNow()는 방금 끝난 동기화를 곧장 한 번 더 보낸다.
             // 그래서 이전 phase가 `.expired`가 아닐 때만 "처음 ready가 됐다"고 본다.
+            //
+            // 이 판별이 성립하는 건 지금 AppModel의 모양에 기대고 있다 — 다음 세 가지가
+            // 전부 참이어야 한다: (a) `phase = .expired`를 세팅하는 곳은 정확히 두 군데
+            // (validate()의 unauthorized catch, performSync()의 unauthorized catch)뿐이고,
+            // (b) 그중 client를 nil로 남기는 쪽(validate(persistOnSuccess: false))은
+            // performSync()를 통해 `.ready`로 회복하는 일이 없으며(guard let client에서
+            // 막힘), (c) startSyncing()을 부르는 곳은 이 한 곳뿐이다. 셋 중 하나라도
+            // 깨지면 — `.expired`로 가는 세 번째 경로가 생기거나, startSyncing()을 부르는
+            // 곳이 늘거나, 첫 번째 catch에서 client를 세팅하게 되면 — 이 조건은 조용히
+            // 틀려진다. 이 줄을 건드리기 전에 위 셋을 다시 확인할 것.
             if new == .ready && old != .expired {
                 model.startSyncing()
                 Task { await model.syncNow(reason: .manual) }
