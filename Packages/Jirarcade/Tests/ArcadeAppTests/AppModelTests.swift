@@ -276,6 +276,46 @@ private func assertDoesNotLeak(
     #expect(try store.loadMirror().count == 1, "같은 계정으로 다시 로그인해도 미러를 지우면 안 된다")
 }
 
+/// 세 번째 분기: 이전 자격증명을 못 읽으면(Keychain 장애 등) "전환 아님"으로 보수적으로
+/// 판단해 미러를 남긴다. 오래된 미러는 다음 동기화로 복구되지만, 지운 이벤트 로그는
+/// 복구되지 않는다 — 그래서 읽기 실패는 지우는 쪽이 아니라 남기는 쪽으로 기운다.
+/// `loadError`만 세팅하고 `saveError`는 건드리지 않아, 이 테스트가 검증하는 게 "읽기
+/// 실패" 하나뿐이라는 것과, 로그인이 인증 이후 단계까지 실제로 진행된다는 것을 확인한다.
+@MainActor
+@Test func unreadablePreviousCredentialsDoNotClearTheMirror() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "first@e.com", token: "t")
+    )
+    creds.loadError = CredentialStoreError.keychain(status: -25308)
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try store.applySync(
+        issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
+                               issueType: "Task", priority: nil, assigneeAccountId: nil,
+                               assigneeName: nil, dueDate: nil,
+                               jiraUpdatedAt: iso("2026-08-14T09:00:00Z"))],
+        events: [], observedAt: iso("2026-08-14T09:00:00Z")
+    )
+    #expect(try store.loadMirror().count == 1)
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    let model = AppModel(
+        store: store, credentials: creds, workflow: workflow,
+        clientFactory: { auth in
+            JiraClient(auth: auth, http: ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+            ]))
+        },
+        clock: { iso("2026-08-14T09:00:00Z") }, calendar: utc
+    )
+
+    await model.signIn(site: "example.atlassian.net", email: "second@e.com", token: "t2")
+
+    #expect(model.phase == .ready, "읽기 실패가 로그인 자체를 막으면 안 된다 — 인증 이후 단계까지 진행돼야 한다")
+    #expect(try store.loadMirror().count == 1, "이전 자격증명을 못 읽으면 전환 여부를 알 수 없다 — 지우지 않는다")
+}
+
 @MainActor
 @Test func signInWithFailedCredentialSaveStillReachesReadyButWarns() async throws {
     let creds = InMemoryCredentialStore()
