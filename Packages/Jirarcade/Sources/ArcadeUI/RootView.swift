@@ -23,7 +23,10 @@ private struct RootContent: View {
                 expiredBanner
             }
             if let warning = model.credentialSaveWarning {
-                credentialSaveWarningBanner(warning)
+                warningBanner(warning)
+            }
+            if let warning = model.workflowSaveWarning {
+                warningBanner(warning)
             }
             content
         }
@@ -55,10 +58,13 @@ private struct RootContent: View {
         }
     }
 
+    /// 재로그인이 필요한, **막는** 배너다. danger를 채움으로 써서 "지금은 못 쓴다"는
+    /// 무게를 준다 — 아래 `warningBanner`(M5)와 구조적으로 다른 대접이어야, 사용자가
+    /// 둘을 한눈에 구분할 수 있다.
     private var expiredBanner: some View {
         HStack(spacing: 8) {
             Text("토큰이 만료됐습니다. 다시 로그인해 주세요.")
-                .font(.callout)
+                .font(.callout.bold())
                 .foregroundStyle(theme.surfaceBase)
             Spacer()
             Button("로그아웃") { Task { await model.signOut() } }
@@ -69,20 +75,26 @@ private struct RootContent: View {
         .background(theme.danger)
     }
 
-    /// 로그인은 성공했지만 자격증명을 Keychain에 저장하지 못했을 때만 뜬다.
+    /// 로그인/매핑 자체는 성공했지만 저장에 실패했을 때(자격증명 또는 워크플로 매핑) 뜬다.
     /// `phase`는 이미 `.ready`이므로 에러가 아니라 경고다 — 지금 세션은 정상 동작하고,
-    /// 다음 실행에서 로그인이 풀릴 수 있다는 사실만 알려준다. 로그인 화면은 이 시점에
-    /// 이미 사라진 뒤라 여기 말고는 보여줄 곳이 없다.
-    private func credentialSaveWarningBanner(_ message: String) -> some View {
+    /// 다음 실행에서 다시 설정해야 할 수 있다는 사실만 알려준다. 그 화면은 이미 사라진
+    /// 뒤라 여기 말고는 보여줄 곳이 없다.
+    ///
+    /// `expiredBanner`와 같은 danger 색을 채움으로 쓰면 "막는 문제"와 "지금은 괜찮지만
+    /// 알아둘 것"을 사용자가 구분할 수 없다(M5). 팔레트에 경고 전용 토큰이 없으므로
+    /// 색 대신 구조로 가른다: 채움 대신 테두리, 굵기 대신 일반 굵기, 그리고 이미 있던
+    /// "⚠" 아이콘.
+    private func warningBanner(_ message: String) -> some View {
         HStack(spacing: 8) {
             Text("⚠ \(message)")
                 .font(.callout)
-                .foregroundStyle(theme.surfaceBase)
+                .foregroundStyle(theme.danger)
             Spacer()
         }
         .padding(.horizontal, 20)
         .padding(.vertical, 10)
-        .background(theme.danger)
+        .background(theme.surfaceRaised)
+        .overlay(Rectangle().stroke(theme.danger, lineWidth: 1))
     }
 
     @ViewBuilder

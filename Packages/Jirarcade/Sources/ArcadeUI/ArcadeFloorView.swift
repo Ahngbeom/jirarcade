@@ -138,6 +138,14 @@ struct ArcadeFloorView: View {
     }
 
     private var syncText: String {
+        // `.expired`가 실패 배지보다 먼저 와야 한다(I3) — 토큰 만료는 재로그인이 필요한
+        // 인증 문제이지 네트워크 문제가 아니다. 만료된 채로 재시도가 쌓이면 실패 배지도
+        // 결국 뜨지만(회복 시도를 계속하기 위해 루프는 멈추지 않는다 — performSync()
+        // 참고), 이미 배너가 같은 사실을 말하고 있는데 상태 표시줄이 "연결 실패"라고
+        // 겹쳐 말하면 인증 문제를 네트워크 문제로 오해하게 만든다.
+        if model.phase == .expired {
+            return "토큰이 만료됐습니다. 다시 로그인해 주세요."
+        }
         // 실패 배지가 "아직 동기화하지 않았습니다"보다 먼저 와야 한다 — 한 번도 성공한 적
         // 없이 계속 실패 중인 사용자에게 "아직 안 했다"는 태평한 문구는 오해를 준다.
         if model.schedulerState.shouldSurfaceFailure {
