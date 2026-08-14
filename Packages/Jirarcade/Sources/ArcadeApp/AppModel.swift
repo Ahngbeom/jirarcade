@@ -21,9 +21,15 @@ public final class AppModel {
     private let clientFactory: (any AuthProvider) -> JiraClient
     private let clock: () -> Date
     private let calendar: Calendar
+    private var scheduler: SyncScheduler?
+    private let rules: RuleSet
+    private let settings: AppSettings
 
     /// 로그인 후에만 존재한다. 매핑 조회와 동기화에 쓴다.
     private var client: JiraClient?
+
+    /// 스케줄러의 실패 집계. UI가 "연결하지 못했습니다"를 언제 보여줄지 판단한다.
+    public var schedulerState: SyncScheduler.State { scheduler?.state ?? .init() }
 
     public init(
         store: ArcadeStore,
@@ -31,7 +37,9 @@ public final class AppModel {
         workflow: any WorkflowStore,
         clientFactory: @escaping (any AuthProvider) -> JiraClient,
         clock: @escaping () -> Date,
-        calendar: Calendar
+        calendar: Calendar,
+        rules: RuleSet = .default,
+        settings: AppSettings = .default
     ) {
         self.store = store
         self.credentials = credentials
@@ -39,6 +47,8 @@ public final class AppModel {
         self.clientFactory = clientFactory
         self.clock = clock
         self.calendar = calendar
+        self.rules = rules
+        self.settings = settings
     }
 
     /// 앱 시작. 저장된 자격증명이 있으면 확인하고 적절한 단계로 보낸다.
@@ -91,6 +101,68 @@ public final class AppModel {
             return
         }
         refreshUnmapped(against: map)
+    }
+
+    /// 한 번 동기화한다. 스케줄러를 거치므로 중복 실행과 쿨다운 규칙이 적용된다.
+    public func syncNow(reason: SyncReason = .manual) async {
+        await ensureScheduler().requestSync(reason: reason)
+    }
+
+    /// 주기 동기화를 시작한다. ready 단계에서만 의미가 있다.
+    public func startSyncing() {
+        ensureScheduler().start()
+    }
+
+    public func stopSyncing() {
+        scheduler?.stop()
+    }
+
+    private func ensureScheduler() -> SyncScheduler {
+        if let scheduler { return scheduler }
+        let created = SyncScheduler(
+            settings: settings,
+            clock: clock,
+            perform: { [weak self] in try await self?.performSync() }
+        )
+        scheduler = created
+        return created
+    }
+
+    /// 실제 동기화 한 번. 실패는 그대로 던져 스케줄러가 집계하게 둔다.
+    ///
+    /// `SyncScheduler.State.lastFailure`는 여기서 던진 에러를 `String(describing:)`으로
+    /// 그대로 UI가 읽을 수 있는 문자열에 담는다(SyncScheduler.swift 참고). `JiraError`는
+    /// 페이로드 없이 설계됐지만(`invalidSite`가 사이트 값을 담지 않는 것과 같은 이유)
+    /// `.transitionRejected(reason:)`는 Jira 응답의 `errorMessages`를 그대로 담고,
+    /// `.decoding(context:)`는 디코더의 `debugDescription`을 감싼다 — 둘 다 응답 본문
+    /// 조각(이메일 등)을 실어 나를 수 있다. `DecodingError`·`URLError`가 그대로 새어나가는
+    /// 경우도 마찬가지다. 그래서 `.unauthorized`를 제외한 모든 에러를 스케줄러에 닿기 전에
+    /// `SyncFailure`로 한 번 줄인다 — 진단에는 타입/케이스 이름으로 충분하고, 본문은 필요 없다.
+    private func performSync() async throws {
+        // `try?`가 Optional을 평탄화하므로(SE-0230) 바인딩은 한 번이면 된다.
+        guard let client, let map = try? workflow.load() else { return }
+
+        let engine = SyncEngine(
+            source: JiraIssueSource(client: client),
+            store: store, rules: rules, workflow: map, calendar: calendar
+        )
+        do {
+            let outcome = try await engine.sync(
+                jql: "assignee = currentUser() AND statusCategory != Done",
+                now: clock()
+            )
+            summary = outcome.summary
+            if phase == .expired { phase = .ready }   // 재인증 없이 회복된 경우
+        } catch JiraError.unauthorized {
+            phase = .expired
+            throw JiraError.unauthorized
+        } catch {
+            throw SyncFailure(redacting: error)
+        }
+
+        lastSync = try? store.loadSyncRuns().last
+        observationDays = (try? store.observationDayCount(now: clock(), calendar: calendar)) ?? 0
+        refreshUnmapped()
     }
 
     private func refreshUnmapped(against map: WorkflowMap) {
@@ -168,5 +240,35 @@ public final class AppModel {
             jql: "assignee = currentUser() AND statusCategory != Done"
         ) else { return [] }
         return Set(result.issues.map(\.statusName)).sorted()
+    }
+}
+
+/// `performSync()`가 던지는, 이미 안전하게 줄여둔 실패. `SyncScheduler`는 이 문자열을
+/// `String(describing:)`으로 그대로 `lastFailure`에 담아 UI가 읽으므로, 여기 담기는 순간
+/// 그 값은 화면에 노출될 수 있는 것으로 취급한다 — 그래서 원본 에러의 페이로드(응답 본문
+/// 조각, 디코더 debugDescription 등)는 버리고 타입 이름과 `JiraError` 케이스 이름만 남긴다.
+private struct SyncFailure: Error, CustomStringConvertible {
+    let description: String
+
+    init(redacting error: Error) {
+        if let jira = error as? JiraError {
+            description = "JiraError.\(Self.caseName(jira))"
+        } else {
+            description = String(describing: type(of: error))
+        }
+    }
+
+    private static func caseName(_ error: JiraError) -> String {
+        switch error {
+        case .invalidSite: return "invalidSite"
+        case .offline: return "offline"
+        case .unauthorized: return "unauthorized"
+        case .forbidden: return "forbidden"
+        case .notFound: return "notFound"
+        case .rateLimited: return "rateLimited"
+        case .transitionRejected: return "transitionRejected"
+        case .server: return "server"
+        case .decoding: return "decoding"
+        }
     }
 }

@@ -351,3 +351,110 @@ private func assertDoesNotLeak(
     await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "t2")
     #expect(model.credentialSaveWarning == nil)
 }
+
+@MainActor
+@Test func syncUpdatesSummaryAndCounts() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let issues = #"""
+    {"issues":[
+      {"key":"DEMO-1","fields":{"summary":"a","status":{"name":"To Do"},
+       "issuetype":{"name":"Task"},"updated":"2026-08-14T09:00:00.000+0000"}}
+    ]}
+    """#
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),   // start의 myself
+            .init(status: 200, body: Data(issues.utf8)),       // syncNow의 검색
+        ])
+    })
+    await model.start()
+    #expect(model.phase == .ready)
+
+    await model.syncNow()
+
+    #expect(model.summary != nil)
+    #expect(model.lastSync != nil)
+    #expect(model.observationDays == 1, "첫 성공 동기화가 관측 1일차를 만든다")
+}
+
+@MainActor
+@Test func syncFailureDoesNotWipeTheMirror() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let issues = #"""
+    {"issues":[
+      {"key":"DEMO-1","fields":{"summary":"a","status":{"name":"To Do"},
+       "issuetype":{"name":"Task"},"updated":"2026-08-14T09:00:00.000+0000"}}
+    ]}
+    """#
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(issues.utf8)),
+            .init(status: 500, body: Data("{}".utf8)),          // 두 번째 동기화는 실패
+        ])
+    })
+    await model.start()
+    await model.syncNow()
+    let afterFirst = model.summary
+
+    await model.syncNow()
+
+    #expect(model.summary == afterFirst, "실패해도 마지막 상태가 남는다")
+    #expect(model.schedulerState.consecutiveFailures == 1)
+}
+
+@MainActor
+@Test func unauthorizedDuringSyncMovesToExpired() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 401, body: Data("{}".utf8)),
+        ])
+    })
+    await model.start()
+    await model.syncNow()
+
+    #expect(model.phase == .expired)
+    #expect(model.phase.showsMirror == true, "만료돼도 미러는 보인다")
+}
+
+/// `SyncEngine.sync()`가 던질 수 있는 에러 중 `JiraError.transitionRejected(reason:)`는
+/// Jira 응답의 `errorMessages`를 그대로 담는다 — 예를 들어 검색 호출이 400을 받으면
+/// 실제 사용자 이메일 같은 응답 본문 조각이 그 문자열 안에 들어올 수 있다.
+/// `SyncScheduler.State.lastFailure`는 이 에러를 `String(describing:)`으로 그대로
+/// 옮겨 UI가 읽으므로, 응답 본문이 화면까지 새면 안 된다. 이 테스트는 `performSync()`가
+/// `JiraError`를 케이스 이름만 남기고 페이로드를 버리는지 고정한다 — 나중에 누군가
+/// 무심코 원본 에러를 그대로 던지게 바꾸면 이 테스트가 잡는다.
+@MainActor
+@Test func syncFailureDoesNotLeakResponseContentIntoLastFailure() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let leakedEmail = "leaked-user@example.com"
+    let errorBody = #"{"errorMessages":["JQL referenced unknown user \#(leakedEmail)"]}"#
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 400, body: Data(errorBody.utf8)),   // 검색 호출이 응답 본문에 이메일을 담아 거부
+        ])
+    })
+    await model.start()
+
+    await model.syncNow()
+
+    let failure = model.schedulerState.lastFailure
+    #expect(failure != nil)
+    #expect(failure?.contains(leakedEmail) == false, "Jira 응답 본문이 lastFailure로 새면 안 된다")
+    #expect(failure == "JiraError.transitionRejected", "타입/케이스 이름만 남아야 한다")
+}
