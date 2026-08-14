@@ -22,6 +22,12 @@ private struct RootContent: View {
             .frame(minWidth: 720, minHeight: 480)
             .background(theme.surfaceBase)
             .task { await model.start() }
+            .onChange(of: model.phase) { _, new in
+                if new == .ready {
+                    model.startSyncing()
+                    Task { await model.syncNow(reason: .manual) }
+                }
+            }
     }
 
     @ViewBuilder
@@ -38,7 +44,7 @@ private struct RootContent: View {
         case .mappingWorkflow(let candidates):
             WorkflowMappingView(model: model, candidates: candidates)
         case .ready, .expired:
-            placeholder("ARCADE FLOOR", detail: "관측 \(model.observationDays)일차")
+            ArcadeFloorView(model: model)
         }
     }
 
@@ -46,16 +52,5 @@ private struct RootContent: View {
     private var signedOutMessage: String? {
         if case .signedOut(let message) = model.phase { return message }
         return nil
-    }
-
-    private func placeholder(_ title: String, detail: String?) -> some View {
-        VStack(spacing: 12) {
-            Text(title)
-                .font(.system(size: 28, weight: .heavy, design: .rounded))
-                .foregroundStyle(theme.accent)
-            if let detail {
-                Text(detail).foregroundStyle(theme.inkSecondary)
-            }
-        }
     }
 }
