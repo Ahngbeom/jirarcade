@@ -49,5 +49,7 @@ private func loadFixture() throws -> Data {
 
 private struct FixedSource: IssueSource {
     let issues: [ObservedIssue]
-    func fetchAssignedIssues(jql: String) async throws -> [ObservedIssue] { issues }
+    func fetchAssignedIssues(jql: String) async throws -> FetchResult {
+        FetchResult(issues: issues)
+    }
 }
