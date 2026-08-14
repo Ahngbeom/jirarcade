@@ -41,15 +41,22 @@ private func swiftFiles(in directory: URL) -> [URL] {
 
     // ArcadeTheme.swift는 팔레트를 Color로 바꾸는 유일한 곳이므로 예외다.
     // "Color.xxx" 형태뿐 아니라, 습관적으로 손이 가는 시스템 색(.primary/.secondary)과
-    // 토큰을 우회해 임의 색을 만드는 생성자(Color(nsColor:)/Color(red:)/#colorLiteral)도 잡는다.
+    // 토큰을 우회해 임의 색을 만드는 생성자(Color(nsColor:)/#colorLiteral)도 잡는다.
     let literals = ["Color.red", "Color.blue", "Color.green", "Color.black",
                     "Color.white", "Color.gray", "Color.orange", "Color.yellow",
                     ".primary", ".secondary",
-                    "Color(nsColor:", "Color(red:",
+                    "Color(nsColor:",
                     "#colorLiteral"]
     // 하드코딩된 hex 색상 문자열("#RRGGBB"). 팔레트의 hex는 ArcadeCore의 PaletteTokens에만
     // 있어야 하고, ArcadeUI는 ArcadeTheme.swift를 거쳐 Color로만 받아야 한다.
     let hexLiteral = /#[0-9A-Fa-f]{6}\b/
+    // `"Color(red:"` 문자열 검사는 `Color(.sRGB, red: ...)`, `Color.init(red:)`,
+    // 타입이 문맥에서 추론되는 `.init(red:)`, 인자가 줄바꿈으로 포맀된 경우를 모두
+    // 놓친다(M8). `\s`가 개행도 포함하므로 정규식 하나로 이 변형들을 함께 잡는다.
+    // `.init(red:` 쪽은 `Color(red:`/`Color.init(red:` 안의 `.init(red:`도 다시 잡지만,
+    // 중복 매치는 해가 없다 — 이미 다른 규칙에도 걸릴 문자열을 한 번 더 확인할 뿐이다.
+    let colorRedConstructor = /Color\s*\(\s*(\.sRGB(Linear)?\s*,\s*)?red\s*:/
+    let initRedConstructor = /\.init\s*\(\s*(\.sRGB(Linear)?\s*,\s*)?red\s*:/
 
     for file in files where file.lastPathComponent != "ArcadeTheme.swift" {
         let text = try String(contentsOf: file, encoding: .utf8)
@@ -59,6 +66,10 @@ private func swiftFiles(in directory: URL) -> [URL] {
         }
         #expect(!text.contains(hexLiteral),
                 "\(file.lastPathComponent)에 하드코딩된 hex 색상이 있다 — 반대 테마에서 깨진다")
+        #expect(!text.contains(colorRedConstructor),
+                "\(file.lastPathComponent)에 Color(red:) 계열 생성자가 있다 — 반대 테마에서 깨진다")
+        #expect(!text.contains(initRedConstructor),
+                "\(file.lastPathComponent)에 .init(red:) 계열 생성자가 있다 — 반대 테마에서 깨진다")
     }
 }
 
