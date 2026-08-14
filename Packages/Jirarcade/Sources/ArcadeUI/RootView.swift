@@ -36,7 +36,7 @@ private struct RootContent: View {
             // 시작과 동시에 날아가고, 실패해서 .signedOut으로 돌아왔을 때 빈 폼이 새로 뜬다.
             SignInView(model: model, message: signedOutMessage, isValidating: model.phase == .validating)
         case .mappingWorkflow(let candidates):
-            placeholder("WORKFLOW MAPPING", detail: "\(candidates.count)개 상태")
+            WorkflowMappingView(model: model, candidates: candidates)
         case .ready, .expired:
             placeholder("ARCADE FLOOR", detail: "관측 \(model.observationDays)일차")
         }
