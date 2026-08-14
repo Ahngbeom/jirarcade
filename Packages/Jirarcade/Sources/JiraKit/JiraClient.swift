@@ -47,6 +47,19 @@ public struct JiraClient: Sendable {
     // MARK: - 요청 실행
 
     private func perform(method: String, path: String, body: Data?, resource: String) async throws -> Data {
+        try await perform(method: method, path: path, body: body, resource: resource, allowingRetry: true)
+    }
+
+    /// 스펙 §8.3: 401을 만나면 `auth.recoverFromUnauthorized()`로 갱신을 시도하고,
+    /// 성공하면 요청을 한 번만 재시도한다. `allowingRetry: false`로 들어온 재시도 호출은
+    /// 다시 재시도를 걸 수 없으므로, provider가 항상 true를 돌려줘도 무한 재시도로 이어지지 않는다.
+    ///
+    /// 재시도 요청은 이 함수 맨 위에서 `URLRequest`를 새로 만들어 처음부터 다시 빌드한다 —
+    /// `authorize(_:)`가 새 자격증명을 찍어야 하고, OAuth는 Basic auth와 다른 `baseURL`을 쓰므로
+    /// 예전 `URLRequest`를 재사용하면 안 된다.
+    private func perform(
+        method: String, path: String, body: Data?, resource: String, allowingRetry: Bool
+    ) async throws -> Data {
         var request = URLRequest(url: auth.baseURL.appendingPathComponent(path.dropFirstSlash))
         request.httpMethod = method
         request.httpBody = body
@@ -65,6 +78,10 @@ public struct JiraClient: Sendable {
         }
 
         guard (200..<300).contains(response.statusCode) else {
+            if response.statusCode == 401, allowingRetry, try await auth.recoverFromUnauthorized() {
+                return try await perform(method: method, path: path, body: body,
+                                         resource: resource, allowingRetry: false)
+            }
             throw Self.mapError(status: response.statusCode, data: data,
                                 response: response, resource: resource)
         }
