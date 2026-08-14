@@ -30,7 +30,7 @@ private struct RootContent: View {
         case .launching, .validating:
             ProgressView().tint(theme.accent)
         case .signedOut(let message):
-            placeholder("SIGN IN", detail: message)
+            SignInView(model: model, message: message)
         case .mappingWorkflow(let candidates):
             placeholder("WORKFLOW MAPPING", detail: "\(candidates.count)개 상태")
         case .ready, .expired:
