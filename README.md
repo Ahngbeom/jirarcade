@@ -1,0 +1,133 @@
+# Jirarcade
+
+Jira 업무 티켓을 아케이드 게임으로 보여주는 macOS 앱.
+
+정체된 티켓은 보스가 되고, 상태를 제때 갱신하면 위생 게이지가 오르고, 매일 열어보면 연속 기록이 쌓입니다. 목표는 점수 자체가 아니라 **점수가 좋은 습관을 가리키게 만드는 것**입니다.
+
+> **상태:** 개발 중. 로그인 → 워크플로 매핑 → 아케이드 플로어까지 동작합니다.
+> 퀘스트 보드·티켓 상세·팀 판은 아직 없습니다([스코프](#현재-할-수-있는-것) 참고).
+
+## 왜 이렇게 만들었나
+
+Jira는 "이 티켓이 며칠째 멈춰 있었는가"를 알려주지 않습니다. 현재 상태만 줄 뿐 시간축이 없습니다.
+
+그래서 이 앱은 주기적으로 티켓 스냅샷을 찍고 **이전 스냅샷과의 차이에서 이벤트를 합성**합니다. 그렇게 만든 append-only 이벤트 로그가 이 앱이 아는 역사의 전부이고, 점수는 그 로그의 순수 함수입니다.
+
+이 선택에서 두 가지가 따라옵니다:
+
+- **관측을 시작한 날부터의 역사만 존재합니다.** 과거를 소급해 채우지 않고, 첫 실행 화면은 "아직 아는 게 없다"를 정직하게 말합니다
+- **규칙을 바꿔도 과거를 재계산할 수 있습니다.** XP를 누적하지 않고 매번 로그 전체에서 다시 계산하므로, 밸런스를 고쳐도 어제 점수가 유령처럼 남지 않습니다
+
+## 게임 규칙
+
+XP는 **상태를 보고 주지 않고 변화를 보고 줍니다.** 이미 완료된 티켓이 잔뜩 있어도 점수가 되지 않습니다.
+
+| 습관 | 장치 | 규칙 |
+|---|---|---|
+| 정체된 티켓 깨우기 | 보스전 | `40 × min(1 + 정체일/14, 4.0)` XP — 21일 정체면 100 XP, 45일이면 상한 160 XP |
+| 상태 제때 갱신 | 위생 게이지 | WIP 초과·좀비(오래 안 움직인 진행 중)·유령(담당자 없음) 감점. 80점 넘는 날 +50 XP |
+| 매일 열어보기 | 연속 기록 | 이벤트 XP에 `1 + min(연속일, 14) × 0.05` 배수 (최대 1.7배). 주말 제외, 주 1회 동결 |
+| 마감 방어 | HP | 마감을 놓치면 HP가 깎이고, 지키면 보너스 |
+
+연속 배수는 **이벤트 XP에만** 곱합니다. 위생 데일리 보너스에는 곱하지 않습니다 — 보너스에 보너스를 곱하는 것이기 때문입니다.
+
+자세한 규칙과 그 근거는 [v0.1 설계 문서](docs/superpowers/specs/2026-08-12-jirarcade-design.md)에 있습니다.
+
+## 요구 사항
+
+- macOS 15 이상
+- Swift 6.2 이상 (Xcode 16.x 또는 [swift.org](https://swift.org/download/) 툴체인)
+- Jira Cloud 계정과 [API 토큰](https://id.atlassian.com/manage-profile/security/api-tokens)
+
+## 실행
+
+```bash
+cd Packages/Jirarcade
+swift run JirarcadeApp
+```
+
+창이 뜨지 않으면 코드 문제가 아니라 실행 방식의 문제입니다. macOS Launch Services가 셸에서 직접 실행한 바이너리를 백그라운드 프로세스로 등록하는 경우가 있어, 최소 `.app` 번들로 감싸면 정상적으로 전경 창이 뜹니다:
+
+```bash
+swift build --product JirarcadeApp
+APP=.build/Jirarcade.app
+mkdir -p "$APP/Contents/MacOS"
+cp .build/debug/JirarcadeApp "$APP/Contents/MacOS/"
+cat > "$APP/Contents/Info.plist" <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>CFBundleExecutable</key><string>JirarcadeApp</string>
+  <key>CFBundleIdentifier</key><string>dev.jirarcade.app</string>
+  <key>CFBundleName</key><string>Jirarcade</string>
+  <key>CFBundlePackageType</key><string>APPL</string>
+</dict></plist>
+PLIST
+open "$APP"
+```
+
+처음 실행하면 사이트 주소·이메일·API 토큰을 묻고, 이어서 내 티켓에 나타난 Jira 상태를 파이프라인 단계에 연결하는 마법사가 뜹니다. **매핑하지 않은 상태를 남겨둬도 됩니다** — 아케이드 플로어에 배지로 계속 표시되므로 실제 데이터를 보면서 나중에 고칠 수 있습니다.
+
+## 테스트
+
+```bash
+cd Packages/Jirarcade
+swift test
+```
+
+221개 테스트가 약 0.2초에 끝납니다. 규칙이 순수 함수이고 네트워크·시계·달력이 전부 주입되기 때문입니다 — 5분 타이머와 30초 쿨다운을 검증하는 테스트도 실제로는 밀리초 안에 돕니다.
+
+## 구조
+
+```
+Packages/Jirarcade/
+├── Sources/
+│   ├── JiraKit/        Jira 통신 — HTTP · 인증 · DTO · 에러
+│   ├── ArcadeCore/     게임 규칙 · 스냅샷 diff · SwiftData 저장소
+│   ├── ArcadeApp/      앱 상태 · 자격증명/설정 저장 · 동기화 스케줄러
+│   ├── ArcadeUI/       테마 · 캐비닛 · 화면
+│   └── JirarcadeApp/   @main · 윈도우 · 조립
+└── Tests/
+```
+
+의존은 **한 방향으로만** 흐릅니다: `ArcadeUI → ArcadeApp → ArcadeCore → JiraKit`. 이 방향과 아래 두 규칙은 소스를 읽는 테스트가 강제합니다.
+
+- **`ArcadeApp`은 SwiftUI를 모릅니다.** 테스트하는 것과 눈으로 확인하는 것의 경계이고, 그래서 221개 테스트가 화면 없이 돕니다
+- **뷰에 색 리터럴이 없습니다.** 모든 색이 테마 환경에서 오므로 라이트/다크 전환이 한 곳에서 결정됩니다
+
+`JiraKit`은 게임을 모르고 `ArcadeCore`는 화면을 모릅니다. 아케이드 플로어의 셸도 특정 캐비닛을 모르고 `Cabinet` 프로토콜만 알아서, 새 캐비닛을 더할 때 셸을 건드리지 않습니다.
+
+## 자격증명과 데이터
+
+- **토큰은 Keychain에만 저장합니다.** 앱 DB는 평문 파일이고 백업에 딸려 나가므로 자격증명을 두지 않습니다
+- **에러 문자열도 같은 규칙을 받습니다.** Jira 응답 본문에는 이메일이 들어 있고 일부 에러가 그것을 그대로 나르기 때문에, 저장되거나 화면에 닿는 실패 문자열에는 에러 페이로드 대신 종류만 남깁니다
+- **다른 계정으로 로그인하면 미러와 이벤트 로그를 버립니다.** 남의 XP와 내 XP가 섞이면 복구할 방법이 없습니다
+- 워크플로 매핑은 앱 지원 디렉터리의 JSON, 외관 설정은 UserDefaults에 둡니다
+
+## 현재 할 수 있는 것
+
+**동작합니다**
+
+- API 토큰 로그인, Keychain 저장, 토큰 만료 처리
+- 워크플로 매핑 마법사 (강제하지 않음 — 미매핑 상태는 배지로 표시)
+- 5분 주기 · 창 활성화(30초 쿨다운) · 수동 동기화, 실패 시 백오프
+- 아케이드 플로어와 관측 캐비닛 — 관측 일차, 레벨·XP, 마지막 동기화
+- 라이트/다크 테마, 시스템 외관 연동
+
+**아직 없습니다**
+
+- 퀘스트 보드 캐비닛 (내 티켓을 카드로 늘어놓는 본체)
+- 티켓 상세와 상태 전이 실행 (앱에서 Jira에 쓰기)
+- 팀원 티켓 현황 보기
+- 설정 화면 (매핑 재설정·규칙 조정 등)
+- CRT 연출·레벨업 애니메이션
+
+## 문서
+
+| 문서 | 내용 |
+|---|---|
+| [v0.1 설계](docs/superpowers/specs/2026-08-12-jirarcade-design.md) | 게임 규칙·데이터 모델·화면 구성·보안 |
+| [앱 셸 설계](docs/superpowers/specs/2026-08-14-app-shell-design.md) | 앱 상태 기계·온보딩·동기화 스케줄러 |
+| [실행 기록](docs/superpowers/records/2026-08-14-app-shell-execution.md) | 왜 코드가 지금 모양인지 — 판정과 리뷰가 잡은 결함 |
+
+구현 계획은 [`docs/superpowers/plans/`](docs/superpowers/plans/)에 있습니다.
