@@ -5,14 +5,19 @@ struct SignInView: View {
     @Environment(\.arcadeTheme) private var theme
     let model: AppModel
     let message: String?
+    /// `model.phase == .validating`를 그대로 옮겨온 값. 별도의 `@State`로 "제출 중"을
+    /// 추적하면 `Task { }`가 다음 MainActor 턴에야 실행되는 사이에 두 번째 탭/Return이
+    /// 겹쳐 `model.signIn`이 동시에 두 번 실행될 수 있다. `AppModel.signIn`은 `phase`를
+    /// 첫 `await` 이전에 동기적으로 `.validating`으로 바꾸므로, 이 값을 그대로 읽으면
+    /// 그 틈이 아예 생기지 않는다.
+    let isValidating: Bool
 
     @State private var site = ""
     @State private var email = ""
     @State private var token = ""
-    @State private var isSubmitting = false
 
     private var canSubmit: Bool {
-        !site.isEmpty && !email.isEmpty && !token.isEmpty && !isSubmitting
+        !site.isEmpty && !email.isEmpty && !token.isEmpty && !isValidating
     }
 
     var body: some View {
@@ -41,12 +46,8 @@ struct SignInView: View {
 
             HStack {
                 Spacer()
-                Button(isSubmitting ? "확인 중…" : "연결") {
-                    Task {
-                        isSubmitting = true
-                        await model.signIn(site: site, email: email, token: token)
-                        isSubmitting = false
-                    }
+                Button(isValidating ? "확인 중…" : "연결") {
+                    Task { await model.signIn(site: site, email: email, token: token) }
                 }
                 .disabled(!canSubmit)
                 .keyboardShortcut(.defaultAction)
@@ -54,6 +55,7 @@ struct SignInView: View {
         }
         .padding(40)
         .frame(maxWidth: 480)
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func field(_ label: String, text: Binding<String>, prompt: String) -> some View {
