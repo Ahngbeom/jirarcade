@@ -21,9 +21,9 @@ import Testing
 
 @Test func savingTwiceReplacesRatherThanDuplicates() throws {
     let store = InMemoryCredentialStore()
-    try store.save(Credentials(site: "a.atlassian.net", email: "a@e.com", token: "1"))
-    try store.save(Credentials(site: "b.atlassian.net", email: "b@e.com", token: "2"))
-    #expect(try store.load()?.site == "b.atlassian.net")
+    try store.save(Credentials(site: "first.example.com", email: "a@e.com", token: "1"))
+    try store.save(Credentials(site: "second.example.com", email: "b@e.com", token: "2"))
+    #expect(try store.load()?.site == "second.example.com")
 }
 
 @Test func descriptionNeverLeaksCredentials() {
