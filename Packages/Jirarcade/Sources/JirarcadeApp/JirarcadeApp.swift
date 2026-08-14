@@ -26,6 +26,7 @@ struct JirarcadeApp: App {
             store: store,
             credentials: KeychainCredentialStore(),
             workflow: workflow,
+            accountBinding: UserDefaultsAccountBindingStore(),
             clientFactory: { auth in JiraClient(auth: auth, http: URLSessionHTTPClient()) },
             clock: { Date() },
             calendar: .current

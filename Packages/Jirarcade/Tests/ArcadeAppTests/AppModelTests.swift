@@ -205,12 +205,40 @@ private func assertDoesNotLeak(
     #expect(model.unmappedStatuses == ["Blocked"], "매핑되지 않은 상태가 배지로 드러나야 한다")
 }
 
+/// I2: `confirmMapping`이 저장 실패를 삼키면 안 된다 — 삼키면 이후 모든 동기화가
+/// 영구히 무동작(I1)이 되고, 재실행하면 마법사가 다시 뜨는데도 사용자는 이유를 모른다.
+/// `credentialSaveWarning`과 대칭인 `workflowSaveWarning`으로 노출한다.
+@MainActor
+@Test func confirmMappingWithFailedSaveStillReachesReadyButWarns() async throws {
+    let workflow = InMemoryWorkflowStore()
+    workflow.saveError = StubError()
+    let model = try makeModel(workflow: workflow)
+
+    await model.confirmMapping(WorkflowMap(statusToStage: ["To Do": .backlog]))
+
+    #expect(model.phase == .ready, "매핑을 강제하지 않는다는 원칙과 같은 이유로 마법사로 돌려보내지 않는다")
+    #expect(model.workflowSaveWarning != nil)
+}
+
+@MainActor
+@Test func confirmMappingWithSuccessfulSaveLeavesNoWarning() async throws {
+    let workflow = InMemoryWorkflowStore()
+    let model = try makeModel(workflow: workflow)
+
+    await model.confirmMapping(WorkflowMap(statusToStage: ["To Do": .backlog]))
+
+    #expect(model.workflowSaveWarning == nil)
+}
+
 @MainActor
 @Test func signingInAsADifferentAccountClearsTheMirror() async throws {
     let creds = InMemoryCredentialStore(
         seeded: Credentials(site: "example.atlassian.net", email: "first@e.com", token: "t")
     )
     let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    // myselfBody가 항상 accountId "acc-me"를 돌려주므로, "acc-me"와 다른 값으로 미리
+    // 묶어 둬야 "계정이 바뀌었다"는 조건을 만든다.
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-first")
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     try store.applySync(
         issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
@@ -224,7 +252,7 @@ private func assertDoesNotLeak(
     var utc = Calendar(identifier: .gregorian)
     utc.timeZone = TimeZone(identifier: "UTC")!
     let model = AppModel(
-        store: store, credentials: creds, workflow: workflow,
+        store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
@@ -239,7 +267,7 @@ private func assertDoesNotLeak(
     #expect(try store.loadMirror().isEmpty, "다른 계정의 XP와 섞이면 복구할 수 없다")
 }
 
-/// 이메일 비교가 반전되면(다른 계정인데 리셋 안 함) 위 테스트가 잡아낸다.
+/// 비교가 반전되면(다른 계정인데 리셋 안 함) 위 테스트가 잡아낸다.
 /// 비교 자체가 통째로 사라져 "무조건 리셋"이 되는 뮤테이션은 위 테스트만으로는 잡히지
 /// 않는다 — 그 테스트는 어차피 미러가 비어 있길 기대하기 때문이다. 같은 계정으로 다시
 /// 로그인했을 때 미러가 살아남는지를 확인해야 그 뮤테이션도 잡을 수 있다.
@@ -249,6 +277,8 @@ private func assertDoesNotLeak(
         seeded: Credentials(site: "example.atlassian.net", email: "same@e.com", token: "t")
     )
     let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    // myselfBody와 같은 accountId로 미리 묶어 둔다 — "이미 이 계정으로 로그인해 있던" 상태.
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-me")
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     try store.applySync(
         issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
@@ -262,7 +292,7 @@ private func assertDoesNotLeak(
     var utc = Calendar(identifier: .gregorian)
     utc.timeZone = TimeZone(identifier: "UTC")!
     let model = AppModel(
-        store: store, credentials: creds, workflow: workflow,
+        store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
@@ -276,18 +306,18 @@ private func assertDoesNotLeak(
     #expect(try store.loadMirror().count == 1, "같은 계정으로 다시 로그인해도 미러를 지우면 안 된다")
 }
 
-/// 세 번째 분기: 이전 자격증명을 못 읽으면(Keychain 장애 등) "전환 아님"으로 보수적으로
-/// 판단해 미러를 남긴다. 오래된 미러는 다음 동기화로 복구되지만, 지운 이벤트 로그는
-/// 복구되지 않는다 — 그래서 읽기 실패는 지우는 쪽이 아니라 남기는 쪽으로 기운다.
-/// `loadError`만 세팅하고 `saveError`는 건드리지 않아, 이 테스트가 검증하는 게 "읽기
-/// 실패" 하나뿐이라는 것과, 로그인이 인증 이후 단계까지 실제로 진행된다는 것을 확인한다.
+/// 세 번째 분기: `accountBinding.load()`를 못 읽으면(Keychain/UserDefaults 장애 등)
+/// "전환 아님"으로 보수적으로 판단해 미러를 남긴다. 오래된 미러는 다음 동기화로
+/// 복구되지만, 지운 이벤트 로그는 복구되지 않는다 — 그래서 읽기 실패는 지우는 쪽이
+/// 아니라 남기는 쪽으로 기운다.
 @MainActor
-@Test func unreadablePreviousCredentialsDoNotClearTheMirror() async throws {
+@Test func unreadableAccountBindingDoesNotClearTheMirror() async throws {
     let creds = InMemoryCredentialStore(
         seeded: Credentials(site: "example.atlassian.net", email: "first@e.com", token: "t")
     )
-    creds.loadError = CredentialStoreError.keychain(status: -25308)
     let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-first")
+    accountBinding.loadError = StubError()
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     try store.applySync(
         issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
@@ -301,7 +331,7 @@ private func assertDoesNotLeak(
     var utc = Calendar(identifier: .gregorian)
     utc.timeZone = TimeZone(identifier: "UTC")!
     let model = AppModel(
-        store: store, credentials: creds, workflow: workflow,
+        store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
@@ -313,7 +343,64 @@ private func assertDoesNotLeak(
     await model.signIn(site: "example.atlassian.net", email: "second@e.com", token: "t2")
 
     #expect(model.phase == .ready, "읽기 실패가 로그인 자체를 막으면 안 된다 — 인증 이후 단계까지 진행돼야 한다")
-    #expect(try store.loadMirror().count == 1, "이전 자격증명을 못 읽으면 전환 여부를 알 수 없다 — 지우지 않는다")
+    #expect(try store.loadMirror().count == 1, "바인딩을 못 읽으면 전환 여부를 알 수 없다 — 지우지 않는다")
+}
+
+/// C1의 핵심 회귀 테스트. v0.1의 유일한 로그아웃 경로(만료 배너의 "로그아웃" 버튼)로
+/// 로그아웃한 뒤 다른 계정으로 로그인해도 미러와 이벤트 로그가 반드시 비어야 한다.
+/// 이 수정 전에는 `signOut()`이 지우는 자격증명 저장소로 "계정이 바뀌었는지"를
+/// 판단했기 때문에, 로그아웃 직후에는 그 판단 근거 자체가 사라져 리셋이 통째로
+/// 건너뛰였다 — A의 XP가 B의 점수에 영구히 합산됐다.
+@MainActor
+@Test func signOutThenDifferentAccountClearsTheMirrorAndEventLog() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "first@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let accountBinding = InMemoryAccountBindingStore()
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+
+    let firstAccountBody = #"{"accountId":"acc-first","displayName":"First"}"#
+    let secondAccountBody = #"{"accountId":"acc-second","displayName":"Second"}"#
+    // clientFactory가 호출마다 새 HTTP 스텁을 만든다 — start()의 myself 호출과
+    // signIn()의 myself 호출이 서로 다른 계정의 accountId를 돌려줘야 하기 때문이다.
+    var responses = [firstAccountBody, secondAccountBody]
+
+    let model = AppModel(
+        store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        clientFactory: { auth in
+            JiraClient(auth: auth, http: ScriptedHTTP(status: 200, body: responses.removeFirst()))
+        },
+        clock: { iso("2026-08-14T09:00:00Z") }, calendar: utc
+    )
+
+    // first@ 계정으로 시작한다 — accountBinding이 "acc-first"로 채워진다.
+    await model.start()
+    #expect(model.phase == .ready)
+
+    // 미러 1건 + 이벤트 로그 1건을 심는다(실제 HTTP 동기화를 또 태우지 않고 직접).
+    try store.applySync(
+        issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
+                               issueType: "Task", priority: nil, assigneeAccountId: "acc-first",
+                               assigneeName: nil, dueDate: nil,
+                               jiraUpdatedAt: iso("2026-08-14T09:00:00Z"))],
+        events: [DomainEvent(issueKey: "DEMO-1", kind: .appeared, fromStatus: nil,
+                             toStatus: "To Do", observedAt: iso("2026-08-14T09:00:00Z"),
+                             actorAccountId: "acc-first")],
+        observedAt: iso("2026-08-14T09:00:00Z")
+    )
+    #expect(try store.loadMirror().count == 1)
+    #expect(try store.loadEvents().count == 1)
+
+    // v0.1의 유일한 로그아웃 경로: 만료 배너의 "로그아웃" 버튼.
+    await model.signOut()
+    await model.signIn(site: "example.atlassian.net", email: "second@e.com", token: "t2")
+
+    #expect(try store.loadMirror().isEmpty, "A의 데이터가 B의 스토어에 남아 있다")
+    #expect(try store.loadEvents().isEmpty, "점수는 이벤트 로그의 순수 함수다 — 로그가 남으면 XP가 섞인다")
 }
 
 @MainActor
@@ -457,4 +544,44 @@ private func assertDoesNotLeak(
     #expect(failure != nil)
     #expect(failure?.contains(leakedEmail) == false, "Jira 응답 본문이 lastFailure로 새면 안 된다")
     #expect(failure == "JiraError.transitionRejected", "타입/케이스 이름만 남아야 한다")
+}
+
+/// I1: 로그인 전(만료 직후 등) client가 없는 상태에서 동기화를 시도하면, 요청이 아예
+/// 나가지 않았으니 성공이 아니다. 예전에는 `performSync()`가 조용히 return해서
+/// `SyncScheduler`가 이를 성공으로 오해하고 실패 이력과 쿨다운을 초기화했다.
+@MainActor
+@Test func syncAttemptWhileExpiredAtLaunchIsRecordedAsFailureNotSuccess() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "stale")
+    )
+    let model = try makeModel(credentials: creds, http: { ScriptedHTTP(status: 401) })
+    await model.start()
+    #expect(model.phase == .expired)
+
+    await model.syncNow()
+
+    #expect(model.schedulerState.consecutiveFailures == 1,
+            "client가 없는 시도는 요청조차 나가지 않았다 — 성공으로 기록되면 안 된다")
+    #expect(model.schedulerState.lastSyncAt == nil,
+            "요청이 나가지 않았으니 마지막 동기화 시각도 갱신되면 안 된다")
+}
+
+/// I1의 두 번째 경로: 워크플로 매핑을 읽지 못하면(디스크 손상 등) 매 동기화가 영구히
+/// 무동작이 된다. 예전에는 이 상태에서도 스케줄러가 계속 "성공"으로 기록해 실패
+/// 배지가 영영 뜨지 않았다.
+@MainActor
+@Test func syncAttemptWithUnreadableWorkflowMapIsRecordedAsFailure() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let model = try makeModel(credentials: creds, workflow: workflow)
+    await model.start()
+    #expect(model.phase == .ready)
+
+    workflow.loadError = StubError()
+    await model.syncNow()
+
+    #expect(model.schedulerState.consecutiveFailures == 1,
+            "매핑을 읽지 못해 요청이 나가지 않았다 — 성공으로 기록되면 안 된다")
 }

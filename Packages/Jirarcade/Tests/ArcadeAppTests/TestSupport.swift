@@ -35,10 +35,14 @@ final class ScriptedHTTP: HTTPClient, @unchecked Sendable {
 
 let myselfBody = #"{"accountId":"acc-me","displayName":"Tester"}"#
 
+/// 특정 상황을 흉내내는 데만 쓰는, 내용 없는 에러. `Equatable`이라 `#expect(throws:)`에도 쓸 수 있다.
+struct StubError: Error, Equatable {}
+
 @MainActor
 func makeModel(
     credentials: InMemoryCredentialStore = InMemoryCredentialStore(),
     workflow: InMemoryWorkflowStore = InMemoryWorkflowStore(),
+    accountBinding: InMemoryAccountBindingStore = InMemoryAccountBindingStore(),
     http: @escaping () -> HTTPClient = { ScriptedHTTP(status: 200, body: myselfBody) },
     now: Date = iso("2026-08-14T09:00:00Z")
 ) throws -> AppModel {
@@ -48,6 +52,7 @@ func makeModel(
         store: ArcadeStore(container: try ArcadeStore.makeInMemoryContainer()),
         credentials: credentials,
         workflow: workflow,
+        accountBinding: accountBinding,
         clientFactory: { auth in JiraClient(auth: auth, http: http()) },
         clock: { now },
         calendar: utc

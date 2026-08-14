@@ -268,3 +268,22 @@ private func makeEngine(_ source: ScriptedSource) throws -> (SyncEngine, ArcadeS
     #expect(!failure.contains(leakedEmail), "Jira 응답 본문이 failureMessage로 새면 안 된다")
     #expect(failure == "JiraError.transitionRejected", "타입/케이스 이름만 남아야 한다")
 }
+
+/// I4: 페치가 끝난 시점에 더 이상 "현재" 동기화가 아니면(로그아웃·계정 전환이 그 사이
+/// 끼어들었으면) 그 결과를 스토어에 쓰면 안 된다. `AppModel`은 `syncGeneration`으로
+/// 이걸 판단해 `isStillCurrent`에 넘긴다 — 여기서는 그 계약만 고정한다: 항상 false를
+/// 돌려주는 클로저를 주면 페치가 성공했어도 미러·이벤트 로그 어느 쪽도 바뀌면 안 된다.
+@MainActor
+@Test func aSyncThatIsNoLongerCurrentAfterFetchLeavesTheStoreUntouched() async throws {
+    let day = iso("2026-08-12T09:00:00Z")
+    let source = ScriptedSource([[issue(key: "DEMO-1", status: "To Do", updated: day)]])
+    let (engine, store) = try makeEngine(source)
+
+    await #expect(throws: CancellationError.self) {
+        _ = try await engine.sync(jql: "q", now: day, isStillCurrent: { false })
+    }
+
+    #expect(try store.loadMirror().isEmpty, "더 이상 유효하지 않은 동기화 결과는 미러에 쓰면 안 된다")
+    #expect(try store.loadEvents().isEmpty, "이벤트 로그에도 쓰면 안 된다")
+    #expect(try store.loadSyncRuns().last?.failureMessage == "aborted")
+}

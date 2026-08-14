@@ -14,6 +14,16 @@ public final class AppModel {
     /// 진행한다 — 사용자는 이미 인증됐으니 되돌려보내지 않되, 다음 실행에서 다시 로그인해야
     /// 할 수 있다는 사실을 화면이 보여줄 수 있게 한다.
     public private(set) var credentialSaveWarning: String?
+    /// 매핑은 성공했지만 저장하지 못했을 때 세팅된다. `credentialSaveWarning`과 같은 이유로
+    /// 조용히 삼키지 않는다 — 그러지 않으면 모든 동기화가 영구히 무동작(I1)이 되는데
+    /// 사용자는 그 사실을 알 방법이 없다.
+    public private(set) var workflowSaveWarning: String?
+
+    /// 진행 중이던 동기화가 로그아웃·계정 전환을 가로질러 스토어에 쓰지 않도록 막는 데
+    /// 쓰는 세대 값. 인증에 성공할 때(로그인/시작)와 로그아웃할 때마다 올라간다.
+    /// `performSync()`가 호출 시점의 값을 캡처해 `SyncEngine.sync(isStillCurrent:)`에
+    /// 건네고, 페치가 끝난 시점에 세대가 그대로인지 확인한다.
+    private var syncGeneration = 0
 
     /// 외관 설정. UserDefaults에 저장되며 UI가 읽어 테마를 고른다.
     public var appearancePreference: AppearancePreference = .system {
@@ -23,6 +33,7 @@ public final class AppModel {
     private let store: ArcadeStore
     private let credentials: any CredentialStore
     private let workflow: any WorkflowStore
+    private let accountBinding: any AccountBindingStore
     private let clientFactory: (any AuthProvider) -> JiraClient
     private let clock: () -> Date
     private let calendar: Calendar
@@ -40,6 +51,7 @@ public final class AppModel {
         store: ArcadeStore,
         credentials: any CredentialStore,
         workflow: any WorkflowStore,
+        accountBinding: any AccountBindingStore,
         clientFactory: @escaping (any AuthProvider) -> JiraClient,
         clock: @escaping () -> Date,
         calendar: Calendar,
@@ -49,6 +61,7 @@ public final class AppModel {
         self.store = store
         self.credentials = credentials
         self.workflow = workflow
+        self.accountBinding = accountBinding
         self.clientFactory = clientFactory
         self.clock = clock
         self.calendar = calendar
@@ -102,18 +115,32 @@ public final class AppModel {
         // 만드므로 다음 로그인에서 자연히 깨끗한 상태로 시작한다.
         stopSyncing()
         scheduler = nil
+        // 세대를 올려 진행 중이던 페치가 끝나도 이 계정의 스토어에 쓰지 못하게 막는다
+        // (I4). `boundAccountId`는 여기서 지우지 않는다 — 지우면 다음 로그인이 "계정이
+        // 바뀌었는지" 판단할 근거를 잃는다. validate() 참고.
+        syncGeneration += 1
         try? credentials.clear()
         client = nil
         summary = nil
         lastSync = nil
         credentialSaveWarning = nil
+        workflowSaveWarning = nil
         phase = .signedOut(message: nil)
     }
 
     /// 매핑 마법사에서 "시작하기"를 눌렀을 때. 매핑은 강제하지 않으므로
     /// 일부 상태가 비어 있어도 받아들이고, 남은 것을 배지로 알린다.
     public func confirmMapping(_ map: WorkflowMap) async {
-        try? workflow.save(map)
+        do {
+            try workflow.save(map)
+            workflowSaveWarning = nil
+        } catch {
+            // credentialSaveWarning과 같은 이유로 삼키지 않는다: 저장이 실패해도 사용자를
+            // 마법사로 되돌리지 않고 .ready로 보내되(매핑은 강제하지 않는다는 원칙과 같은
+            // 결), 다음 동기화가 전부 무동작(I1)이 되고 재실행하면 마법사가 다시 뜬다는
+            // 사실을 화면이 보여줄 수 있게 남겨 둔다.
+            workflowSaveWarning = "워크플로 매핑을 저장하지 못했습니다. 앱을 다시 시작하면 다시 설정해야 할 수 있습니다."
+        }
         refreshUnmapped(against: map)
         phase = .ready
     }
@@ -164,22 +191,46 @@ public final class AppModel {
     /// `SyncFailure`로 한 번 줄인다 — 진단에는 타입/케이스 이름으로 충분하고, 본문은 필요 없다.
     private func performSync() async throws {
         // `try?`가 Optional을 평탄화하므로(SE-0230) 바인딩은 한 번이면 된다.
-        guard let client, let map = try? workflow.load() else { return }
+        guard let client, let map = try? workflow.load() else {
+            // 예전에는 여기서 조용히 return했다. `SyncScheduler.requestSync`는 던지지
+            // 않는 `perform()`을 성공으로 취급해 `consecutiveFailures`를 지우고
+            // `lastSyncAt`을 갱신한다(I1) — 그런데 이 분기는 요청을 아예 보내지 않았다.
+            // 로그인 전(만료 직후 등)이거나 워크플로 매핑을 읽지 못한 상태에서 부른
+            // 것이므로 성공이 아니다 — 던져서 스케줄러가 실패로 집계하게 한다.
+            //
+            // 실제 응답 실패(SyncFailure)와는 다른 타입으로 던진다: 이 상태는 축약할
+            // 응답 본문이 없는 "아직 준비되지 않음"이다. `SyncFailure(redacting:)`으로
+            // 감싸면 진단에서 둘을 구분할 수 없어진다.
+            throw SyncNotConfigured()
+        }
 
         let engine = SyncEngine(
             source: JiraIssueSource(client: client),
             store: store, rules: rules, workflow: map, calendar: calendar
         )
+        // performSync() 시작 시점의 세대를 캡처한다. `SyncEngine.sync()`가 페치를 끝낸
+        // 직후 이 값이 그때도 여전히 최신인지 확인한다 — 그 사이 로그아웃하거나 다른
+        // 계정으로 로그인했다면 syncGeneration이 올라가 있으므로, 이미 날아간 페치
+        // 결과를 새 계정의 스토어에 쓰지 않는다(I4).
+        let generation = syncGeneration
         do {
             let outcome = try await engine.sync(
                 jql: "assignee = currentUser() AND statusCategory != Done",
-                now: clock()
+                now: clock(),
+                isStillCurrent: { [weak self] in self?.syncGeneration == generation }
             )
             summary = outcome.summary
             if phase == .expired { phase = .ready }   // 재인증 없이 회복된 경우
         } catch JiraError.unauthorized {
             phase = .expired
             throw JiraError.unauthorized
+        } catch is CancellationError {
+            // 세대가 바뀌어 SyncEngine이 스스로 중단한 경우다. 사용자 잘못도 아니고
+            // 실제 응답 실패도 아니므로 SyncFailure로 감싸 "연결하지 못했습니다" 같은
+            // 무서운 문구로 노출하지 않는다 — 그대로 다시 던져 스케줄러가 실패로
+            // 집계하되(요청이 완결되지 못한 건 사실이다), lastFailure 문자열은
+            // "CancellationError()"로 남아 diagnostics에서 이 경로임을 알아볼 수 있다.
+            throw CancellationError()
         } catch {
             throw SyncFailure(redacting: error)
         }
@@ -212,8 +263,9 @@ public final class AppModel {
         }
 
         let candidate = clientFactory(auth)
+        let me: JiraUser
         do {
-            _ = try await candidate.myself()
+            me = try await candidate.myself()
         } catch JiraError.unauthorized {
             // 저장된 자격증명이 만료된 경우와 새 입력이 틀린 경우를 구분한다.
             phase = persistOnSuccess
@@ -226,14 +278,28 @@ public final class AppModel {
         }
 
         client = candidate
+        // 이 시점 이전에 시작된 동기화는 더 이상 유효하지 않다 — 이 사용자로(또는 이
+        // 사용자가 다른 계정으로) 새로 인증됐으니, 그 전에 날아간 페치가 나중에 끝나도
+        // 스토어에 쓰면 안 된다(I4).
+        syncGeneration += 1
+
+        // 스토어가 어느 계정을 담고 있는지 여기서 직접 기록한다. 자격증명 저장소로는
+        // "계정이 바뀌었는가"를 판단할 수 없다 — signOut()이 바로 그 저장소를 지우기
+        // 때문이다(v0.1 스펙 §8.2, AccountBindingStore.swift 참고). accountBinding은
+        // signOut()이 지우지 않으므로, 로그아웃 후 종료했다가 다른 계정으로 재로그인하는
+        // 경로(v0.1의 유일한 로그아웃 경로 — 만료 배너의 버튼)도 여기서 걸러진다. 이
+        // 검사는 persistOnSuccess와 무관하게(즉 start()에서도) 실행돼야 한다 — 그래야
+        // "로그아웃 → 종료 → 재실행 → 다른 계정 로그인"이 커버된다.
+        //
+        // `try?`로 읽는 이유는 자격증명 처리와 같다: 바인딩을 못 읽으면 "전환 아님"으로
+        // 보수적으로 판단해 미러를 남긴다. 지우는 쪽이 되돌릴 수 없는 방향이기 때문이다.
+        let bound = try? accountBinding.load()
+        if let bound, bound != me.accountId {
+            try? store.reset()
+        }
+        try? accountBinding.save(me.accountId)
+
         if persistOnSuccess {
-            // 다른 계정으로 갈아타면 미러와 이벤트 로그를 버린다 (v0.1 스펙 §8.2).
-            // 남의 XP와 내 XP가 섞이면 복구할 수 없다.
-            // 여기서는 `try?`가 맞다 — 이전 자격증명을 못 읽으면 "전환 아님"으로 보수적으로
-            // 판단해 미러를 남긴다. 지우는 쪽이 되돌릴 수 없는 방향이기 때문이다.
-            if let previous = try? credentials.load(), previous.email != creds.email {
-                try? store.reset()
-            }
             do {
                 try credentials.save(creds)
             } catch {
@@ -279,3 +345,9 @@ private struct SyncFailure: Error, CustomStringConvertible {
         description = redactedErrorDescription(error)
     }
 }
+
+/// `performSync()`가 로그인 전(client == nil)이거나 워크플로 매핑을 읽지 못한 상태에서
+/// 불렸을 때 던진다. 응답 본문을 담지 않으므로 `SyncFailure`로 감쌀 필요가 없다 — 그냥
+/// 던지는 것 자체가 목적이다(I1 참고: 예전에는 조용히 return해서 스케줄러가 이걸 성공으로
+/// 오해했다).
+private struct SyncNotConfigured: Error {}

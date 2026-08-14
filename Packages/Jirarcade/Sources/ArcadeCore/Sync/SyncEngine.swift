@@ -72,7 +72,10 @@ public final class SyncEngine {
         self.scoreEngine = ScoreEngine(rules: rules, workflow: workflow, calendar: calendar)
     }
 
-    public func sync(jql: String, now: Date) async throws -> SyncOutcome {
+    public func sync(
+        jql: String, now: Date,
+        isStillCurrent: @MainActor () -> Bool = { true }
+    ) async throws -> SyncOutcome {
         let runID = try store.beginSyncRun(at: now)
 
         let fetched: FetchResult
@@ -89,6 +92,18 @@ public final class SyncEngine {
             try? store.finishSyncRun(runID, at: now, issueCount: 0,
                                      failure: redactedErrorDescription(error))
             throw error
+        }
+
+        // 페치는 유일한 정지점이다 — 이후로는 이 메서드가 중단 없이 끝난다(loadMirror →
+        // applySync → finishSyncRun → recompute 전부 동기). 그래서 페치 직후 한 번만
+        // 검사하면 아래 쓰기 전체를 덮는다. `AppModel`이 로그아웃하거나 다른 계정으로
+        // 로그인하는 동안 이 페치가 날아가 있었다면, 그 결과를 새 계정의 스토어에
+        // 쓰면 안 된다(I4) — `client`를 로컬로 캡처해도 페치 자체는 취소되지 않으므로
+        // `AppModel` 쪽에서 `await` 이후에 검사하는 걸로는 늦다: `applySync`가 이미
+        // 끝난 뒤이기 때문이다.
+        guard isStillCurrent() else {
+            try? store.finishSyncRun(runID, at: now, issueCount: 0, failure: "aborted")
+            throw CancellationError()
         }
 
         let previous = try store.loadMirror()
