@@ -40,8 +40,16 @@ private func swiftFiles(in directory: URL) -> [URL] {
     #expect(!files.isEmpty)
 
     // ArcadeTheme.swift는 팔레트를 Color로 바꾸는 유일한 곳이므로 예외다.
+    // "Color.xxx" 형태뿐 아니라, 습관적으로 손이 가는 시스템 색(.primary/.secondary)과
+    // 토큰을 우회해 임의 색을 만드는 생성자(Color(nsColor:)/Color(red:)/#colorLiteral)도 잡는다.
     let literals = ["Color.red", "Color.blue", "Color.green", "Color.black",
-                    "Color.white", "Color.gray", "Color.orange", "Color.yellow"]
+                    "Color.white", "Color.gray", "Color.orange", "Color.yellow",
+                    ".primary", ".secondary",
+                    "Color(nsColor:", "Color(red:",
+                    "#colorLiteral"]
+    // 하드코딩된 hex 색상 문자열("#RRGGBB"). 팔레트의 hex는 ArcadeCore의 PaletteTokens에만
+    // 있어야 하고, ArcadeUI는 ArcadeTheme.swift를 거쳐 Color로만 받아야 한다.
+    let hexLiteral = /#[0-9A-Fa-f]{6}\b/
 
     for file in files where file.lastPathComponent != "ArcadeTheme.swift" {
         let text = try String(contentsOf: file, encoding: .utf8)
@@ -49,6 +57,8 @@ private func swiftFiles(in directory: URL) -> [URL] {
             #expect(!text.contains(literal),
                     "\(file.lastPathComponent)에 \(literal)이 있다 — 반대 테마에서 깨진다")
         }
+        #expect(!text.contains(hexLiteral),
+                "\(file.lastPathComponent)에 하드코딩된 hex 색상이 있다 — 반대 테마에서 깨진다")
     }
 }
 
@@ -59,8 +69,18 @@ private func swiftFiles(in directory: URL) -> [URL] {
     let jiraHost = /[a-z0-9][a-z0-9.-]*\.atlassian\.net/
     let allowed = "example.atlassian.net"
 
-    for directory in [sourcesDirectory(), testsDirectory()] {
-        for file in swiftFiles(in: directory) {
+    let directories: [(name: String, url: URL)] = [
+        ("Sources", sourcesDirectory()),
+        ("Tests", testsDirectory()),
+    ]
+
+    for (name, directory) in directories {
+        let files = swiftFiles(in: directory)
+        // 이 assert가 없으면 경로가 깨져 빈 목록이 나올 때 아래 루프가 0번 돌고도
+        // 조용히 통과한다 — "조직명이 없다"가 아니라 "파일을 못 찾았다"를 구분해야 한다.
+        #expect(!files.isEmpty, "\(name) 아래에서 .swift 파일을 하나도 못 찾았다 — 경로가 깨졌다는 뜻이다")
+
+        for file in files {
             let text = try String(contentsOf: file, encoding: .utf8).lowercased()
             for match in text.matches(of: jiraHost) {
                 #expect(String(match.output) == allowed,
