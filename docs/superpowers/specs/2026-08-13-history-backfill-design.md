@@ -120,6 +120,24 @@ item.from / item.to       → 상태 ID (폴백 조회에 사용)
 
 `XpAwarder`에 규칙 한 줄을 추가한다: `actorAccountId != myAccountId`면 0. `RuleSet.awardsOnlyOwnTransitions: Bool = true`로 두어 나중에 바꿀 수 있게 한다.
 
+### 4.3 백필도 "채점은 이벤트 로그만의 함수" 불변식을 지킨다
+
+계획 1의 최종 리뷰에서 확립된 불변식이 있다: **채점은 (이벤트 로그, RuleSet)만의 함수여야 하고 미러에 의존해서는 안 된다.** 미러의 `jiraUpdatedAt`은 재집계 직전에 최신값으로 덮이므로 정체 기준선으로 쓸 수 없고, 조회 결과에서 사라진 티켓은 미러에서 없어져 마감 보너스가 증발하기 때문이다. 그래서 `DomainEvent`가 두 값을 직접 들고 다닌다:
+
+- `priorUpdatedAt` — 이 변화 **직전**의 `jiraUpdatedAt`. 정체 기준선.
+- `dueDateAtObservation` — 관측 **시점의** 마감일. 마감 전 완료 보너스가 이 값을 본다.
+
+백필이 만드는 이벤트도 이 두 필드를 채워야 한다. 그러지 않으면 소급 XP가 미러 상태에 따라 달라져 불변식이 깨진다.
+
+**changelog에서 두 값을 복원하는 방법:**
+
+| 필드 | 복원 방법 |
+|---|---|
+| `priorUpdatedAt` | **직전 history의 `created`.** 티켓의 모든 변경이 changelog에 남으므로, 어떤 전이 직전의 마지막 수정 시각은 곧 그 앞 history의 시각이다. 첫 history라면 직전 변경이 없으므로 `fields.created`(티켓 생성 시각)를 쓴다. |
+| `dueDateAtObservation` | changelog에서 `field == "duedate"`인 항목을 모아 시간순으로 훑으면 각 시점의 마감일을 재구성할 수 있다. 변경 이력이 없으면 현재 `fields.duedate`가 그 시점에도 같았다는 뜻이다. |
+
+이 복원이 오히려 관측보다 **정확하다.** 관측은 5분 폴링 사이에 일어난 중간 전이를 놓치지만 changelog는 전부 남긴다. 즉 백필 구간의 정체 기준선은 근사가 아니라 정확값이며, 스펙 §5.2가 말한 "이벤트가 쌓이면 정확한 기준으로 승격"이 백필로 즉시 달성된다.
+
 ---
 
 ## 5. 워크플로 폴백 (3단)
@@ -231,6 +249,9 @@ item.from / item.to       → 상태 ID (폴백 조회에 사용)
 |---|---|
 | 파싱 | `field == "status"`만 이벤트가 된다 (description·Link·Fix Version은 버려진다) |
 | 파싱 | `history.created`가 `observedAt`이 된다 — 백필 실행 시각이 아니다 |
+| 불변식 | `priorUpdatedAt`이 **직전 history의 created**로 채워진다. 첫 history면 `fields.created` |
+| 불변식 | `dueDateAtObservation`이 그 시점의 마감일로 채워진다 (duedate 변경 이력 반영) |
+| 불변식 | 미러를 비워도 백필 이벤트의 XP가 변하지 않는다 (채점이 이벤트만의 함수) |
 | 중복 | 같은 `sourceHistoryId`를 두 번 넣으면 이벤트는 1개 |
 | actor | 남이 옮긴 전이 → 이벤트 기록 ○, XP 0 |
 | actor | 남이 옮긴 전이도 `statusEnteredAt`을 갱신한다 (정체일이 부풀지 않는다) |
