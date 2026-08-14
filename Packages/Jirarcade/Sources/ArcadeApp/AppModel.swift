@@ -15,6 +15,11 @@ public final class AppModel {
     /// 할 수 있다는 사실을 화면이 보여줄 수 있게 한다.
     public private(set) var credentialSaveWarning: String?
 
+    /// 외관 설정. UserDefaults에 저장되며 UI가 읽어 테마를 고른다.
+    public var appearancePreference: AppearancePreference = .system {
+        didSet { UserDefaults.standard.set(appearancePreference.rawValue, forKey: "appearance") }
+    }
+
     private let store: ArcadeStore
     private let credentials: any CredentialStore
     private let workflow: any WorkflowStore
@@ -49,6 +54,10 @@ public final class AppModel {
         self.calendar = calendar
         self.rules = rules
         self.settings = settings
+        if let raw = UserDefaults.standard.string(forKey: "appearance"),
+           let saved = AppearancePreference(rawValue: raw) {
+            self.appearancePreference = saved
+        }
     }
 
     /// 앱 시작. 저장된 자격증명이 있으면 확인하고 적절한 단계로 보낸다.
