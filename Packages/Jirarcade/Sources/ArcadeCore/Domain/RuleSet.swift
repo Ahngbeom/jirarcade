@@ -45,6 +45,14 @@ public struct RuleSet: Codable, Sendable, Equatable {
     public var levelBase: Double
     public var levelExponent: Double
 
+    // 백필과 시즌
+    /// 내가 직접 옮긴 전이에만 XP를 준다. changelog의 author로 판별한다.
+    /// false로 두면 담당 티켓의 모든 전이가 XP 대상이 된다(스펙 §4.2).
+    public var awardsOnlyOwnTransitions: Bool
+    /// 시즌 XP 바가 세는 기간(일). 고정 시즌이 아니라 `now - seasonDays`부터의
+    /// 롤링 윈도우다 — 리셋 절벽을 만들지 않기 위해서다(스펙 §6).
+    public var seasonDays: Int
+
     public static let `default` = RuleSet(
         staleDays: 7, bossDays: 21, raidDays: 45,
         wakeBaseXP: 40, wakeDivisorDays: 14, wakeMaxMultiplier: 4.0, forwardMultiplier: 1.5,
@@ -55,6 +63,8 @@ public struct RuleSet: Codable, Sendable, Equatable {
         streakStepBonus: 0.05, streakCapDays: 14, countsWeekends: false,
         dueBonusPerDay: 10, dueBonusCap: 80,
         dailyXPCap: 1_200, duplicateWindowHours: 24, revertWindowMinutes: 10,
-        levelBase: 100, levelExponent: 1.8
+        levelBase: 100, levelExponent: 1.8,
+        awardsOnlyOwnTransitions: true,
+        seasonDays: 30
     )
 }
