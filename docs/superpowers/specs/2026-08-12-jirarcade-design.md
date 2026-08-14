@@ -76,14 +76,20 @@ Swift 모듈은 `public`을 붙이지 않은 타입이 모듈 밖에서 보이�
 ### 3.1 캐비닛 인터페이스
 
 ```swift
+@MainActor
 public protocol Cabinet: Identifiable {
     var id: String { get }
     var title: String { get }
     var marqueeLines: [String] { get }   // 플로어에 보이는 미리보기 3줄
-    var accent: Color { get }
-    @MainActor func makeView() -> AnyView
+    var accentToken: String { get }      // PaletteTokens의 키. Color가 아니다 — 아래 참고
+    func makeView() -> AnyView
 }
 ```
+
+캐비닛은 색이 아니라 **토큰 이름**을 들고 있다. `Color`를 직접 보유하면 캐비닛이 색 값을
+결정하게 되어 라이트/다크 전환이 캐비닛을 지나치고, "`ArcadeUI` 뷰 코드에 색 리터럴을 두지
+않는다"는 제약도 캐비닛에서 깨진다. 토큰만 들고 셸이 `ArcadeTheme.color(forToken:)`으로
+해석하면 테마 전환이 저절로 따라온다.
 
 캐비닛은 셸에 데이터를 요청하지 않는다. 모든 캐비닛이 `ArcadeCore`의 공유 저장소를 각자 읽는다.
 따라서 캐비닛끼리 서로를 모르며, 하나를 제거해도 나머지가 깨지지 않는다.
