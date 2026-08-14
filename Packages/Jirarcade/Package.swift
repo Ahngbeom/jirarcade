@@ -21,7 +21,7 @@ let package = Package(
         ),
         .target(name: "ArcadeApp", dependencies: ["ArcadeCore", "JiraKit"]),
         .target(name: "ArcadeUI", dependencies: ["ArcadeApp", "ArcadeCore"]),
-        .executableTarget(name: "JirarcadeApp", dependencies: ["ArcadeUI"]),
+        .executableTarget(name: "JirarcadeApp", dependencies: ["ArcadeUI", "ArcadeApp", "ArcadeCore", "JiraKit"]),
         .testTarget(name: "ArcadeAppTests", dependencies: ["ArcadeApp"]),
     ]
 )
