@@ -2275,6 +2275,28 @@ git commit -m "feat: 백필 엔진 (페이지네이션·보충 조회·부분 �
 - Consumes: `BackfillEngine`·`JiraChangelogSource` (Task 11), `ArcadeStore` 백필 API (Task 10), `ScoreEngine.recompute(since:)` (Task 3)
 - Produces: `AppModel.backfillProgress: BackfillProgress?` (`processed`, `total`), `AppModel.startBackfill() async`, `AppModel.resumeBackfillIfAvailable() async`, `AppModel.cancelBackfill()`, `AppModel.hasResumableBackfill: Bool`, `AppModel.seasonSummary: PlayerSummary?`, `AppModel.lifetimeSummary: PlayerSummary?`
 
+- [ ] **Step 0: `makeModel`에 store 주입 파라미터 추가**
+
+`Tests/ArcadeAppTests/TestSupport.swift`의 `makeModel`은 store를 내부에서 만들어 테스트가 미리 상태를 심을 수 없다. 백필 테스트는 "이미 이벤트가 있는 스토어"를 필요로 하므로 주입 가능하게 한다. **기본값을 주어 기존 호출부는 그대로 컴파일된다.**
+
+시그니처 첫 줄에 파라미터를 더한다:
+
+```swift
+func makeModel(
+    store: ArcadeStore? = nil,
+    credentials: InMemoryCredentialStore = InMemoryCredentialStore(),
+```
+
+본문의 `store:` 인자를 바꾼다:
+
+```swift
+    return AppModel(
+        store: try store ?? ArcadeStore(container: ArcadeStore.makeInMemoryContainer()),
+```
+
+Run: `cd Packages/Jirarcade && swift test`
+Expected: PASS — 기존 테스트가 하나도 깨지지 않아야 한다.
+
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 `Tests/ArcadeAppTests/BackfillIntegrationTests.swift`:
@@ -2286,22 +2308,40 @@ import ArcadeCore
 import JiraKit
 @testable import ArcadeApp
 
-/// 백필이 끝나면 통산과 시즌 요약이 모두 채워진다. 두 값은 같은 이벤트 로그를
-/// 다른 범위로 집계한 것이므로, 시즌이 통산보다 클 수 없다(스펙 §6).
+/// 시즌은 통산의 부분집합이다. 시즌 밖 이벤트가 있으면 시즌 XP는 통산보다 **엄격히** 작아야
+/// 한다 — `<=`로 검사하면 둘 다 0일 때도 통과해 아무것도 검증하지 못한다(스펙 §6).
 @MainActor
-@Test func backfillFillsBothSummaries() async throws {
+@Test func seasonSummaryIsStrictlySmallerWhenOldEventsExist() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let now = iso("2026-08-14T09:00:00Z")
+    // 시즌(30일) 밖 하나, 안 하나. 둘 다 내가 옮긴 전진 전이라 XP가 붙는다.
+    let old = DomainEvent(
+        issueKey: "MPT-1", kind: .statusChanged, fromStatus: "해야 할 일", toStatus: "진행 중",
+        observedAt: iso("2026-01-05T00:00:00Z"), actorAccountId: "acc-me",
+        priorUpdatedAt: iso("2025-12-15T00:00:00Z")
+    )
+    let recent = DomainEvent(
+        issueKey: "MPT-2", kind: .statusChanged, fromStatus: "해야 할 일", toStatus: "진행 중",
+        observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
+        priorUpdatedAt: iso("2026-07-20T00:00:00Z")
+    )
+    _ = try store.appendBackfillEvents([old, recent], historyIds: ["h-old", "h-recent"])
+
     let creds = InMemoryCredentialStore(
         seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
     )
-    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["진행 중": .active]))
-    let model = try makeModel(credentials: creds, workflow: workflow)
-    await model.start()
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
+        "해야 할 일": .backlog, "진행 중": .active,
+    ]))
+    let model = try makeModel(store: store, credentials: creds, workflow: workflow, now: now)
 
-    await model.startBackfill()
+    await model.start()
 
     let lifetime = try #require(model.lifetimeSummary)
     let season = try #require(model.seasonSummary)
-    #expect(season.totalXP <= lifetime.totalXP)
+    #expect(lifetime.totalXP > 0, "이벤트가 있으므로 통산 XP가 0이면 집계가 안 된 것이다")
+    #expect(season.totalXP > 0, "시즌 안 이벤트가 있으므로 시즌 XP도 0이 아니다")
+    #expect(season.totalXP < lifetime.totalXP, "시즌 밖 이벤트가 통산에만 잡혀야 한다")
 }
 
 /// 진행률이 백필 중에는 값이 있고 끝나면 nil로 돌아간다 — UI가 진행 바를 감출 근거다.
@@ -2616,17 +2656,25 @@ git commit -m "feat: 백필 버튼·진행 바와 시즌/통산 레벨 표시"
 - [ ] **Step 1: 실패하는 테스트를 `BackfillIntegrationTests.swift` 끝에 추가**
 
 ```swift
-/// 백필이 발견한 과거 상태가 매핑 후보로 올라온다. 사용자가 확정하면 재집계로
-/// 소급 XP가 정확해진다 — 이벤트가 원본이고 점수는 파생이기에 가능하다(스펙 §5).
+/// 백필이 발견한 과거 상태가 앱을 다시 켜도 남아 매핑 후보로 올라온다.
+/// 사용자가 확정하면 재집계로 소급 XP가 정확해진다 — 이벤트가 원본이고 점수는 파생이다(스펙 §5).
 @MainActor
-@Test func historyDiscoveredStatusesSurfaceForMapping() async throws {
-    let model = try makeModel()
-    await model.start()
-    await model.startBackfill()
+@Test func historyDiscoveredStatusesRestoreOnLaunch() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                        totalIssueCount: 100)
+    try store.advanceBackfill(runId, nextPageToken: "tok", processedIssueCount: 40,
+                              discovered: ["STAG병합", "검수완료"], partiallyRestored: [])
 
-    // 백필이 아무것도 발견하지 못했더라도 프로퍼티는 존재하고 빈 배열이어야 한다.
-    #expect(model.historyDiscoveredStatuses.isEmpty == true
-            || model.historyDiscoveredStatuses.allSatisfy { !$0.isEmpty })
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let model = try makeModel(store: store, credentials: creds)
+
+    await model.start()
+
+    #expect(Set(model.historyDiscoveredStatuses) == ["STAG병합", "검수완료"])
+    #expect(model.hasResumableBackfill == true, "중단된 백필이 있으면 이어받기를 제안해야 한다")
 }
 ```
 
