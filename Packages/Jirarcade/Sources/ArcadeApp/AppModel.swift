@@ -76,6 +76,34 @@ public final class AppModel {
         phase = .signedOut(message: nil)
     }
 
+    /// 매핑 마법사에서 "시작하기"를 눌렀을 때. 매핑은 강제하지 않으므로
+    /// 일부 상태가 비어 있어도 받아들이고, 남은 것을 배지로 알린다.
+    public func confirmMapping(_ map: WorkflowMap) async {
+        try? workflow.save(map)
+        refreshUnmapped(against: map)
+        phase = .ready
+    }
+
+    /// 미러에 있는 상태 중 매핑되지 않은 것을 다시 센다.
+    public func refreshUnmapped() {
+        guard let map = try? workflow.load() else {
+            unmappedStatuses = []
+            return
+        }
+        refreshUnmapped(against: map)
+    }
+
+    private func refreshUnmapped(against map: WorkflowMap) {
+        let names = (try? store.loadMirror().values.map(\.statusName)) ?? []
+        let fromMirror = map.unmappedStatuses(in: names)
+        // 미러가 비어 있으면 방금 조회한 후보를 기준으로 센다.
+        if fromMirror.isEmpty, case .mappingWorkflow(let candidates) = phase {
+            unmappedStatuses = map.unmappedStatuses(in: candidates)
+        } else {
+            unmappedStatuses = fromMirror
+        }
+    }
+
     // MARK: - 내부
 
     private func validate(_ creds: Credentials, persistOnSuccess: Bool) async {
@@ -103,6 +131,13 @@ public final class AppModel {
 
         client = candidate
         if persistOnSuccess {
+            // 다른 계정으로 갈아타면 미러와 이벤트 로그를 버린다 (v0.1 스펙 §8.2).
+            // 남의 XP와 내 XP가 섞이면 복구할 수 없다.
+            // 여기서는 `try?`가 맞다 — 이전 자격증명을 못 읽으면 "전환 아님"으로 보수적으로
+            // 판단해 미러를 남긴다. 지우는 쪽이 되돌릴 수 없는 방향이기 때문이다.
+            if let previous = try? credentials.load(), previous.email != creds.email {
+                try? store.reset()
+            }
             do {
                 try credentials.save(creds)
             } catch {

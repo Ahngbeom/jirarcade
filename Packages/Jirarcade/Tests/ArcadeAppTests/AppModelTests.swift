@@ -152,3 +152,125 @@ private func assertDoesNotLeak(
     #expect(model.phase == .signedOut(message: nil))
     #expect(try creds.load() == nil)
 }
+
+@MainActor
+@Test func confirmingMappingSavesItAndGoesToReady() async throws {
+    let workflow = InMemoryWorkflowStore()
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
+        ])
+    })
+    await model.start()
+
+    let map = WorkflowMap(statusToStage: ["To Do": .backlog, "Done": .done])
+    await model.confirmMapping(map)
+
+    #expect(model.phase == .ready)
+    #expect(try workflow.load() == map)
+}
+
+@MainActor
+@Test func partialMappingIsAllowedAndReported() async throws {
+    let workflow = InMemoryWorkflowStore()
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let issues = #"""
+    {"issues":[
+      {"key":"DEMO-1","fields":{"summary":"a","status":{"name":"To Do"},
+       "issuetype":{"name":"Task"},"updated":"2026-08-14T09:00:00.000+0000"}},
+      {"key":"DEMO-2","fields":{"summary":"b","status":{"name":"Blocked"},
+       "issuetype":{"name":"Task"},"updated":"2026-08-14T09:00:00.000+0000"}}
+    ]}
+    """#
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(issues.utf8)),
+        ])
+    })
+    await model.start()
+
+    #expect(model.phase == .mappingWorkflow(candidates: ["Blocked", "To Do"]))
+
+    // "Blocked"를 일부러 비워둔 채 확정한다 — 강제하지 않는다.
+    await model.confirmMapping(WorkflowMap(statusToStage: ["To Do": .backlog]))
+
+    #expect(model.phase == .ready)
+    #expect(model.unmappedStatuses == ["Blocked"], "매핑되지 않은 상태가 배지로 드러나야 한다")
+}
+
+@MainActor
+@Test func signingInAsADifferentAccountClearsTheMirror() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "first@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try store.applySync(
+        issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
+                               issueType: "Task", priority: nil, assigneeAccountId: nil,
+                               assigneeName: nil, dueDate: nil,
+                               jiraUpdatedAt: iso("2026-08-14T09:00:00Z"))],
+        events: [], observedAt: iso("2026-08-14T09:00:00Z")
+    )
+    #expect(try store.loadMirror().count == 1)
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    let model = AppModel(
+        store: store, credentials: creds, workflow: workflow,
+        clientFactory: { auth in
+            JiraClient(auth: auth, http: ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
+            ]))
+        },
+        clock: { iso("2026-08-14T09:00:00Z") }, calendar: utc
+    )
+
+    await model.signIn(site: "example.atlassian.net", email: "second@e.com", token: "t2")
+
+    #expect(try store.loadMirror().isEmpty, "다른 계정의 XP와 섞이면 복구할 수 없다")
+}
+
+@MainActor
+@Test func signInWithFailedCredentialSaveStillReachesReadyButWarns() async throws {
+    let creds = InMemoryCredentialStore()
+    creds.saveError = CredentialStoreError.keychain(status: -25299)
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(credentials: creds, workflow: workflow)
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "t")
+
+    #expect(model.phase == .ready, "인증은 이미 성공했으니 로그인 화면으로 돌려보내지 않는다")
+    #expect(model.credentialSaveWarning != nil)
+}
+
+@MainActor
+@Test func signInWithSuccessfulSaveLeavesNoWarning() async throws {
+    let creds = InMemoryCredentialStore()
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(credentials: creds, workflow: workflow)
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "t")
+
+    #expect(model.credentialSaveWarning == nil)
+}
+
+@MainActor
+@Test func credentialSaveWarningDoesNotSurviveALaterSuccessfulSignIn() async throws {
+    let creds = InMemoryCredentialStore()
+    creds.saveError = CredentialStoreError.keychain(status: -25299)
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(credentials: creds, workflow: workflow)
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    #expect(model.credentialSaveWarning != nil)
+
+    creds.saveError = nil
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "t2")
+    #expect(model.credentialSaveWarning == nil)
+}

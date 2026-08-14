@@ -83,6 +83,16 @@ public final class ArcadeStore {
         try context.save()
     }
 
+    /// 미러·이벤트 로그·동기화 이력을 전부 버린다.
+    /// 다른 계정으로 로그인할 때만 쓴다 — append-only 원칙의 유일한 예외이며,
+    /// 남의 데이터와 섞이는 것보다 버리는 편이 안전하기 때문이다.
+    public func reset() throws {
+        for row in try context.fetch(FetchDescriptor<IssueSnapshot>()) { context.delete(row) }
+        for row in try context.fetch(FetchDescriptor<IssueEventRecord>()) { context.delete(row) }
+        for row in try context.fetch(FetchDescriptor<SyncRunRecord>()) { context.delete(row) }
+        try context.save()
+    }
+
     // MARK: - 이벤트
 
     public func loadEvents() throws -> [DomainEvent] {
