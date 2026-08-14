@@ -51,30 +51,79 @@ import JiraKit
 }
 
 @MainActor
-@Test func signInWithMalformedSiteReportsWithoutLeakingCredentials() async throws {
-    let model = try makeModel()
-    await model.signIn(site: "not a host", email: "u@e.com", token: "secret-token")
+@Test func startWithBrokenCredentialStoreShowsMessageInsteadOfSignedOutSilently() async throws {
+    let creds = InMemoryCredentialStore()
+    // 실제 Keychain 장애를 흉내낸다. "자격증명 없음"과 구분되어야 한다 — 구분하지 않으면
+    // 사용자는 로그인 화면에서 다시 로그인해도 저장소가 고장난 채라 계속 실패한다.
+    creds.loadError = CredentialStoreError.keychain(status: -25308)
+    let model = try makeModel(credentials: creds)
+    await model.start()
 
     guard case .signedOut(let message) = model.phase else {
         Issue.record("signedOut을 기대했으나 \(model.phase)")
         return
     }
+    #expect(message != nil, "저장소 장애는 자격증명 없음(message: nil)과 달라야 한다")
+}
+
+/// site/email/token 중 어느 것도 실패 메시지에 나타나지 않는지 확인한다. 세 값 모두를,
+/// 그리고 실패로 이어지는 서로 다른 경로 각각에서 확인해야 "이번 substring만 우연히
+/// 없었다"가 아니라 "이 경로가 구조적으로 자격증명을 담지 않는다"는 것을 보증한다.
+private func assertDoesNotLeak(
+    _ message: String?, site: String, email: String, token: String,
+    sourceLocation: SourceLocation = #_sourceLocation
+) {
     let text = message ?? ""
-    #expect(!text.isEmpty)
-    #expect(!text.contains("secret-token"))
-    #expect(!text.contains("u@e.com"))
+    #expect(!text.isEmpty, sourceLocation: sourceLocation)
+    #expect(!text.contains(site), sourceLocation: sourceLocation)
+    #expect(!text.contains(email), sourceLocation: sourceLocation)
+    #expect(!text.contains(token), sourceLocation: sourceLocation)
 }
 
 @MainActor
-@Test func signInWithBadCredentialsStaysSignedOut() async throws {
-    let model = try makeModel(http: { ScriptedHTTP(status: 401) })
-    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "wrong")
+@Test func signInWithMalformedSiteReportsWithoutLeakingCredentials() async throws {
+    let model = try makeModel()
+    let site = "not a host"
+    let email = "distinct-user@example.com"
+    let token = "distinct-secret-token-value"
+    await model.signIn(site: site, email: email, token: token)
 
     guard case .signedOut(let message) = model.phase else {
         Issue.record("signedOut을 기대했으나 \(model.phase)")
         return
     }
-    #expect(message != nil)
+    assertDoesNotLeak(message, site: site, email: email, token: token)
+}
+
+@MainActor
+@Test func signInWithBadCredentialsStaysSignedOutWithoutLeakingCredentials() async throws {
+    let model = try makeModel(http: { ScriptedHTTP(status: 401) })
+    let site = "example.atlassian.net"
+    let email = "distinct-user@example.com"
+    let token = "distinct-wrong-token-value"
+    await model.signIn(site: site, email: email, token: token)
+
+    guard case .signedOut(let message) = model.phase else {
+        Issue.record("signedOut을 기대했으나 \(model.phase)")
+        return
+    }
+    assertDoesNotLeak(message, site: site, email: email, token: token)
+}
+
+@MainActor
+@Test func signInWithServerErrorStaysSignedOutWithoutLeakingCredentials() async throws {
+    // 401(unauthorized)도 invalidSite도 아닌, catch-all로 떨어지는 경로.
+    let model = try makeModel(http: { ScriptedHTTP(status: 500) })
+    let site = "example.atlassian.net"
+    let email = "distinct-user@example.com"
+    let token = "distinct-server-error-token"
+    await model.signIn(site: site, email: email, token: token)
+
+    guard case .signedOut(let message) = model.phase else {
+        Issue.record("signedOut을 기대했으나 \(model.phase)")
+        return
+    }
+    assertDoesNotLeak(message, site: site, email: email, token: token)
 }
 
 @MainActor

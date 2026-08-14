@@ -33,10 +33,24 @@ public final class InMemoryCredentialStore: CredentialStore, @unchecked Sendable
     private var stored: Credentials?
     private let lock = NSLock()
 
+    /// 설정하면 `load()`가 저장된 값 대신 이 에러를 던진다.
+    /// 실제 Keychain 장애(예: 잠긴 상태)와 "자격증명 없음"을 구분하는 호출부를 테스트하기 위함.
+    public var loadError: (any Error)?
+    /// 설정하면 `save(_:)`가 값을 저장하지 않고 이 에러를 던진다.
+    public var saveError: (any Error)?
+
     public init(seeded: Credentials? = nil) { self.stored = seeded }
 
-    public func load() throws -> Credentials? { lock.withLock { stored } }
-    public func save(_ credentials: Credentials) throws { lock.withLock { stored = credentials } }
+    public func load() throws -> Credentials? {
+        if let loadError { throw loadError }
+        return lock.withLock { stored }
+    }
+
+    public func save(_ credentials: Credentials) throws {
+        if let saveError { throw saveError }
+        lock.withLock { stored = credentials }
+    }
+
     public func clear() throws { lock.withLock { stored = nil } }
 }
 
