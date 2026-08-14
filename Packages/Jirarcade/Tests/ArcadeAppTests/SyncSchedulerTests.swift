@@ -18,6 +18,21 @@ private final class SyncSpy {
 
 private struct TestError: Error {}
 
+/// `SyncSpy`와 별개로 둔다 — `SyncSpy`는 절대 진짜로 suspend하지 않는 것에
+/// 기존 테스트들의 순서 보장이 의존하고 있어서, 여기에 suspend를 넣으면
+/// 그 테스트들이 무엇을 검증하는지 달라진다.
+/// 이 스파이는 `perform()` 안에서 실제로 suspend해서 두 `requestSync` 호출이
+/// 진짜로 겹칠 기회를 만든다.
+@MainActor
+private final class SuspendingSpy {
+    private(set) var calls = 0
+    func perform() async throws {
+        await Task.yield()
+        await Task.yield()
+        calls += 1
+    }
+}
+
 @MainActor
 private func makeScheduler(
     spy: SyncSpy, now: @escaping () -> Date
@@ -123,4 +138,26 @@ private func makeScheduler(
     await scheduler.requestSync(reason: .manual)
 
     #expect(scheduler.state.lastSyncAt == afterSuccess, "실패는 마지막 동기화 시각을 갱신하지 않는다")
+}
+
+/// 이 테스트가 없으면 가드를 지워도 나머지 테스트가 전부 통과한다 — 위의 `SyncSpy`는
+/// 실제로 suspend하지 않아서, 순차적으로 `await`하는 다른 테스트들에서는
+/// 두 `requestSync` 호출이 애초에 겹칠 기회가 없기 때문이다.
+/// 이 테스트만 `SuspendingSpy`로 진짜 suspend를 일으키고 `async let`으로
+/// 두 요청을 실제로 겹치게 만들어, `isSyncing` 가드가 하는 일을 직접 검증한다.
+@MainActor
+@Test func overlappingRequestsRunOnlyOnce() async {
+    let spy = SuspendingSpy()
+    let scheduler = SyncScheduler(
+        settings: .default,
+        clock: { iso("2026-08-14T09:00:00Z") },
+        sleep: { _ in },
+        perform: { try await spy.perform() }
+    )
+
+    async let first: Void = scheduler.requestSync(reason: .manual)
+    async let second: Void = scheduler.requestSync(reason: .manual)
+    _ = await (first, second)
+
+    #expect(spy.calls == 1, "겹치는 두 번째 요청은 첫 번째가 끝날 때까지 무시되어야 한다")
 }
