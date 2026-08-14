@@ -50,7 +50,11 @@ struct SignInView: View {
                     Task { await model.signIn(site: site, email: email, token: token) }
                 }
                 .disabled(!canSubmit)
-                .keyboardShortcut(.defaultAction)
+                // 제출할 수 없을 때는 기본 버튼 지위 자체를 넘긴다.
+                // `.defaultAction`을 항상 붙이면 macOS가 버튼을 강조색으로 칠하는데
+                // `.disabled`는 글자만 흐리게 하고 배경은 그대로 둔다 — 빈 폼에서
+                // 눌릴 것처럼 보이는 파란 버튼이 되고, 눌러도 아무 일이 없다.
+                .keyboardShortcut(canSubmit ? .defaultAction : nil)
             }
         }
         .padding(40)
