@@ -55,8 +55,11 @@ private func swiftFiles(in directory: URL) -> [URL] {
     // 놓친다(M8). `\s`가 개행도 포함하므로 정규식 하나로 이 변형들을 함께 잡는다.
     // `.init(red:` 쪽은 `Color(red:`/`Color.init(red:` 안의 `.init(red:`도 다시 잡지만,
     // 중복 매치는 해가 없다 — 이미 다른 규칙에도 걸릴 문자열을 한 번 더 확인할 뿐이다.
-    let colorRedConstructor = /Color\s*\(\s*(\.sRGB(Linear)?\s*,\s*)?red\s*:/
-    let initRedConstructor = /\.init\s*\(\s*(\.sRGB(Linear)?\s*,\s*)?red\s*:/
+    // 색 공간 인자를 `.sRGB`/`.sRGBLinear`로 열거하면 `.displayP3`가 빠진다. 목록을
+    // 늘리는 대신 "점 하나로 시작하는 아무 케이스"로 일반화해, 앞으로 추가될 색 공간도
+    // 자동으로 걸리게 한다.
+    let colorRedConstructor = /Color\s*\(\s*(\.\w+\s*,\s*)?red\s*:/
+    let initRedConstructor = /\.init\s*\(\s*(\.\w+\s*,\s*)?red\s*:/
 
     for file in files where file.lastPathComponent != "ArcadeTheme.swift" {
         let text = try String(contentsOf: file, encoding: .utf8)

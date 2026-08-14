@@ -293,11 +293,19 @@ public final class AppModel {
         //
         // `try?`로 읽는 이유는 자격증명 처리와 같다: 바인딩을 못 읽으면 "전환 아님"으로
         // 보수적으로 판단해 미러를 남긴다. 지우는 쪽이 되돌릴 수 없는 방향이기 때문이다.
-        let bound = try? accountBinding.load()
-        if let bound, bound != me.accountId {
-            try? store.reset()
+        // 읽기 실패와 "아직 바인딩이 없음"(nil)은 다르게 다룬다. 읽지 못했다는 것은 저장소를
+        // 신뢰할 수 없다는 뜻이므로 **쓰지도 않는다** — 미러는 보수적으로 남겨둔 채 바인딩만
+        // 새 accountId로 덮으면, 다음 실행에서는 둘이 서로 다른 계정을 가리키는데 검사는
+        // 통과한다. 그 순간 두 계정의 티켓과 이벤트가 한 스토어에 섞인다.
+        do {
+            let bound = try accountBinding.load()
+            if let bound, bound != me.accountId {
+                try? store.reset()
+            }
+            try? accountBinding.save(me.accountId)
+        } catch {
+            // 미러도 바인딩도 건드리지 않는다. 지우는 쪽도 덮는 쪽도 되돌릴 수 없다.
         }
-        try? accountBinding.save(me.accountId)
 
         if persistOnSuccess {
             do {
@@ -314,9 +322,17 @@ public final class AppModel {
 
     /// 인증이 끝난 뒤 매핑 유무로 갈린다.
     private func routeAfterAuthentication() async {
-        if (try? workflow.load()) != nil {
-            phase = .ready
-            return
+        do {
+            if try workflow.load() != nil {
+                phase = .ready
+                return
+            }
+        } catch {
+            // 매핑이 **없는 것**과 매핑을 **읽지 못한 것**은 다르다. 둘을 합쳐 조용히
+            // 마법사로 보내면, 이미 설정을 끝낸 사용자가 디스크 문제 한 번에 처음으로
+            // 되돌아가고 화면 어디에도 이유가 없다. 보내는 곳은 같지만(매핑 없이는 모든
+            // 점수가 0이다) 왜 다시 묻는지는 남긴다.
+            workflowSaveWarning = "저장된 워크플로 매핑을 읽지 못했습니다. 다시 설정해 주세요."
         }
         phase = .mappingWorkflow(candidates: await mappingCandidates())
     }

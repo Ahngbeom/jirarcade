@@ -585,3 +585,41 @@ private func assertDoesNotLeak(
     #expect(model.schedulerState.consecutiveFailures == 1,
             "매핑을 읽지 못해 요청이 나가지 않았다 — 성공으로 기록되면 안 된다")
 }
+
+/// 바인딩을 **읽지 못한** 상태에서 새 accountId를 쓰면, "전환 아님"으로 보수적으로 남겨둔
+/// 이전 계정의 미러 위에 새 계정 바인딩이 덮인다. 다음 실행에서는 바인딩과 미러가 서로 다른
+/// 계정을 가리키는데 검사는 통과하므로, 두 계정의 티켓과 이벤트가 한 스토어에 섞인다.
+/// 읽기가 실패했다는 것은 저장소를 신뢰할 수 없다는 뜻이므로 쓰기도 하지 않는다.
+@MainActor
+@Test func unreadableAccountBindingDoesNotOverwriteTheBinding() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-first")
+    accountBinding.loadError = StubError()
+    let model = try makeModel(credentials: creds, accountBinding: accountBinding)
+
+    await model.start()
+
+    accountBinding.loadError = nil
+    #expect(try accountBinding.load() == "acc-first",
+            "읽지 못한 상태에서 덮어쓰면 다음 실행에서 계정 전환을 감지할 수 없다")
+}
+
+/// 매핑이 **없는 것**과 매핑을 **읽지 못한 것**은 다르다. 둘을 합치면 이미 설정을 끝낸
+/// 사용자가 디스크 문제 한 번에 마법사로 되돌아가고, 화면 어디에도 이유가 없다.
+/// 마법사로 보내는 것 자체는 같지만(매핑 없이는 모든 점수가 0이다) 왜 다시 묻는지는 남긴다.
+@MainActor
+@Test func unreadableWorkflowMappingIsNotMistakenForNoMapping() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    workflow.loadError = StubError()
+    let model = try makeModel(credentials: creds, workflow: workflow)
+
+    await model.start()
+
+    #expect(model.workflowSaveWarning != nil,
+            "매핑을 읽지 못해 다시 묻는다는 사실을 화면이 알려야 한다")
+}
