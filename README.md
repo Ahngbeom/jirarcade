@@ -46,24 +46,16 @@ cd Packages/Jirarcade
 swift run JirarcadeApp
 ```
 
-창이 뜨지 않으면 코드 문제가 아니라 실행 방식의 문제입니다. macOS Launch Services가 셸에서 직접 실행한 바이너리를 백그라운드 프로세스로 등록하는 경우가 있어, 최소 `.app` 번들로 감싸면 정상적으로 전경 창이 뜹니다:
+macOS는 `.app` 번들 없이 실행된 프로세스를 **백그라운드 전용 앱**으로 등록합니다. 그러면 창은
+그려지지만 key window가 되지 못해 클릭·타이핑·⌘C/⌘V가 전부 먹지 않습니다 — 화면은 정상으로
+보이는데 아무것도 입력할 수 없는 상태가 됩니다. 앱은 시작 시 활성화 정책을 `.regular`로 올려
+이 문제를 스스로 막으므로, 위 명령만으로도 정상 동작합니다.
+
+배포용으로 감싸거나 Keychain 항목을 안정적으로 재사용하려면 번들로 만드세요. 서명되지 않은
+바이너리는 실행마다 다른 identity로 취급돼 저장한 자격증명을 다시 물을 수 있습니다:
 
 ```bash
-swift build --product JirarcadeApp
-APP=.build/Jirarcade.app
-mkdir -p "$APP/Contents/MacOS"
-cp .build/debug/JirarcadeApp "$APP/Contents/MacOS/"
-cat > "$APP/Contents/Info.plist" <<'PLIST'
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-  <key>CFBundleExecutable</key><string>JirarcadeApp</string>
-  <key>CFBundleIdentifier</key><string>dev.jirarcade.app</string>
-  <key>CFBundleName</key><string>Jirarcade</string>
-  <key>CFBundlePackageType</key><string>APPL</string>
-</dict></plist>
-PLIST
-open "$APP"
+./scripts/make-app.sh --open
 ```
 
 처음 실행하면 사이트 주소·이메일·API 토큰을 묻고, 이어서 내 티켓에 나타난 Jira 상태를 파이프라인 단계에 연결하는 마법사가 뜹니다. **매핑하지 않은 상태를 남겨둬도 됩니다** — 아케이드 플로어에 배지로 계속 표시되므로 실제 데이터를 보면서 나중에 고칠 수 있습니다.
