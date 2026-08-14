@@ -623,3 +623,42 @@ private func assertDoesNotLeak(
     #expect(model.workflowSaveWarning != nil,
             "매핑을 읽지 못해 다시 묻는다는 사실을 화면이 알려야 한다")
 }
+
+/// Atlassian의 **스코프 있는 API 토큰**은 사이트 직접 경로를 거부한다 — 엣지가 인증 단계
+/// 이전에 401 + HTML 차단 페이지를 돌려준다. 토큰이 정상이고 이메일이 맞아도 마찬가지다.
+/// 사용자에게 "어떤 종류의 토큰을 발급했나"는 답할 수 없는 질문이므로, 앱이 cloudId를
+/// 조회해 `api.atlassian.com` 경로로 재시도한다.
+@MainActor
+@Test func scopedTokenFallsBackToTheCloudIdPath() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    // 같은 인스턴스를 공유해야 큐가 이어진다 — clientFactory는 폴백에서 두 번 호출된다.
+    let scripted = ScriptedHTTP([
+        .init(status: 401, body: Data()),                               // 사이트 직접 → 엣지 거부
+        .init(status: 200, body: Data(#"{"cloudId":"cid-1"}"#.utf8)),   // tenant_info
+        .init(status: 200, body: Data(myselfBody.utf8)),                // cloudId 경로 → 성공
+    ])
+    let model = try makeModel(credentials: creds, workflow: workflow, http: { scripted })
+
+    await model.start()
+
+    #expect(model.phase == .ready,
+            "스코프 토큰이 cloudId 경로로 폴백해 로그인에 성공해야 한다")
+}
+
+/// 폴백이 자격증명 오류를 감춰서는 안 된다. 두 경로 모두 401이면 진짜 인증 실패다.
+@MainActor
+@Test func bothPathsFailingStillReportsBadCredentials() async throws {
+    let scripted = ScriptedHTTP([
+        .init(status: 401, body: Data()),                               // 사이트 직접
+        .init(status: 200, body: Data(#"{"cloudId":"cid-1"}"#.utf8)),   // tenant_info
+        .init(status: 401, body: Data()),                               // cloudId 경로도 거부
+    ])
+    let model = try makeModel(http: { scripted })
+
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "wrong")
+
+    #expect(model.phase == .signedOut(message: "이메일 또는 토큰이 올바르지 않습니다."))
+}

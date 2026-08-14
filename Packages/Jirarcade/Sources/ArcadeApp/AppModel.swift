@@ -262,16 +262,33 @@ public final class AppModel {
             return
         }
 
-        let candidate = clientFactory(auth)
+        var candidate = clientFactory(auth)
         let me: JiraUser
         do {
             me = try await candidate.myself()
         } catch JiraError.unauthorized {
-            // 저장된 자격증명이 만료된 경우와 새 입력이 틀린 경우를 구분한다.
-            phase = persistOnSuccess
-                ? .signedOut(message: "이메일 또는 토큰이 올바르지 않습니다.")
-                : .expired
-            return
+            // 401이 자격증명 오류라는 뜻이 **아닐 수 있다.** Atlassian의 스코프 있는 API
+            // 토큰은 사이트 직접 경로(`{site}.atlassian.net/rest/api/3`)를 거부한다 —
+            // 엣지가 인증 단계에 도달하기도 전에 401과 HTML 차단 페이지를 돌려준다
+            // ("Client must be authenticated to access this resource."). 토큰이 정상이고
+            // 이메일이 맞아도 마찬가지이고, 상태 코드가 자격증명 오류와 같아서 구분되지 않는다.
+            //
+            // 사용자에게 "클래식 토큰인가 스코프 토큰인가"를 물을 수는 없다 — 발급 화면의
+            // 버튼 차이를 기억하는 사람은 드물고, 접두사도 같다. 그래서 앱이 알아낸다:
+            // cloudId를 조회해 `api.atlassian.com/ex/jira/{cloudId}` 경로로 한 번 더 시도한다.
+            //
+            // 순서가 사이트 직접 → cloudId인 이유는 클래식 토큰이 더 흔하기 때문이다.
+            // 클래식 사용자는 요청 1회로 끝나고, 스코프 사용자만 3회(거부 + tenant_info +
+            // 재시도)를 쓴다. 로그인과 시작 시 한 번뿐이라 이 비용은 감당할 수 있다.
+            guard let recovered = await retryOverCloudIdPath(creds, using: candidate) else {
+                // 두 경로 모두 거부됐다 — 이제는 진짜 자격증명 문제로 본다.
+                phase = persistOnSuccess
+                    ? .signedOut(message: "이메일 또는 토큰이 올바르지 않습니다.")
+                    : .expired
+                return
+            }
+            candidate = recovered.client
+            me = recovered.user
         } catch {
             phase = .signedOut(message: "Jira에 연결하지 못했습니다.")
             return
@@ -318,6 +335,27 @@ public final class AppModel {
             }
         }
         await routeAfterAuthentication()
+    }
+
+    /// 사이트 직접 경로가 401을 돌려줬을 때, 스코프 토큰용 cloudId 경로로 한 번 더 시도한다.
+    ///
+    /// `probe`는 첫 시도에 쓴 클라이언트다 — 그 안의 HTTP 경로를 재사용해 `/_edge/tenant_info`를
+    /// 부른다(그 엔드포인트는 인증이 필요 없다). 성공하면 새 클라이언트와 사용자 정보를,
+    /// 어느 단계든 실패하면 `nil`을 돌려준다. 실패를 세분하지 않는 이유는 호출부의 처리가
+    /// 같기 때문이다 — 이 경로가 안 되면 남은 결론은 "자격증명이 틀렸다" 하나뿐이다.
+    private func retryOverCloudIdPath(
+        _ creds: Credentials, using probe: JiraClient
+    ) async -> (client: JiraClient, user: JiraUser)? {
+        do {
+            let cloudId = try await probe.cloudId(forSite: creds.site)
+            let scoped = ScopedAPITokenAuth(
+                cloudId: cloudId, email: creds.email, token: creds.token
+            )
+            let client = clientFactory(scoped)
+            return (client, try await client.myself())
+        } catch {
+            return nil
+        }
     }
 
     /// 인증이 끝난 뒤 매핑 유무로 갈린다.

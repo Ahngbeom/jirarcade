@@ -9,6 +9,13 @@ public struct JiraClient: Sendable {
         self.http = http
     }
 
+    /// 사이트의 cloudId를 조회한다. `auth.baseURL`을 쓰지 않고 사이트 직접 경로의
+    /// `/_edge/tenant_info`를 부른다 — 그 엔드포인트는 인증이 필요 없고, cloudId를 알아야
+    /// 스코프 토큰용 베이스 URL(`api.atlassian.com/ex/jira/{cloudId}`)을 만들 수 있다.
+    public func cloudId(forSite site: String) async throws -> String {
+        try await resolveCloudId(site: site, http: http)
+    }
+
     public func myself() async throws -> JiraUser {
         let data = try await perform(method: "GET", path: "/myself", body: nil, resource: "myself")
         return try decode(JiraUser.self, from: data)
