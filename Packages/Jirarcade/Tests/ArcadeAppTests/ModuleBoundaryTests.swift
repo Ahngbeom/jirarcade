@@ -51,7 +51,7 @@ private func swiftFiles(in directory: URL) -> [URL] {
     // 있어야 하고, ArcadeUI는 ArcadeTheme.swift를 거쳐 Color로만 받아야 한다.
     let hexLiteral = /#[0-9A-Fa-f]{6}\b/
     // `"Color(red:"` 문자열 검사는 `Color(.sRGB, red: ...)`, `Color.init(red:)`,
-    // 타입이 문맥에서 추론되는 `.init(red:)`, 인자가 줄바꿈으로 포맀된 경우를 모두
+    // 타입이 문맥에서 추론되는 `.init(red:)`, 인자가 줄바꿈으로 포맷된 경우를 모두
     // 놓친다(M8). `\s`가 개행도 포함하므로 정규식 하나로 이 변형들을 함께 잡는다.
     // `.init(red:` 쪽은 `Color(red:`/`Color.init(red:` 안의 `.init(red:`도 다시 잡지만,
     // 중복 매치는 해가 없다 — 이미 다른 규칙에도 걸릴 문자열을 한 번 더 확인할 뿐이다.
