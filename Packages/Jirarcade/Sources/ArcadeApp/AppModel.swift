@@ -91,7 +91,17 @@ public final class AppModel {
         // 지우기 전에 먼저 루프를 멈춘다. client를 nil로 만들기만 해서는 부족하다: 루프가
         // 계속 돌면 매 틱마다 performSync()가 `guard let client`에서 조용히 return할 뿐
         // 깨어나기는 계속 깨어나 — 로그아웃 후에도 타이머가 무한히 도는 낭비가 남는다.
+        //
+        // stopSyncing()만으로는 부족하다 — SyncScheduler.State(연속 실패 횟수, 마지막 실패
+        // 메시지, shouldSurfaceFailure)는 stop()이 지우지 않는다(의도적으로: stop()은 실패
+        // 이력을 기억한 채로 멈추는 "일시정지"다). scheduler 인스턴스를 통째로 버려야
+        // 이 계정에 대한 실패 이력도 함께 버려진다 — 안 그러면 다른 계정으로 로그인했을 때도
+        // 이전 계정의 "Jira에 연결하지 못했습니다" 배지와 백오프 지연이 그대로 넘어온다.
+        // 이건 계정을 바꿀 때 미러/이벤트 로그를 버리는 것(validate() 참고)과 같은 종류의
+        // 정리이므로 여기서도 함께 처리한다. ensureScheduler()는 scheduler가 nil이면 새로
+        // 만드므로 다음 로그인에서 자연히 깨끗한 상태로 시작한다.
         stopSyncing()
+        scheduler = nil
         try? credentials.clear()
         client = nil
         summary = nil
