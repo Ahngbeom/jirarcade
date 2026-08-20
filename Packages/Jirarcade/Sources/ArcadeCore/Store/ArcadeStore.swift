@@ -111,6 +111,14 @@ public final class ArcadeStore {
         }
     }
 
+    /// 테스트와 진단용. 값 타입으로 변환하기 전의 레코드를 그대로 준다.
+    /// 프로덕션 코드는 `loadEvents()`를 쓴다.
+    public func rawEventRecords() throws -> [IssueEventRecord] {
+        try context.fetch(FetchDescriptor<IssueEventRecord>(
+            sortBy: [SortDescriptor(\.observedAt, order: .forward)]
+        ))
+    }
+
     // MARK: - 동기화 이력
 
     public func beginSyncRun(at start: Date) throws -> PersistentIdentifier {

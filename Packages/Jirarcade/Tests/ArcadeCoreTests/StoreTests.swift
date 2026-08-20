@@ -152,3 +152,28 @@ private func makeStore() throws -> ArcadeStore {
     #expect(try store.observationDayCount(now: iso("2026-08-12T09:00:00Z"),
                                           calendar: utc) == 0)
 }
+
+/// 기존 이벤트는 전부 관측(diff)에서 왔다. 마이그레이션이 이 값을 채우지 않으면
+/// 관측 일수 계산이 백필 이벤트와 구분되지 않는다(스펙 §3.1).
+@MainActor
+@Test func existingEventsDefaultToObservedOrigin() throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let when = iso("2026-08-13T09:00:00Z")
+    try store.applySync(
+        issues: [], events: [
+            DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                        fromStatus: "To Do", toStatus: "In Progress",
+                        observedAt: when, actorAccountId: "acc-me")
+        ], observedAt: when
+    )
+    let records = try store.rawEventRecords()
+    #expect(records.count == 1)
+    #expect(records[0].origin == EventOrigin.observed)
+    #expect(records[0].sourceHistoryId == nil)
+}
+
+@Test func originConstantsAreStable() {
+    // rawValue 문자열이 저장되므로 바뀌면 과거 레코드의 의미가 달라진다.
+    #expect(EventOrigin.observed == "observed")
+    #expect(EventOrigin.backfill == "backfill")
+}

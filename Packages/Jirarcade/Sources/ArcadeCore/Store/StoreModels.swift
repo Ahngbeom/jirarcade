@@ -1,6 +1,13 @@
 import Foundation
 import SwiftData
 
+/// 이벤트의 출처. **문자열 값을 바꾸지 마라** — SwiftData에 그대로 저장되므로
+/// 값이 바뀌면 이미 기록된 레코드의 의미가 달라진다.
+public enum EventOrigin {
+    public static let observed = "observed"
+    public static let backfill = "backfill"
+}
+
 @Model
 public final class IssueSnapshot {
     @Attribute(.unique) public var key: String
@@ -49,11 +56,21 @@ public final class IssueEventRecord {
     /// `DomainEvent.dueDateAtObservation` — 관측 시점의 마감일.
     /// 마감 전 완료 보너스가 미러가 아니라 이 값을 본다.
     public var dueDateAtObservation: Date?
+    /// Jira changelog history의 고유 id. 백필로 만든 이벤트만 값이 있다.
+    /// 같은 전이를 두 번 기록하지 않기 위한 유일한 근거다 — 시각·상태명 비교로
+    /// 추측하지 않는다(같은 초에 두 전이가 일어날 수 있고, 왕복 전이는 값이 같다).
+    public var sourceHistoryId: String?
+    /// `EventOrigin.observed` 또는 `EventOrigin.backfill`.
+    /// 관측 일수는 observed만 세야 한다 — 백필이 3년 전 이벤트를 넣었다고
+    /// 관측을 3년 했다고 말하면 거짓이다(스펙 §3.1).
+    public var origin: String
 
     public init(
         issueKey: String, kindRaw: String, fromStatus: String?, toStatus: String?,
         observedAt: Date, actorAccountId: String?, priorUpdatedAt: Date?,
-        dueDateAtObservation: Date?
+        dueDateAtObservation: Date?,
+        sourceHistoryId: String? = nil,
+        origin: String = EventOrigin.observed
     ) {
         self.issueKey = issueKey
         self.kindRaw = kindRaw
@@ -63,6 +80,8 @@ public final class IssueEventRecord {
         self.actorAccountId = actorAccountId
         self.priorUpdatedAt = priorUpdatedAt
         self.dueDateAtObservation = dueDateAtObservation
+        self.sourceHistoryId = sourceHistoryId
+        self.origin = origin
     }
 }
 
