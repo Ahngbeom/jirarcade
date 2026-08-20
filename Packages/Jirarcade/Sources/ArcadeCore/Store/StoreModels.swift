@@ -63,7 +63,11 @@ public final class IssueEventRecord {
     /// `EventOrigin.observed` 또는 `EventOrigin.backfill`.
     /// 관측 일수는 observed만 세야 한다 — 백필이 3년 전 이벤트를 넣었다고
     /// 관측을 3년 했다고 말하면 거짓이다(스펙 §3.1).
-    public var origin: String
+    ///
+    /// **기본값은 프로퍼티 선언에 붙어야 한다.** SwiftData가 기존 로우를 복원할 때
+    /// 커스텀 `init`을 호출하지 않으므로, `init` 파라미터 기본값만으로는 이 컬럼이
+    /// 없던 레코드를 열 수 없다.
+    public var origin: String = EventOrigin.observed
 
     public init(
         issueKey: String, kindRaw: String, fromStatus: String?, toStatus: String?,

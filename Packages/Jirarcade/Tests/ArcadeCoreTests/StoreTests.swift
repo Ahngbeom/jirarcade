@@ -177,3 +177,46 @@ private func makeStore() throws -> ArcadeStore {
     #expect(EventOrigin.observed == "observed")
     #expect(EventOrigin.backfill == "backfill")
 }
+
+/// 진짜 마이그레이션 위험은 "이미 저장된 로우를 열 수 있는가"다. 인메모리 컨테이너는
+/// 매번 새 스토어를 만들어 그 경로를 아예 지나지 않으므로, 파일 기반으로 확인한다.
+///
+/// 같은 파일을 컨테이너 두 개가 차례로 여는 것으로 "저장했다 다시 연다"를 재현한다.
+/// 이 스키마 이전 버전으로 쓴 파일을 만들 수는 없지만, 최소한 파일 기반 왕복에서
+/// origin이 유실되지 않는지는 확인할 수 있다.
+@MainActor
+@Test func eventsSurviveAFileBasedRoundTrip() throws {
+    let directory = FileManager.default.temporaryDirectory
+        .appendingPathComponent("jirarcade-migration-\(UUID().uuidString)")
+    try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+    defer { try? FileManager.default.removeItem(at: directory) }
+    let url = directory.appendingPathComponent("store.sqlite")
+
+    let when = iso("2026-08-20T09:00:00Z")
+    do {
+        let container = try ModelContainer(
+            for: IssueSnapshot.self, IssueEventRecord.self, SyncRunRecord.self,
+            configurations: ModelConfiguration(url: url)
+        )
+        let store = ArcadeStore(container: container)
+        try store.applySync(
+            issues: [], events: [
+                DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
+                            fromStatus: "To Do", toStatus: "In Progress",
+                            observedAt: when, actorAccountId: "acc-me")
+            ], observedAt: when
+        )
+    }
+
+    // 같은 파일을 새 컨테이너로 다시 연다.
+    let reopened = try ModelContainer(
+        for: IssueSnapshot.self, IssueEventRecord.self, SyncRunRecord.self,
+        configurations: ModelConfiguration(url: url)
+    )
+    let store = ArcadeStore(container: reopened)
+    let records = try store.rawEventRecords()
+
+    #expect(records.count == 1, "저장한 이벤트가 다시 열려야 한다")
+    #expect(records[0].origin == EventOrigin.observed)
+    #expect(records[0].sourceHistoryId == nil)
+}
