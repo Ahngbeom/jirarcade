@@ -142,3 +142,63 @@ func bookkeepingEventsPayNothing(kind: EventKind) {
                             now: now)
     #expect(xp == 0)
 }
+
+/// 남이 옮긴 전이는 이벤트로 기록되지만 내 XP를 올리지 않는다(스펙 §4.2).
+/// 기록까지 막지 않는 이유는 statusEnteredAt 때문이다 — 누가 옮겼든 정체 기준선은
+/// 갱신돼야 하고, 그러지 않으면 정체일이 부풀어 보스전 XP가 과대 지급된다.
+@Test func transitionsByOthersScoreZero() {
+    let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
+    let event = DomainEvent(
+        issueKey: "DEMO-1", kind: .statusChanged,
+        fromStatus: "To Do", toStatus: "In Progress",
+        observedAt: now, actorAccountId: "acc-someone-else",
+        priorUpdatedAt: now.addingTimeInterval(-days(21))
+    )
+    let xp = awarder.baseXP(for: event, issue: nil as ObservedIssue?, statusEnteredAt: nil as Date?,
+                            now: now)
+    #expect(xp == 0)
+}
+
+@Test func transitionsByMeStillScore() {
+    let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
+    let event = DomainEvent(
+        issueKey: "DEMO-1", kind: .statusChanged,
+        fromStatus: "To Do", toStatus: "In Progress",
+        observedAt: now, actorAccountId: "acc-me",
+        priorUpdatedAt: now.addingTimeInterval(-days(21))
+    )
+    let xp = awarder.baseXP(for: event, issue: nil as ObservedIssue?, statusEnteredAt: nil as Date?,
+                            now: now)
+    #expect(xp > 0)
+}
+
+/// myAccountId를 모르는 상황(로그인 전 재집계 등)에서는 필터를 적용하지 않는다.
+/// 모른다는 이유로 전부 0점을 주면 과거 점수가 통째로 사라진다.
+@Test func unknownIdentitySkipsTheActorFilter() {
+    let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: nil, calendar: utc)
+    let event = DomainEvent(
+        issueKey: "DEMO-1", kind: .statusChanged,
+        fromStatus: "To Do", toStatus: "In Progress",
+        observedAt: now, actorAccountId: "acc-anyone",
+        priorUpdatedAt: now.addingTimeInterval(-days(21))
+    )
+    let xp = awarder.baseXP(for: event, issue: nil as ObservedIssue?, statusEnteredAt: nil as Date?,
+                            now: now)
+    #expect(xp > 0)
+}
+
+/// 플래그를 끄면 담당 티켓의 모든 전이가 다시 XP 대상이 된다.
+@Test func disablingTheFlagRestoresScoringForOthers() {
+    var rules = RuleSet.default
+    rules.awardsOnlyOwnTransitions = false
+    let awarder = XpAwarder(rules: rules, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
+    let event = DomainEvent(
+        issueKey: "DEMO-1", kind: .statusChanged,
+        fromStatus: "To Do", toStatus: "In Progress",
+        observedAt: now, actorAccountId: "acc-other",
+        priorUpdatedAt: now.addingTimeInterval(-days(21))
+    )
+    let xp = awarder.baseXP(for: event, issue: nil as ObservedIssue?, statusEnteredAt: nil as Date?,
+                            now: now)
+    #expect(xp > 0)
+}
