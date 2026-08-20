@@ -458,7 +458,11 @@ public enum EventOrigin {
     /// `EventOrigin.observed` 또는 `EventOrigin.backfill`.
     /// 관측 일수는 observed만 세야 한다 — 백필이 3년 전 이벤트를 넣었다고
     /// 관측을 3년 했다고 말하면 거짓이다(스펙 §3.1).
-    public var origin: String
+    ///
+    /// **기본값은 프로퍼티 선언에 붙어야 한다.** SwiftData가 기존 로우를 복원할 때
+    /// 커스텀 `init`을 호출하지 않으므로, `init` 파라미터 기본값만으로는 이 컬럼이
+    /// 없던 레코드를 열 수 없다.
+    public var origin: String = EventOrigin.observed
 ```
 
 이니셜라이저에 두 파라미터를 더한다. **기본값을 주어 기존 호출부가 깨지지 않게 한다**:
@@ -480,7 +484,9 @@ public enum EventOrigin {
         self.origin = origin
 ```
 
-> SwiftData는 **옵셔널이거나 기본값이 있는** 프로퍼티 추가를 lightweight migration으로 처리한다. `origin`은 옵셔널이 아니지만 기본값이 있으므로 기존 레코드도 안전하게 열린다. 별도 `VersionedSchema`는 필요하지 않다.
+> SwiftData는 **옵셔널이거나 프로퍼티 선언에 기본값이 붙은** 프로퍼티 추가를 lightweight migration으로 처리한다. `sourceHistoryId`는 옵셔널이라 자동 충족이고, `origin`은 위처럼 **선언 자체에** `= EventOrigin.observed`를 붙여야 한다.
+>
+> **이니셜라이저 파라미터의 기본값으로는 부족하다.** SwiftData가 디스크의 기존 로우를 복원할 때는 커스텀 `init`을 호출하지 않고 자체 디코딩 경로를 쓰므로, `init`에만 있는 기본값은 참조되지 않는다. `@Model` 매크로는 프로퍼티 선언에 직접 붙은 리터럴만 스키마 기본값으로 읽는다.
 
 - [ ] **Step 4: `ArcadeStore`에 검사용 접근자 추가**
 

@@ -88,7 +88,17 @@ var origin: String
 
 **`origin`이 필요한 이유:** `ArcadeStore.observationDayCount(now:)`는 첫 성공 동기화 이후 일수를 센다. 백필 이벤트가 섞이면 이 값이 3년 8개월로 뛰고, 그러면 정체 판정이 "근사 기준"에서 "정확 기준"으로 잘못 승격되며 UI의 "관측 N일차"도 거짓이 된다. **관측 일수는 `origin == "observed"`만 센다.**
 
-**마이그레이션:** SwiftData `VersionedSchema`로 두 필드를 추가하고 기존 레코드를 `origin = "observed"`, `sourceHistoryId = nil`로 채운다. 이벤트 로그는 절대 지우지 않는다(v0.1 스펙 §8.6).
+**마이그레이션:** 두 필드 모두 lightweight migration으로 처리한다. `sourceHistoryId`는 옵셔널이라 조건을 자동 충족하고, `origin`은 **프로퍼티 선언 자체에** 기본값을 붙여야 한다:
+
+```swift
+public var origin: String = EventOrigin.observed
+```
+
+이니셜라이저 파라미터의 기본값(`init(… origin: String = EventOrigin.observed)`)으로는 **부족하다.** SwiftData가 디스크의 기존 로우를 모델로 복원할 때는 커스텀 `init`을 호출하지 않고 자체 디코딩 경로를 쓰므로, `init`에만 있는 기본값은 참조되지 않는다. `@Model` 매크로가 스키마를 만들 때 읽는 것은 프로퍼티 선언에 직접 붙은 리터럴이다.
+
+두 종류의 기본값을 혼동하기 쉽고, **인메모리 컨테이너 테스트는 이 차이를 드러내지 못한다** — 매번 새 스토어를 만들므로 "기존 로우를 여는" 경로를 지나지 않는다. 실제 검증은 이전 스키마로 만든 파일 기반 컨테이너를 열어야 한다.
+
+이벤트 로그는 절대 지우지 않는다(v0.1 스펙 §8.6).
 
 ---
 
