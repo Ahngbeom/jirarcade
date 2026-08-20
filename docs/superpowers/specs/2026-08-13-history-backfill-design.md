@@ -262,7 +262,9 @@ item.from / item.to       → 상태 ID (폴백 조회에 사용)
 | 페이지네이션 | `total > histories.count`를 감지해 추가 조회한다 |
 | 마이그레이션 | 기존 이벤트가 `origin = "observed"`로 채워지고 하나도 사라지지 않는다 |
 
-**fixture 정책:** 실제 changelog 구조(중첩된 `histories[].items[]`, author, from/to/fromString/toString)를 그대로 쓰고 상태명도 실제 값(`STAG병합`·`검수완료`)을 유지한다 — 폴백 테스트의 핵심 입력이기 때문이다. 사람 이름·accountId·티켓 요약·조직 호스트는 예시 값으로 바꾼다. 계획 2a에서 만든 조직 데이터 검사가 이를 강제한다.
+**fixture 정책:** 실제 changelog **구조**(중첩된 `histories[].items[]`, author, from/to/fromString/toString)를 그대로 쓴다. 다만 **상태명은 실제 값을 쓰지 않는다** — 계획 2a에서 저장소의 조직 상태명을 모두 제거하고 테스트용 `demoWorkflow`(`To Do`/`In Progress`/`In Review`/`Verifying`/`Done`)로 대체했으며, 그 관례를 따른다.
+
+폴백 테스트가 필요로 하는 것은 "현재 매핑에 없는 과거 상태"라는 **성질**이지 특정 문자열이 아니다. 가상의 과거 상태명(`Merged to Staging`, `QA Passed`)이 그 역할을 똑같이 수행하며, 조직 정보를 저장소에 남기지 않는다. 사람 이름·accountId·티켓 요약·조직 호스트도 예시 값으로 바꾼다.
 
 ---
 

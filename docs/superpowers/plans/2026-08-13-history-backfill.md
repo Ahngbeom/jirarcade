@@ -23,7 +23,7 @@
 - **채점은 (이벤트 로그, RuleSet)만의 함수다.** 미러(`ObservedIssue`)에 의존하면 안 된다. 백필 이벤트도 `priorUpdatedAt`·`dueDateAtObservation`을 채워야 한다.
 - 테스트는 Swift Testing(`@Test`/`#expect`). XCTest 금지.
 - 뷰 코드에 색 리터럴 금지. 전부 `theme.*` 토큰으로 접근한다.
-- **조직 데이터를 코드나 테스트에 남기지 않는다.** 실제 Jira 호스트·cloudId·사람 이름·accountId 금지. 상태명(`STAG병합`·`검수완료`)은 폴백 테스트의 핵심 입력이므로 유지한다.
+- **조직 데이터를 코드나 테스트에 남기지 않는다.** 실제 Jira 호스트·cloudId·사람 이름·accountId 금지. 상태명(`Merged to Staging`·`검수Done`)은 폴백 테스트의 핵심 입력이므로 유지한다.
 - 각 태스크는 테스트 통과 후 커밋으로 끝난다. `git add .` / `git add -A` 금지 — 만진 파일만 명시적으로 add.
 
 ## File Structure
@@ -127,7 +127,7 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
 
 **Interfaces:**
 - Consumes: `RuleSet.awardsOnlyOwnTransitions` (Task 1)
-- Produces: `XpAwarder.init(rules:workflow:myAccountId:)` — 기존 `init(rules:workflow:)`에 `myAccountId: String?` 추가. `baseXP(for:issue:statusEnteredAt:now:)` 시그니처는 그대로.
+- Produces: `XpAwarder.init(rules:workflow:myAccountId:calendar:)` — 기존 `init(rules:workflow:calendar:)`에 `myAccountId: String?`를 **`calendar` 앞에** 기본값 `nil`로 추가. `baseXP(for:issue:statusEnteredAt:now:)` 시그니처는 그대로.
 
 - [ ] **Step 1: 실패하는 테스트를 `XpAwarderTests.swift` 끝에 추가**
 
@@ -136,10 +136,10 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
 /// 기록까지 막지 않는 이유는 statusEnteredAt 때문이다 — 누가 옮겼든 정체 기준선은
 /// 갱신돼야 하고, 그러지 않으면 정체일이 부풀어 보스전 XP가 과대 지급된다.
 @Test func transitionsByOthersScoreZero() {
-    let awarder = XpAwarder(rules: .default, workflow: .mpt, myAccountId: "acc-me")
+    let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
     let event = DomainEvent(
         issueKey: "MPT-1", kind: .statusChanged,
-        fromStatus: "해야 할 일", toStatus: "진행 중",
+        fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-12T00:00:00Z"), actorAccountId: "acc-someone-else",
         priorUpdatedAt: iso("2026-07-22T00:00:00Z")
     )
@@ -148,10 +148,10 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
 }
 
 @Test func transitionsByMeStillScore() {
-    let awarder = XpAwarder(rules: .default, workflow: .mpt, myAccountId: "acc-me")
+    let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
     let event = DomainEvent(
         issueKey: "MPT-1", kind: .statusChanged,
-        fromStatus: "해야 할 일", toStatus: "진행 중",
+        fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-12T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-07-22T00:00:00Z")
     )
@@ -162,10 +162,10 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
 /// myAccountId를 모르는 상황(로그인 전 재집계 등)에서는 필터를 적용하지 않는다.
 /// 모른다는 이유로 전부 0점을 주면 과거 점수가 통째로 사라진다.
 @Test func unknownIdentitySkipsTheActorFilter() {
-    let awarder = XpAwarder(rules: .default, workflow: .mpt, myAccountId: nil)
+    let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: nil, calendar: utc)
     let event = DomainEvent(
         issueKey: "MPT-1", kind: .statusChanged,
-        fromStatus: "해야 할 일", toStatus: "진행 중",
+        fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-12T00:00:00Z"), actorAccountId: "acc-anyone",
         priorUpdatedAt: iso("2026-07-22T00:00:00Z")
     )
@@ -177,10 +177,10 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
 @Test func disablingTheFlagRestoresScoringForOthers() {
     var rules = RuleSet.default
     rules.awardsOnlyOwnTransitions = false
-    let awarder = XpAwarder(rules: rules, workflow: .mpt, myAccountId: "acc-me")
+    let awarder = XpAwarder(rules: rules, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
     let event = DomainEvent(
         issueKey: "MPT-1", kind: .statusChanged,
-        fromStatus: "해야 할 일", toStatus: "진행 중",
+        fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-12T00:00:00Z"), actorAccountId: "acc-other",
         priorUpdatedAt: iso("2026-07-22T00:00:00Z")
     )
@@ -246,7 +246,7 @@ git commit -m "feat: XpAwarder에 실행자 필터 추가 (남이 옮긴 전이�
 - Test: `Packages/Jirarcade/Tests/ArcadeCoreTests/ScoreEngineTests.swift`
 
 **Interfaces:**
-- Consumes: `XpAwarder.init(rules:workflow:myAccountId:)` (Task 2), `RuleSet.seasonDays` (Task 1)
+- Consumes: `XpAwarder.init(rules:workflow:myAccountId:calendar:)` (Task 2), `RuleSet.seasonDays` (Task 1)
 - Produces: `ScoreEngine.init(rules:workflow:calendar:myAccountId:)`, `recompute(events:issues:now:since:)` — `since: Date?` 기본값 `nil`
 
 - [ ] **Step 1: 실패하는 테스트를 `ScoreEngineTests.swift` 끝에 추가**
@@ -256,7 +256,7 @@ git commit -m "feat: XpAwarder에 실행자 필터 추가 (남이 옮긴 전이�
 /// 필터 한 줄로 끝난다 — XP를 누적 저장했다면 "최근 30일 XP"를 따로 관리해야 했다(스펙 §6).
 @MainActor
 @Test func seasonScoreCountsOnlyRecentEvents() {
-    let engine = ScoreEngine(rules: .default, workflow: .mpt, calendar: utcCalendar,
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utcCalendar,
                              myAccountId: "acc-me")
     let now = iso("2026-08-13T00:00:00Z")
     let events = [
@@ -276,7 +276,7 @@ git commit -m "feat: XpAwarder에 실행자 필터 추가 (남이 옮긴 전이�
 /// 경계에 정확히 걸린 이벤트는 시즌에 포함된다(>= since).
 @MainActor
 @Test func eventExactlyAtSeasonStartIsIncluded() {
-    let engine = ScoreEngine(rules: .default, workflow: .mpt, calendar: utcCalendar,
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utcCalendar,
                              myAccountId: "acc-me")
     let boundary = iso("2026-07-14T00:00:00Z")
     let result = engine.recompute(
@@ -289,7 +289,7 @@ git commit -m "feat: XpAwarder에 실행자 필터 추가 (남이 옮긴 전이�
 /// since를 주지 않으면 기존 동작과 완전히 같다 — 기존 호출부가 영향을 받지 않는다.
 @MainActor
 @Test func omittingSinceMatchesLifetime() {
-    let engine = ScoreEngine(rules: .default, workflow: .mpt, calendar: utcCalendar,
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utcCalendar,
                              myAccountId: "acc-me")
     let now = iso("2026-08-13T00:00:00Z")
     let events = [makeTransition(key: "MPT-1", at: iso("2026-01-01T00:00:00Z"))]
@@ -311,7 +311,7 @@ private var utcCalendar: Calendar {
 private func makeTransition(key: String, at when: Date) -> DomainEvent {
     DomainEvent(
         issueKey: key, kind: .statusChanged,
-        fromStatus: "해야 할 일", toStatus: "진행 중",
+        fromStatus: "To Do", toStatus: "In Progress",
         observedAt: when, actorAccountId: "acc-me",
         priorUpdatedAt: when.addingTimeInterval(-days(21))
     )
@@ -333,7 +333,8 @@ Expected: FAIL — `extra argument 'myAccountId' in call`
         self.rules = rules
         self.workflow = workflow
         self.calendar = calendar
-        self.awarder = XpAwarder(rules: rules, workflow: workflow, myAccountId: myAccountId)
+        self.awarder = XpAwarder(rules: rules, workflow: workflow, myAccountId: myAccountId,
+                                 calendar: calendar)
         self.abuseGuard = AbuseGuard(rules: rules, calendar: calendar)
         self.curve = LevelCurve(rules: rules)
         self.streaks = StreakCalculator(rules: rules, calendar: calendar)
@@ -411,7 +412,7 @@ git commit -m "feat: ScoreEngine에 시즌 범위(since)와 실행자 식별 추
     try store.applySync(
         issues: [], events: [
             DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
-                        fromStatus: "해야 할 일", toStatus: "진행 중",
+                        fromStatus: "To Do", toStatus: "In Progress",
                         observedAt: when, actorAccountId: "acc-me")
         ], observedAt: when
     )
@@ -530,7 +531,7 @@ git commit -m "feat: 이벤트 레코드에 sourceHistoryId와 origin 추가"
 @Test func backfillEventsAreDeduplicatedByHistoryId() throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let event = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged, fromStatus: "해야 할 일", toStatus: "진행 중",
+        issueKey: "MPT-1", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2023-03-02T12:13:52Z"), actorAccountId: "acc-me"
     )
 
@@ -548,10 +549,10 @@ git commit -m "feat: 이벤트 레코드에 sourceHistoryId와 origin 추가"
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let when = iso("2023-03-02T12:13:52Z")
     let a = DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
-                        fromStatus: "해야 할 일", toStatus: "진행 중",
+                        fromStatus: "To Do", toStatus: "In Progress",
                         observedAt: when, actorAccountId: "acc-me")
     let b = DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
-                        fromStatus: "진행 중", toStatus: "해야 할 일",
+                        fromStatus: "In Progress", toStatus: "To Do",
                         observedAt: when, actorAccountId: "acc-me")
 
     _ = try store.appendBackfillEvents([a, b], historyIds: ["1", "2"])
@@ -570,7 +571,7 @@ git commit -m "feat: 이벤트 레코드에 sourceHistoryId와 origin 추가"
 
     _ = try store.appendBackfillEvents([
         DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
-                    fromStatus: "해야 할 일", toStatus: "진행 중",
+                    fromStatus: "To Do", toStatus: "In Progress",
                     observedAt: iso("2023-01-01T00:00:00Z"), actorAccountId: "acc-me")
     ], historyIds: ["1"])
 
@@ -682,7 +683,7 @@ private let searchBody = """
           "items": [
             { "field": "status", "fieldId": "status",
               "from": "10009", "fromString": "To Do",
-              "to": "10016", "toString": "진행 중" }
+              "to": "10016", "toString": "In Progress" }
           ]
         },
         {
@@ -693,8 +694,8 @@ private let searchBody = """
             { "field": "description", "from": null, "fromString": "옛 본문",
               "to": null, "toString": "새 본문" },
             { "field": "status", "fieldId": "status",
-              "from": "10016", "fromString": "진행 중",
-              "to": "10071", "toString": "STAG병합" }
+              "from": "10016", "fromString": "In Progress",
+              "to": "10071", "toString": "Merged to Staging" }
           ]
         }
       ]
@@ -732,7 +733,7 @@ private let searchBody = """
     #expect(statusItem.fromId == "10009")
     #expect(statusItem.toId == "10016")
     #expect(statusItem.fromString == "To Do")
-    #expect(statusItem.toString == "진행 중")
+    #expect(statusItem.toString == "In Progress")
 }
 
 @Test func authorAccountIdIsCarried() throws {
@@ -1042,8 +1043,8 @@ private let auth = try! APITokenAuth(site: "example.atlassian.net", email: "u@e.
     let body = """
     [
       { "id": "10009", "name": "To Do", "statusCategory": { "key": "new" } },
-      { "id": "10016", "name": "진행 중", "statusCategory": { "key": "indeterminate" } },
-      { "id": "10011", "name": "완료", "statusCategory": { "key": "done" } }
+      { "id": "10016", "name": "In Progress", "statusCategory": { "key": "indeterminate" } },
+      { "id": "10011", "name": "Done", "statusCategory": { "key": "done" } }
     ]
     """
     let stub = StubHTTPClient(status: 200, body: body)
@@ -1199,56 +1200,56 @@ import JiraKit
 
 private let entries = [
     JiraStatusCatalogEntry(id: "10009", name: "To Do", categoryKey: "new"),
-    JiraStatusCatalogEntry(id: "10016", name: "진행 중", categoryKey: "indeterminate"),
-    JiraStatusCatalogEntry(id: "10071", name: "STAG병합", categoryKey: "indeterminate"),
-    JiraStatusCatalogEntry(id: "10013", name: "검수완료", categoryKey: "indeterminate"),
-    JiraStatusCatalogEntry(id: "10011", name: "완료", categoryKey: "done"),
+    JiraStatusCatalogEntry(id: "10016", name: "In Progress", categoryKey: "indeterminate"),
+    JiraStatusCatalogEntry(id: "10071", name: "Merged to Staging", categoryKey: "indeterminate"),
+    JiraStatusCatalogEntry(id: "10013", name: "검수Done", categoryKey: "indeterminate"),
+    JiraStatusCatalogEntry(id: "10011", name: "Done", categoryKey: "done"),
 ]
 
 /// ① 현재 워크플로 매핑이 최우선이다.
 @Test func mappedStatusWinsOverFallback() {
-    let catalog = StatusCatalog(workflow: .mpt, entries: entries)
-    #expect(catalog.stage(forId: "10016", name: "진행 중") == .mapped(.active))
+    let catalog = StatusCatalog(workflow: demoWorkflow, entries: entries)
+    #expect(catalog.stage(forId: "10016", name: "In Progress") == .mapped(.active))
 }
 
 /// ② 매핑에 없으면 statusCategory로 떨어뜨린다. 0점으로 버리는 것보다 방향이 맞다(스펙 §5).
 @Test func unmappedStatusFallsBackToCategory() {
-    let catalog = StatusCatalog(workflow: .mpt, entries: entries)
-    #expect(catalog.stage(forId: "10071", name: "STAG병합") == .fallback(.active))
+    let catalog = StatusCatalog(workflow: demoWorkflow, entries: entries)
+    #expect(catalog.stage(forId: "10071", name: "Merged to Staging") == .fallback(.active))
     #expect(catalog.stage(forId: "10009", name: "To Do") == .fallback(.backlog))
-    #expect(catalog.stage(forId: "10011", name: "완료") == .mapped(.done))
+    #expect(catalog.stage(forId: "10011", name: "Done") == .mapped(.done))
 }
 
 /// ③ 카탈로그에도 없으면 미매핑이다. 임의 단계로 추측하지 않는다.
 @Test func unknownStatusIsUnmapped() {
-    let catalog = StatusCatalog(workflow: .mpt, entries: entries)
+    let catalog = StatusCatalog(workflow: demoWorkflow, entries: entries)
     #expect(catalog.stage(forId: "99999", name: "사라진상태") == .unmapped("사라진상태"))
 }
 
 /// 이름은 바뀔 수 있지만 ID는 안 바뀐다. ID로 먼저 찾는다.
 @Test func catalogMatchesByIdNotName() {
     let renamed = [JiraStatusCatalogEntry(id: "10071", name: "새이름", categoryKey: "indeterminate")]
-    let catalog = StatusCatalog(workflow: .mpt, entries: renamed)
-    #expect(catalog.stage(forId: "10071", name: "STAG병합") == .fallback(.active))
+    let catalog = StatusCatalog(workflow: demoWorkflow, entries: renamed)
+    #expect(catalog.stage(forId: "10071", name: "Merged to Staging") == .fallback(.active))
 }
 
 /// 폴백으로 처리한 상태를 모아둔다 — 백필이 끝나면 매핑 마법사 후보가 된다(스펙 §5).
 @Test func fallbackAndUnmappedNamesAreCollected() {
-    let catalog = StatusCatalog(workflow: .mpt, entries: entries)
-    _ = catalog.stage(forId: "10071", name: "STAG병합")
+    let catalog = StatusCatalog(workflow: demoWorkflow, entries: entries)
+    _ = catalog.stage(forId: "10071", name: "Merged to Staging")
     _ = catalog.stage(forId: "99999", name: "사라진상태")
-    _ = catalog.stage(forId: "10016", name: "진행 중")   // 매핑됨 — 수집 대상 아님
+    _ = catalog.stage(forId: "10016", name: "In Progress")   // 매핑됨 — 수집 대상 아님
 
-    #expect(catalog.unmappedNames.contains("STAG병합"))
+    #expect(catalog.unmappedNames.contains("Merged to Staging"))
     #expect(catalog.unmappedNames.contains("사라진상태"))
-    #expect(!catalog.unmappedNames.contains("진행 중"))
+    #expect(!catalog.unmappedNames.contains("In Progress"))
 }
 
 /// 카탈로그 조회에 실패해 entries가 비어도 ①③만으로 degraded 동작해야 한다(스펙 §8).
 @Test func emptyCatalogStillUsesTheWorkflowMap() {
-    let catalog = StatusCatalog(workflow: .mpt, entries: [])
-    #expect(catalog.stage(forId: "10016", name: "진행 중") == .mapped(.active))
-    #expect(catalog.stage(forId: "10071", name: "STAG병합") == .unmapped("STAG병합"))
+    let catalog = StatusCatalog(workflow: demoWorkflow, entries: [])
+    #expect(catalog.stage(forId: "10016", name: "In Progress") == .mapped(.active))
+    #expect(catalog.stage(forId: "10071", name: "Merged to Staging") == .unmapped("Merged to Staging"))
 }
 
 @Test(arguments: [("new", Stage.backlog), ("indeterminate", Stage.active), ("done", Stage.done)])
@@ -1408,15 +1409,15 @@ private func issue(
         history(id: "1", at: iso("2023-02-01T00:00:00Z"), author: "acc-me", items: [
             JiraChangelogItem(field: "description", fromId: nil, fromString: "옛",
                               toId: nil, toString: "새"),
-            statusItem(fromId: "1", from: "해야 할 일", toId: "2", to: "진행 중"),
+            statusItem(fromId: "1", from: "To Do", toId: "2", to: "In Progress"),
             JiraChangelogItem(field: "Link", fromId: nil, fromString: nil,
                               toId: nil, toString: "blocks MPT-2"),
         ])
     ]))
     #expect(parsed.count == 1)
     #expect(parsed[0].event.kind == .statusChanged)
-    #expect(parsed[0].event.fromStatus == "해야 할 일")
-    #expect(parsed[0].event.toStatus == "진행 중")
+    #expect(parsed[0].event.fromStatus == "To Do")
+    #expect(parsed[0].event.toStatus == "In Progress")
 }
 
 /// observedAt은 전이 시각이지 백필 실행 시각이 아니다. 틀리면 3년치가 오늘로 몰린다.
@@ -1432,7 +1433,7 @@ private func issue(
 @Test func historyIdAndStatusIdsAreCarried() {
     let parsed = ChangelogParser().parse(issue: issue(histories: [
         history(id: "50347", at: iso("2023-02-28T00:00:00Z"), author: "acc-me",
-                items: [statusItem(fromId: "10009", from: "To Do", toId: "10016", to: "진행 중")])
+                items: [statusItem(fromId: "10009", from: "To Do", toId: "10016", to: "In Progress")])
     ]))
     #expect(parsed[0].historyId == "50347")
     #expect(parsed[0].fromStatusId == "10009")
@@ -1689,7 +1690,7 @@ private func makeStore() throws -> ArcadeStore {
     let id = try store.beginBackfill(jql: "assignee = currentUser()", at: start,
                                      totalIssueCount: 1263)
     try store.advanceBackfill(id, nextPageToken: "tok-3", processedIssueCount: 300,
-                              discovered: ["STAG병합"], partiallyRestored: [])
+                              discovered: ["Merged to Staging"], partiallyRestored: [])
 
     let resumable = try #require(try store.resumableBackfill())
     #expect(resumable.nextPageToken == "tok-3")
@@ -1728,12 +1729,12 @@ private func makeStore() throws -> ArcadeStore {
     let id = try store.beginBackfill(jql: "q", at: start, totalIssueCount: 200)
 
     try store.advanceBackfill(id, nextPageToken: "a", processedIssueCount: 100,
-                              discovered: ["STAG병합"], partiallyRestored: ["MPT-1"])
+                              discovered: ["Merged to Staging"], partiallyRestored: ["MPT-1"])
     try store.advanceBackfill(id, nextPageToken: "b", processedIssueCount: 200,
-                              discovered: ["검수완료", "STAG병합"], partiallyRestored: ["MPT-2"])
+                              discovered: ["검수Done", "Merged to Staging"], partiallyRestored: ["MPT-2"])
 
     let snapshot = try #require(try store.resumableBackfill())
-    #expect(snapshot.discovered.sorted() == ["STAG병합", "검수완료"].sorted())
+    #expect(snapshot.discovered.sorted() == ["Merged to Staging", "검수Done"].sorted())
     #expect(snapshot.partiallyRestored.sorted() == ["MPT-1", "MPT-2"])
 }
 ```
@@ -1895,8 +1896,8 @@ import JiraKit
 
 private let catalogEntries = [
     JiraStatusCatalogEntry(id: "10009", name: "To Do", categoryKey: "new"),
-    JiraStatusCatalogEntry(id: "10016", name: "진행 중", categoryKey: "indeterminate"),
-    JiraStatusCatalogEntry(id: "10071", name: "STAG병합", categoryKey: "indeterminate"),
+    JiraStatusCatalogEntry(id: "10016", name: "In Progress", categoryKey: "indeterminate"),
+    JiraStatusCatalogEntry(id: "10071", name: "Merged to Staging", categoryKey: "indeterminate"),
 ]
 
 /// 스크립트대로 페이지를 돌려주는 테스트용 소스.
@@ -1934,7 +1935,7 @@ private final class ScriptedChangelogSource: ChangelogSource, @unchecked Sendabl
 private func transitionIssue(
     key: String, historyId: String, at: Date, author: String,
     fromId: String = "10009", from: String = "To Do",
-    toId: String = "10016", to: String = "진행 중",
+    toId: String = "10016", to: String = "In Progress",
     total: Int? = nil
 ) -> JiraIssueWithChangelog {
     let histories = [JiraChangelogHistory(
@@ -1958,7 +1959,7 @@ private func transitionIssue(
         ([transitionIssue(key: "MPT-2", historyId: "2",
                           at: iso("2023-03-01T00:00:00Z"), author: "acc-me")], nil),
     ])
-    let engine = BackfillEngine(source: source, store: store, workflow: .mpt)
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
 
     let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
                                        progress: { _, _ in })
@@ -1979,10 +1980,10 @@ private func transitionIssue(
                               at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], nil)
         ])
     }
-    let first = BackfillEngine(source: makeSource(), store: store, workflow: .mpt)
+    let first = BackfillEngine(source: makeSource(), store: store, workflow: demoWorkflow)
     _ = try await first.run(jql: "q", now: iso("2026-08-13T00:00:00Z"), progress: { _, _ in })
 
-    let second = BackfillEngine(source: makeSource(), store: store, workflow: .mpt)
+    let second = BackfillEngine(source: makeSource(), store: store, workflow: demoWorkflow)
     let outcome = try await second.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
                                        progress: { _, _ in })
 
@@ -2005,15 +2006,15 @@ private func transitionIssue(
                                  authorAccountId: "acc-me",
                                  items: [JiraChangelogItem(field: "status", fromId: "10009",
                                                            fromString: "To Do", toId: "10016",
-                                                           toString: "진행 중")]),
+                                                           toString: "In Progress")]),
             JiraChangelogHistory(id: "9", createdAt: iso("2023-02-05T00:00:00Z"),
                                  authorAccountId: "acc-me",
                                  items: [JiraChangelogItem(field: "status", fromId: "10016",
-                                                           fromString: "진행 중", toId: "10071",
-                                                           toString: "STAG병합")]),
+                                                           fromString: "In Progress", toId: "10071",
+                                                           toString: "Merged to Staging")]),
         ]
     )
-    let engine = BackfillEngine(source: source, store: store, workflow: .mpt)
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
 
     let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
                                        progress: { _, _ in })
@@ -2034,7 +2035,7 @@ private func transitionIssue(
         ], nil)
     ])
     source.failSupplementFor = ["MPT-1"]
-    let engine = BackfillEngine(source: source, store: store, workflow: .mpt)
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
 
     let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
                                        progress: { _, _ in })
@@ -2053,7 +2054,7 @@ private func transitionIssue(
                           author: "acc-me")], nil)
     ])
     source.catalogError = StubError()
-    let engine = BackfillEngine(source: source, store: store, workflow: .mpt)
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
 
     let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
                                        progress: { _, _ in })
@@ -2068,15 +2069,15 @@ private func transitionIssue(
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
         ([transitionIssue(key: "MPT-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
-                          author: "acc-me", fromId: "10016", from: "진행 중",
-                          toId: "10071", to: "STAG병합")], nil)
+                          author: "acc-me", fromId: "10016", from: "In Progress",
+                          toId: "10071", to: "Merged to Staging")], nil)
     ])
-    let engine = BackfillEngine(source: source, store: store, workflow: .mpt)
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
 
     let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
                                        progress: { _, _ in })
 
-    #expect(outcome.discoveredStatuses.contains("STAG병합"))
+    #expect(outcome.discoveredStatuses.contains("Merged to Staging"))
 }
 
 /// 진행률 콜백이 페이지마다 불린다.
@@ -2089,7 +2090,7 @@ private func transitionIssue(
         ([transitionIssue(key: "MPT-2", historyId: "2", at: iso("2023-03-01T00:00:00Z"),
                           author: "acc-me")], nil),
     ])
-    let engine = BackfillEngine(source: source, store: store, workflow: .mpt)
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
 
     var reports: [Int] = []
     _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
@@ -2316,12 +2317,12 @@ import JiraKit
     let now = iso("2026-08-14T09:00:00Z")
     // 시즌(30일) 밖 하나, 안 하나. 둘 다 내가 옮긴 전진 전이라 XP가 붙는다.
     let old = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged, fromStatus: "해야 할 일", toStatus: "진행 중",
+        issueKey: "MPT-1", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-01-05T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2025-12-15T00:00:00Z")
     )
     let recent = DomainEvent(
-        issueKey: "MPT-2", kind: .statusChanged, fromStatus: "해야 할 일", toStatus: "진행 중",
+        issueKey: "MPT-2", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-07-20T00:00:00Z")
     )
@@ -2331,7 +2332,7 @@ import JiraKit
         seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
     )
     let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
-        "해야 할 일": .backlog, "진행 중": .active,
+        "To Do": .backlog, "In Progress": .active,
     ]))
     let model = try makeModel(store: store, credentials: creds, workflow: workflow, now: now)
 
@@ -2400,7 +2401,7 @@ Expected: FAIL — `value of type 'AppModel' has no member 'startBackfill'`
 프로퍼티 선언부에:
 
 ```swift
-    /// 백필 진행률. 진행 중일 때만 값이 있다.
+    /// 백필 진행률. In Progress일 때만 값이 있다.
     public struct BackfillProgress: Sendable, Equatable {
         public let processed: Int
         public let total: Int
@@ -2437,7 +2438,7 @@ Expected: FAIL — `value of type 'AppModel' has no member 'startBackfill'`
         await launchBackfill(startingToken: snapshot.nextPageToken, existing: snapshot.id)
     }
 
-    /// 진행 중인 백필을 중단한다. 이미 넣은 이벤트는 그대로 유효하고, 중단 지점의
+    /// In Progress인 백필을 중단한다. 이미 넣은 이벤트는 그대로 유효하고, 중단 지점의
     /// `nextPageToken`이 저장돼 있어 나중에 "이어서 불러오기"로 재개된다.
     public func cancelBackfill() {
         backfillTask?.cancel()
@@ -2664,7 +2665,7 @@ git commit -m "feat: 백필 버튼·진행 바와 시즌/통산 레벨 표시"
     let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
                                         totalIssueCount: 100)
     try store.advanceBackfill(runId, nextPageToken: "tok", processedIssueCount: 40,
-                              discovered: ["STAG병합", "검수완료"], partiallyRestored: [])
+                              discovered: ["Merged to Staging", "검수Done"], partiallyRestored: [])
 
     let creds = InMemoryCredentialStore(
         seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
@@ -2673,7 +2674,7 @@ git commit -m "feat: 백필 버튼·진행 바와 시즌/통산 레벨 표시"
 
     await model.start()
 
-    #expect(Set(model.historyDiscoveredStatuses) == ["STAG병합", "검수완료"])
+    #expect(Set(model.historyDiscoveredStatuses) == ["Merged to Staging", "검수Done"])
     #expect(model.hasResumableBackfill == true, "중단된 백필이 있으면 이어받기를 제안해야 한다")
 }
 ```
@@ -2710,7 +2711,7 @@ Expected: FAIL — `value of type 'AppModel' has no member 'historyDiscoveredSta
 `WorkflowMappingView.swift`에서 후보 목록을 만드는 곳에 병합한다:
 
 ```swift
-    /// 현재 미완료 티켓에서 본 상태 + 백필이 과거 이력에서 발견한 상태.
+    /// 현재 미Done 티켓에서 본 상태 + 백필이 과거 이력에서 발견한 상태.
     /// 후자에는 표시를 달아 "지금은 안 쓰지만 과거에 있던 상태"임을 알린다.
     private var allCandidates: [(name: String, fromHistory: Bool)] {
         let current = Set(candidates)
@@ -2777,13 +2778,13 @@ private func backfilledEvents() -> [DomainEvent] {
             JiraChangelogHistory(id: "1", createdAt: iso("2023-02-01T00:00:00Z"),
                                  authorAccountId: "acc-me",
                                  items: [JiraChangelogItem(field: "status", fromId: "1",
-                                                           fromString: "해야 할 일", toId: "2",
-                                                           toString: "진행 중")]),
+                                                           fromString: "To Do", toId: "2",
+                                                           toString: "In Progress")]),
             JiraChangelogHistory(id: "2", createdAt: iso("2023-02-20T00:00:00Z"),
                                  authorAccountId: "acc-me",
                                  items: [JiraChangelogItem(field: "status", fromId: "2",
-                                                           fromString: "진행 중", toId: "3",
-                                                           toString: "STAG 반영")]),
+                                                           fromString: "In Progress", toId: "3",
+                                                           toString: "In Review")]),
         ])
     )
     return ChangelogParser().parse(issue: issue).map(\.event)
@@ -2792,7 +2793,7 @@ private func backfilledEvents() -> [DomainEvent] {
 /// 계획 1 최종 리뷰에서 확립된 불변식: 채점은 (이벤트 로그, RuleSet)만의 함수다.
 /// 백필 이벤트도 이를 지켜야 한다 — 미러를 비워도 XP가 같아야 한다(스펙 §4.3).
 @Test func backfillScoresDoNotDependOnTheMirror() {
-    let engine = ScoreEngine(rules: .default, workflow: .mpt, calendar: utc,
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc,
                              myAccountId: "acc-me")
     let events = backfilledEvents()
     let now = iso("2026-08-13T00:00:00Z")
@@ -2800,7 +2801,7 @@ private func backfilledEvents() -> [DomainEvent] {
     let withMirror = engine.recompute(
         events: events,
         issues: ["MPT-1": ObservedIssue(
-            key: "MPT-1", summary: "s", statusName: "STAG 반영", issueType: "개선",
+            key: "MPT-1", summary: "s", statusName: "In Review", issueType: "개선",
             priority: nil, assigneeAccountId: "acc-me", assigneeName: nil,
             dueDate: iso("2099-01-01T00:00:00Z"),   // 미러의 마감일을 극단적으로 바꾼다
             jiraUpdatedAt: now                       // 미러의 갱신 시각도 오늘로 덮는다
@@ -2816,7 +2817,7 @@ private func backfilledEvents() -> [DomainEvent] {
 
 /// 백필 이벤트의 재집계도 멱등이다.
 @Test func backfillRecomputeIsIdempotent() {
-    let engine = ScoreEngine(rules: .default, workflow: .mpt, calendar: utc,
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc,
                              myAccountId: "acc-me")
     let now = iso("2026-08-13T00:00:00Z")
     let first = engine.recompute(events: backfilledEvents(), issues: [:], now: now)
@@ -2832,17 +2833,17 @@ private func backfilledEvents() -> [DomainEvent] {
             JiraChangelogHistory(id: "1", createdAt: iso("2023-02-01T00:00:00Z"),
                                  authorAccountId: "acc-other",
                                  items: [JiraChangelogItem(field: "status", fromId: "1",
-                                                           fromString: "해야 할 일", toId: "2",
-                                                           toString: "진행 중")]),
+                                                           fromString: "To Do", toId: "2",
+                                                           toString: "In Progress")]),
             JiraChangelogHistory(id: "2", createdAt: iso("2023-02-08T00:00:00Z"),
                                  authorAccountId: "acc-me",
                                  items: [JiraChangelogItem(field: "status", fromId: "2",
-                                                           fromString: "진행 중", toId: "3",
-                                                           toString: "STAG 반영")]),
+                                                           fromString: "In Progress", toId: "3",
+                                                           toString: "In Review")]),
         ])
     )
     let events = ChangelogParser().parse(issue: issue).map(\.event)
-    let engine = ScoreEngine(rules: .default, workflow: .mpt, calendar: utc,
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc,
                              myAccountId: "acc-me")
     let result = engine.recompute(events: events, issues: [:],
                                   now: iso("2026-08-13T00:00:00Z"))
@@ -2881,7 +2882,7 @@ git commit -m "test: 백필이 채점 불변식과 정체 기준선을 지키는
 
 ---
 
-## 완료 조건
+## Done 조건
 
 ```
 □ swift build 경고 없이 성공
@@ -2906,7 +2907,7 @@ rg -n "flyingdoctor|atlassian\.net" Sources/ Tests/ | grep -v "example.atlassian
 
 ## 실물 검증 (구현 후)
 
-테스트가 통과해도 **실제 1,263건 백필은 돌려봐야 안다.** 계획 완료 후 다음을 확인하고 기록한다:
+테스트가 통과해도 **실제 1,263건 백필은 돌려봐야 안다.** 계획 Done 후 다음을 확인하고 기록한다:
 
 1. 백필 소요 시간과 429 발생 여부
 2. 실제 소급 XP와 시작 레벨 (스펙 §11 리스크 1 — 예상보다 적을 수 있다)
