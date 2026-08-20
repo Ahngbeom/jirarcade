@@ -119,6 +119,41 @@ public final class ArcadeStore {
         ))
     }
 
+    /// 백필 이벤트를 append한다. 이미 같은 `historyId`로 기록된 것은 건너뛰고,
+    /// 새로 넣은 개수를 돌려준다.
+    ///
+    /// `events`와 `historyIds`는 같은 길이여야 하며 인덱스로 짝지어진다.
+    /// 중복 판정을 시각·상태명이 아니라 Jira가 준 id로 하는 이유: 같은 초에 두 전이가
+    /// 일어날 수 있고, 왕복 전이(A→B, B→A)는 되돌아왔을 때 값이 겹친다.
+    public func appendBackfillEvents(
+        _ events: [DomainEvent], historyIds: [String]
+    ) throws -> Int {
+        precondition(events.count == historyIds.count,
+                     "events와 historyIds는 인덱스로 짝지어진다")
+        guard !events.isEmpty else { return 0 }
+
+        let existing = try context.fetch(FetchDescriptor<IssueEventRecord>(
+            predicate: #Predicate { $0.sourceHistoryId != nil }
+        ))
+        var seen = Set(existing.compactMap(\.sourceHistoryId))
+
+        var inserted = 0
+        for (event, historyId) in zip(events, historyIds) {
+            guard seen.insert(historyId).inserted else { continue }
+            context.insert(IssueEventRecord(
+                issueKey: event.issueKey, kindRaw: event.kind.rawValue,
+                fromStatus: event.fromStatus, toStatus: event.toStatus,
+                observedAt: event.observedAt, actorAccountId: event.actorAccountId,
+                priorUpdatedAt: event.priorUpdatedAt,
+                dueDateAtObservation: event.dueDateAtObservation,
+                sourceHistoryId: historyId, origin: EventOrigin.backfill
+            ))
+            inserted += 1
+        }
+        try context.save()
+        return inserted
+    }
+
     // MARK: - 동기화 이력
 
     public func beginSyncRun(at start: Date) throws -> PersistentIdentifier {

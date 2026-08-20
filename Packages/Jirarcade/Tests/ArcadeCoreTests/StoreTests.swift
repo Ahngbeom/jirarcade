@@ -216,7 +216,63 @@ private func makeStore() throws -> ArcadeStore {
     let store = ArcadeStore(container: reopened)
     let records = try store.rawEventRecords()
 
+    let record = try #require(records.first)
     #expect(records.count == 1, "저장한 이벤트가 다시 열려야 한다")
-    #expect(records[0].origin == EventOrigin.observed)
-    #expect(records[0].sourceHistoryId == nil)
+    #expect(record.origin == EventOrigin.observed)
+    #expect(record.sourceHistoryId == nil)
+}
+
+/// 백필을 두 번 돌려도 이벤트가 중복되지 않는다. 재개 지점을 정확히 맞출 필요가 없어지는
+/// 것이 이 검사의 진짜 이득이다 — 겹쳐 훑어도 안전하다(스펙 §7.2).
+@MainActor
+@Test func backfillEventsAreDeduplicatedByHistoryId() throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let event = DomainEvent(
+        issueKey: "MPT-1", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
+        observedAt: iso("2023-03-02T12:13:52Z"), actorAccountId: "acc-me"
+    )
+
+    let first = try store.appendBackfillEvents([event], historyIds: ["50347"])
+    let second = try store.appendBackfillEvents([event], historyIds: ["50347"])
+
+    #expect(first == 1)
+    #expect(second == 0, "같은 historyId는 다시 넣지 않는다")
+    #expect(try store.loadEvents().count == 1)
+}
+
+/// 시각과 상태명이 같아도 historyId가 다르면 별개 전이다 — 왕복 전이가 그렇다.
+@MainActor
+@Test func differentHistoryIdsAreDistinctEvents() throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let when = iso("2023-03-02T12:13:52Z")
+    let a = DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                        fromStatus: "To Do", toStatus: "In Progress",
+                        observedAt: when, actorAccountId: "acc-me")
+    let b = DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                        fromStatus: "In Progress", toStatus: "To Do",
+                        observedAt: when, actorAccountId: "acc-me")
+
+    _ = try store.appendBackfillEvents([a, b], historyIds: ["1", "2"])
+    #expect(try store.loadEvents().count == 2)
+}
+
+/// 백필이 3년 전 이벤트를 넣어도 "관측 N일차"가 3년으로 뛰면 안 된다.
+/// 그러면 정체 판정이 근사에서 정확으로 잘못 승격되고 UI도 거짓말을 한다(스펙 §3.1).
+@MainActor
+@Test func observationDayCountIgnoresBackfillEvents() throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let today = iso("2026-08-13T09:00:00Z")
+
+    let run = try store.beginSyncRun(at: today)
+    try store.finishSyncRun(run, at: today, issueCount: 1, failure: nil)
+
+    _ = try store.appendBackfillEvents([
+        DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                    fromStatus: "To Do", toStatus: "In Progress",
+                    observedAt: iso("2023-01-01T00:00:00Z"), actorAccountId: "acc-me")
+    ], historyIds: ["1"])
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    #expect(try store.observationDayCount(now: today, calendar: utc) == 1)
 }
