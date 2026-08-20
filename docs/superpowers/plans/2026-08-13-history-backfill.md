@@ -2825,6 +2825,38 @@ private func backfilledEvents() -> [DomainEvent] {
     #expect(first.summary == second.summary)
 }
 
+/// 시즌은 **범위만** 자르고 채점 규칙은 바꾸지 않는다. 같은 이벤트는 통산과 시즌에서
+/// 같은 XP를 받아야 한다 — 사용자가 두 숫자를 나란히 보므로 어긋나면 즉시 드러난다.
+///
+/// 이 불변식은 `statusEnteredAt` 재구성이 두 호출에서 공유되기 때문에 성립한다. 시즌 필터를
+/// 정렬 직후에 적용하도록 바꾸면 시즌 안 첫 전이의 정체일이 0으로 리셋되어 조용히 깨진다.
+@Test func sameEventScoresIdenticallyInSeasonAndLifetime() {
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc,
+                             myAccountId: "acc-me")
+    let now = iso("2026-08-20T00:00:00Z")
+    let events = [
+        DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
+                    fromStatus: "To Do", toStatus: "In Progress",
+                    observedAt: iso("2026-02-01T00:00:00Z"), actorAccountId: "acc-me",
+                    priorUpdatedAt: iso("2026-01-11T00:00:00Z")),
+        DomainEvent(issueKey: "DEMO-2", kind: .statusChanged,
+                    fromStatus: "To Do", toStatus: "In Progress",
+                    observedAt: iso("2026-08-15T00:00:00Z"), actorAccountId: "acc-me",
+                    priorUpdatedAt: iso("2026-07-25T00:00:00Z")),
+    ]
+
+    let lifetime = engine.recompute(events: events, issues: [:], now: now)
+    let season = engine.recompute(events: events, issues: [:], now: now,
+                                  since: iso("2026-07-21T00:00:00Z"))
+
+    let inLifetime = lifetime.scored.first { $0.event.issueKey == "DEMO-2" }?.xp
+    let inSeason = season.scored.first { $0.event.issueKey == "DEMO-2" }?.xp
+    #expect(inLifetime != nil)
+    #expect(inLifetime == inSeason,
+            "시즌은 범위를 자를 뿐이다 — 같은 이벤트의 XP가 달라지면 statusEnteredAt이 공유되지 않은 것이다")
+    #expect((inSeason ?? 0) > 0, "0끼리 비교하면 아무것도 검증하지 못한다")
+}
+
 /// 남이 옮긴 전이가 섞여도 statusEnteredAt은 갱신된다 — 정체일이 부풀지 않는다(스펙 §4.2).
 @Test func othersTransitionsStillAdvanceTheStagnationBaseline() {
     let issue = JiraIssueWithChangelog(
