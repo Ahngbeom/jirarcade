@@ -781,6 +781,58 @@ private let searchBody = """
     #expect(issues[0].changelog.histories[0].authorAccountId == nil)
 }
 
+/// 분수초가 **없는** 타임스탬프도 받아야 한다. 폴백 포매터가 실제로 실행되는 유일한
+/// 테스트다 — 다른 fixture는 전부 분수초를 포함해서, 이 케이스가 없으면 폴백 분기가
+/// 한 번도 실행되지 않은 채 "두 형식을 지원한다"고 믿게 된다.
+@Test func decodesTimestampsWithoutFractionalSeconds() throws {
+    let body = """
+    { "issues": [{
+        "key": "DEMO-1",
+        "fields": { "created": "2023-01-01T00:00:00+0900" },
+        "changelog": { "startAt": 0, "maxResults": 10, "total": 1, "histories": [
+          { "id": "1", "created": "2023-02-01T09:00:00+0900",
+            "items": [{ "field": "status", "from": "1", "fromString": "To Do",
+                        "to": "2", "toString": "In Progress" }] }
+        ] }
+    }] }
+    """
+    let (issues, _) = try JiraChangelogResponse.decodeSearch(Data(body.utf8))
+    // KST 09:00 = UTC 00:00. 절대 시각까지 확인해야 "파싱은 됐지만 값이 틀린" 경우를 잡는다.
+    #expect(issues[0].changelog.histories[0].createdAt
+            == ISO8601DateFormatter().date(from: "2023-02-01T00:00:00Z"))
+}
+
+/// 어느 형식으로도 읽을 수 없으면 **던진다.** 대체값을 넣으면 그 값이 그대로
+/// `DomainEvent.observedAt`이 되어 정렬·정체일·statusEnteredAt 재구성을 오염시키는데,
+/// 에러가 없으니 아무도 모른다. 티켓 하나가 실패하는 편이 3년치 로그가 틀리는 것보다 낫다.
+@Test func unparsableTimestampThrowsRatherThanSubstituting() {
+    let body = """
+    { "issues": [{
+        "key": "DEMO-1",
+        "fields": { "created": "not-a-timestamp" },
+        "changelog": { "startAt": 0, "maxResults": 10, "total": 0, "histories": [] }
+    }] }
+    """
+    #expect(throws: (any Error).self) {
+        _ = try JiraChangelogResponse.decodeSearch(Data(body.utf8))
+    }
+}
+
+@Test func unparsableHistoryTimestampThrows() {
+    let body = """
+    { "issues": [{
+        "key": "DEMO-1",
+        "fields": { "created": "2023-01-01T00:00:00.000+0900" },
+        "changelog": { "startAt": 0, "maxResults": 10, "total": 1, "histories": [
+          { "id": "1", "created": "garbage", "items": [] }
+        ] }
+    }] }
+    """
+    #expect(throws: (any Error).self) {
+        _ = try JiraChangelogResponse.decodeSearch(Data(body.utf8))
+    }
+}
+
 @Test func decodesStandaloneIssueChangelog() throws {
     let body = """
     { "startAt": 0, "maxResults": 100, "total": 1, "values": [
@@ -847,14 +899,14 @@ public enum JiraChangelogResponse {
         _ data: Data
     ) throws -> (issues: [JiraIssueWithChangelog], nextPageToken: String?) {
         let envelope = try JSONDecoder().decode(SearchEnvelope.self, from: data)
-        return (envelope.issues.map(\.model), envelope.nextPageToken)
+        return (try envelope.issues.map { try $0.model() }, envelope.nextPageToken)
     }
 
     public static func decodeIssueChangelog(_ data: Data) throws -> JiraChangelogPage {
         let raw = try JSONDecoder().decode(StandaloneEnvelope.self, from: data)
         return JiraChangelogPage(
             startAt: raw.startAt, maxResults: raw.maxResults, total: raw.total,
-            histories: raw.values.map(\.model)
+            histories: try raw.values.map { try $0.model() }
         )
     }
 
@@ -882,12 +934,20 @@ public enum JiraChangelogResponse {
             let duedate: String?
         }
 
-        var model: JiraIssueWithChangelog {
-            JiraIssueWithChangelog(
+        /// 시각을 파싱하지 못하면 **던진다.** `.distantPast` 같은 값으로 대체하면
+        /// 그 값이 그대로 `DomainEvent.observedAt`이 되어 정렬에서 맨 앞으로 오고,
+        /// 정체일을 천문학적으로 부풀리며, 그 티켓의 statusEnteredAt 재구성 전체를
+        /// 오염시킨다 — 에러 하나 없이. 티켓 하나가 실패하는 편이 3년치 로그가
+        /// 조용히 틀리는 것보다 낫다. 상위(BackfillEngine)가 그 티켓만 건너뛴다.
+        func model() throws -> JiraIssueWithChangelog {
+            guard let createdAt = JiraChangelogResponse.timestamp(fields.created) else {
+                throw JiraError.decoding(context: "issue \(key): created=\(fields.created)")
+            }
+            return JiraIssueWithChangelog(
                 key: key,
-                createdAt: JiraChangelogResponse.timestamp(fields.created) ?? .distantPast,
+                createdAt: createdAt,
                 dueDate: fields.duedate.flatMap(JiraChangelogResponse.dateOnly),
-                changelog: changelog.model
+                changelog: try changelog.model()
             )
         }
     }
@@ -898,9 +958,9 @@ public enum JiraChangelogResponse {
         let total: Int
         let histories: [RawHistory]
 
-        var model: JiraChangelogPage {
+        func model() throws -> JiraChangelogPage {
             JiraChangelogPage(startAt: startAt, maxResults: maxResults, total: total,
-                              histories: histories.map(\.model))
+                              histories: try histories.map { try $0.model() })
         }
     }
 
@@ -912,10 +972,13 @@ public enum JiraChangelogResponse {
 
         struct Author: Decodable { let accountId: String? }
 
-        var model: JiraChangelogHistory {
-            JiraChangelogHistory(
+        func model() throws -> JiraChangelogHistory {
+            guard let createdAt = JiraChangelogResponse.timestamp(created) else {
+                throw JiraError.decoding(context: "history \(id): created=\(created)")
+            }
+            return JiraChangelogHistory(
                 id: id,
-                createdAt: JiraChangelogResponse.timestamp(created) ?? .distantPast,
+                createdAt: createdAt,
                 authorAccountId: author?.accountId,
                 items: items.map(\.model)
             )
