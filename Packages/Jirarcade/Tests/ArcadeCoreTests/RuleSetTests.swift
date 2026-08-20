@@ -28,3 +28,26 @@ import Foundation
 @Test func defaultSeasonIsThirtyDays() {
     #expect(RuleSet.default.seasonDays == 30)
 }
+
+/// 설정 JSON은 사용자가 편집하고 디스크에 남는다. 나중에 규칙을 추가하면 예전에 저장된
+/// 파일에는 그 키가 없는데, Swift 합성 디코더는 키가 없으면 실패한다 — 규칙을 하나 늘렸다고
+/// 사용자의 설정이 통째로 안 읽히면 안 된다. 없는 키는 기본값으로 채운다.
+@Test func decodingToleratesMissingKeysFromOlderVersions() throws {
+    // 백필 필드가 없던 시절의 설정 파일
+    let legacy = """
+    { "staleDays": 7, "bossDays": 21, "raidDays": 45, "wipLimit": 5 }
+    """
+    let decoded = try JSONDecoder().decode(RuleSet.self, from: Data(legacy.utf8))
+
+    #expect(decoded.staleDays == 7, "적혀 있던 값은 살아남는다")
+    #expect(decoded.wipLimit == 5)
+    #expect(decoded.awardsOnlyOwnTransitions == RuleSet.default.awardsOnlyOwnTransitions,
+            "없던 키는 기본값으로 채운다")
+    #expect(decoded.seasonDays == RuleSet.default.seasonDays)
+}
+
+/// 극단적으로 빈 객체도 전부 기본값으로 열려야 한다 — 설정 파일이 잘렸을 때의 방어선이다.
+@Test func decodingAnEmptyObjectYieldsDefaults() throws {
+    let decoded = try JSONDecoder().decode(RuleSet.self, from: Data("{}".utf8))
+    #expect(decoded == RuleSet.default)
+}
