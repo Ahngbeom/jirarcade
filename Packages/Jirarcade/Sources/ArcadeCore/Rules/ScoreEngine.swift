@@ -23,11 +23,13 @@ public struct ScoreEngine: Sendable {
     private let streaks: StreakCalculator
     private let hygiene: HygieneCalculator
 
-    public init(rules: RuleSet, workflow: WorkflowMap, calendar: Calendar) {
+    public init(rules: RuleSet, workflow: WorkflowMap, calendar: Calendar,
+                myAccountId: String? = nil) {
         self.rules = rules
         self.workflow = workflow
         self.calendar = calendar
-        self.awarder = XpAwarder(rules: rules, workflow: workflow, calendar: calendar)
+        self.awarder = XpAwarder(rules: rules, workflow: workflow, myAccountId: myAccountId,
+                                 calendar: calendar)
         self.abuseGuard = AbuseGuard(rules: rules, calendar: calendar)
         self.curve = LevelCurve(rules: rules)
         self.streaks = StreakCalculator(rules: rules, calendar: calendar)
@@ -40,10 +42,17 @@ public struct ScoreEngine: Sendable {
     /// - Parameter now: **오늘**의 기준. 이벤트 채점은 각 이벤트의 `observedAt`으로 하지만,
     ///   위생 데일리 보너스(스펙 §5.3)는 미러의 현재 상태를 이 시각 기준으로 판정한다.
     ///   미러에는 과거 상태가 없으므로 위생 보너스는 오늘 하루분만 계산할 수 있다.
+    /// - Parameter since: 이 시각 이후의 이벤트만 집계한다. nil이면 전체(통산).
+    ///   시즌 XP 바가 이 파라미터로 계산된다(스펙 §6).
+    ///
+    ///   필터를 `ordered` 계산 **후**에 적용하는 이유: statusEnteredAt 재구성은 전체 이력을
+    ///   봐야 정확한데, 잘라낸 뒤 계산하면 시즌 시작 이전의 전이를 못 봐서 정체일이 0으로
+    ///   리셋된다. 그러면 같은 이벤트가 통산과 시즌에서 다른 XP를 받는다.
     public func recompute(
         events: [DomainEvent],
         issues: [String: ObservedIssue],
-        now: Date
+        now: Date,
+        since: Date? = nil
     ) -> (scored: [ScoredEvent], summary: PlayerSummary) {
         let ordered = events.sorted { $0.observedAt < $1.observedAt }
 
@@ -59,6 +68,14 @@ public struct ScoreEngine: Sendable {
                 statusEnteredAt: statusEnteredAt[event.issueKey],
                 now: event.observedAt
             )
+
+            if let since, event.observedAt < since {
+                // 시즌 밖: statusEnteredAt 갱신에는 참여하되 점수에는 넣지 않는다.
+                if event.kind == .statusChanged {
+                    statusEnteredAt[event.issueKey] = event.observedAt
+                }
+                continue
+            }
             scored.append(ScoredEvent(event: event, xp: xp))
 
             if event.kind == .statusChanged {

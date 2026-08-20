@@ -8,6 +8,17 @@ private var utc: Calendar {
     return cal
 }
 
+private var utcCalendar: Calendar { utc }
+
+private func makeTransition(key: String, at when: Date) -> DomainEvent {
+    DomainEvent(
+        issueKey: key, kind: .statusChanged,
+        fromStatus: "To Do", toStatus: "In Progress",
+        observedAt: when, actorAccountId: "acc-me",
+        priorUpdatedAt: when.addingTimeInterval(-days(21))
+    )
+}
+
 private let now = iso("2026-08-20T00:00:00Z")
 
 private func sampleEvents() -> [DomainEvent] {
@@ -351,4 +362,50 @@ private func calendarDay(_ date: Date) -> Date {
     let forward = engine.recompute(events: sampleEvents(), issues: sampleIssues(), now: now)
     let reversed = engine.recompute(events: sampleEvents().reversed(), issues: sampleIssues(), now: now)
     #expect(forward.summary.totalXP == reversed.summary.totalXP)
+}
+
+/// 시즌은 이벤트 로그를 기간으로 자른 재집계일 뿐이다. 이벤트가 원본이고 점수가 파생이라
+/// 필터 한 줄로 끝난다 — XP를 누적 저장했다면 "최근 30일 XP"를 따로 관리해야 했다(스펙 §6).
+@MainActor
+@Test func seasonScoreCountsOnlyRecentEvents() {
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utcCalendar,
+                             myAccountId: "acc-me")
+    let now = iso("2026-08-13T00:00:00Z")
+    let events = [
+        makeTransition(key: "MPT-1", at: iso("2026-01-01T00:00:00Z")),   // 시즌 밖
+        makeTransition(key: "MPT-2", at: iso("2026-08-10T00:00:00Z")),   // 시즌 안
+    ]
+
+    let lifetime = engine.recompute(events: events, issues: [:], now: now)
+    let season = engine.recompute(events: events, issues: [:], now: now,
+                                  since: iso("2026-07-14T00:00:00Z"))
+
+    #expect(season.summary.totalXP < lifetime.summary.totalXP)
+    #expect(season.scored.count == 1)
+    #expect(lifetime.scored.count == 2)
+}
+
+/// 경계에 정확히 걸린 이벤트는 시즌에 포함된다(>= since).
+@MainActor
+@Test func eventExactlyAtSeasonStartIsIncluded() {
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utcCalendar,
+                             myAccountId: "acc-me")
+    let boundary = iso("2026-07-14T00:00:00Z")
+    let result = engine.recompute(
+        events: [makeTransition(key: "MPT-1", at: boundary)],
+        issues: [:], now: iso("2026-08-13T00:00:00Z"), since: boundary
+    )
+    #expect(result.scored.count == 1)
+}
+
+/// since를 주지 않으면 기존 동작과 완전히 같다 — 기존 호출부가 영향을 받지 않는다.
+@MainActor
+@Test func omittingSinceMatchesLifetime() {
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utcCalendar,
+                             myAccountId: "acc-me")
+    let now = iso("2026-08-13T00:00:00Z")
+    let events = [makeTransition(key: "MPT-1", at: iso("2026-01-01T00:00:00Z"))]
+    let a = engine.recompute(events: events, issues: [:], now: now)
+    let b = engine.recompute(events: events, issues: [:], now: now, since: nil)
+    #expect(a.summary == b.summary)
 }
