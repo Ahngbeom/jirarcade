@@ -7,6 +7,15 @@ public struct JiraChangelogItem: Sendable, Equatable {
     public let fromString: String?
     public let toId: String?
     public let toString: String?
+
+    public init(field: String, fromId: String?, fromString: String?,
+                toId: String?, toString: String?) {
+        self.field = field
+        self.fromId = fromId
+        self.fromString = fromString
+        self.toId = toId
+        self.toString = toString
+    }
 }
 
 /// 한 번의 변경(한 사람이 한 시각에 저장한 묶음). 여러 필드가 함께 바뀔 수 있다.
@@ -15,6 +24,14 @@ public struct JiraChangelogHistory: Sendable, Equatable {
     public let createdAt: Date
     public let authorAccountId: String?
     public let items: [JiraChangelogItem]
+
+    public init(id: String, createdAt: Date, authorAccountId: String?,
+                items: [JiraChangelogItem]) {
+        self.id = id
+        self.createdAt = createdAt
+        self.authorAccountId = authorAccountId
+        self.items = items
+    }
 }
 
 public struct JiraChangelogPage: Sendable, Equatable {
@@ -22,6 +39,14 @@ public struct JiraChangelogPage: Sendable, Equatable {
     public let maxResults: Int
     public let total: Int
     public let histories: [JiraChangelogHistory]
+
+    public init(startAt: Int, maxResults: Int, total: Int,
+                histories: [JiraChangelogHistory]) {
+        self.startAt = startAt
+        self.maxResults = maxResults
+        self.total = total
+        self.histories = histories
+    }
 
     /// 서버가 잘라 보냈는지. true면 `/issue/{key}/changelog`로 보충해야 한다.
     public var isTruncated: Bool { total > histories.count }
@@ -32,6 +57,14 @@ public struct JiraIssueWithChangelog: Sendable, Equatable {
     public let createdAt: Date
     public let dueDate: Date?
     public let changelog: JiraChangelogPage
+
+    public init(key: String, createdAt: Date, dueDate: Date?,
+                changelog: JiraChangelogPage) {
+        self.key = key
+        self.createdAt = createdAt
+        self.dueDate = dueDate
+        self.changelog = changelog
+    }
 }
 
 public enum JiraChangelogResponse {
