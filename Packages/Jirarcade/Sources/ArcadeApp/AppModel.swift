@@ -60,6 +60,24 @@ public final class AppModel {
     public private(set) var historyDiscoveredStatuses: [String] = []
     /// 로그인한 계정. "내가 직접 옮긴 것만 XP" 판정에 쓴다.
     public private(set) var myAccountId: String?
+    /// 현재 미러를 키 오름차순으로. 보드가 읽는다.
+    ///
+    /// 정렬을 여기서 하는 이유: 미러는 딕셔너리라 순회 순서가 불안정하고, 보드가 매
+    /// 렌더마다 정렬하면 같은 일을 반복한다. 갱신은 동기화마다 한 번뿐이다.
+    public private(set) var issues: [ObservedIssue] = []
+    /// 티켓별 현재 상태 진입 시각. 없는 티켓은 보드가 `jiraUpdatedAt`으로 폴백하고
+    /// 그 사실을 화면에 표시한다.
+    public private(set) var statusEnteredAt: [String: Date] = [:]
+    /// 위생 리포트. HUD가 읽는다.
+    public private(set) var hygiene: HygieneReport?
+    /// 실효 워크플로 맵(사용자 매핑 + 폴백)의 **캐시**.
+    ///
+    /// `currentMapping`/`currentFallbacks`처럼 매 접근마다 디스크를 치면 안 된다 —
+    /// 보드는 렌더마다 이 값을 읽고 티켓 수만큼 `stage(for:)`를 부른다.
+    public private(set) var boardWorkflow = WorkflowMap(statusToStage: [:])
+    /// 정규화된 Jira 호스트. 티켓 링크를 만들 때만 쓴다.
+    /// 자격증명 전체가 아니라 호스트 하나만 내보낸다 — 이메일과 토큰은 화면에 닿을 이유가 없다.
+    public private(set) var siteHost: String?
 
     /// 진행 중이던 동기화가 로그아웃·계정 전환을 가로질러 스토어에 쓰지 않도록 막는 데
     /// 쓰는 세대 값. 인증에 성공할 때(로그인/시작)와 로그아웃할 때마다 올라간다.
@@ -181,6 +199,13 @@ public final class AppModel {
         lifetimeSummary = nil
         seasonSummary = nil
         myAccountId = nil
+        siteHost = nil
+        // 보드 상태도 이 계정의 미러에서 나온 값이다. 남겨두면 다음 로그인이 끝나기
+        // 전까지 남의 티켓이 화면에 떠 있다.
+        issues = []
+        statusEnteredAt = [:]
+        hygiene = nil
+        boardWorkflow = WorkflowMap(statusToStage: [:])
         // 백필에서 나온 값들도 함께 버린다. 남으면 다른 계정으로 로그인했을 때 이전 조직의
         // 상태명이 새 계정의 매핑 후보로 뜨고(조직이 다르면 완전히 무의미한 목록이다),
         // 이전 계정의 중단 사유와 정확도 경고가 새 계정의 설정 화면에 붙는다.
@@ -215,7 +240,7 @@ public final class AppModel {
         // 매핑은 채점의 **입력**이다. 다시 계산하지 않으면 사용자가 잘못된 폴백을 고쳐도
         // XP·레벨이 그대로여서 아무 일도 일어나지 않은 것처럼 보인다. 동기화 완료를
         // 기다리지 않고 저장된 이벤트로 바로 도는 이유가 그것이다 — 즉시 반영돼야 한다.
-        await refreshSummaries()
+        await recomputeFromLog()
         phase = .ready
     }
 
@@ -350,7 +375,7 @@ public final class AppModel {
         // 결과를 새 계정의 스토어에 쓰지 않는다(I4).
         let generation = syncGeneration
         do {
-            // 반환된 요약은 쓰지 않는다. 통산 XP를 만드는 자리는 `refreshSummaries()`
+            // 반환된 요약은 쓰지 않는다. 통산 XP를 만드는 자리는 `recomputeFromLog()`
             // 하나뿐이어야 한다 — 여기서도 따로 담아 두면 갱신 시점이 갈려, 백필 직후부터
             // 다음 동기화까지 캐비닛과 HUD가 서로 다른 레벨을 나란히 보여준다.
             _ = try await engine.sync(
@@ -378,7 +403,7 @@ public final class AppModel {
         refreshUnmapped()
         // 방금 들어온 이벤트를 곧바로 집계에 반영한다. 여기서 갱신하지 않으면 화면의
         // 레벨은 다음 인증이나 백필 종료까지 옛 값에 머문다.
-        await refreshSummaries()
+        await recomputeFromLog()
     }
 
     private func refreshUnmapped(against map: WorkflowMap) {
@@ -505,16 +530,31 @@ public final class AppModel {
         // 재개한 실행의 outcome에는 **이번 실행분만** 담기지만 스토어는 run 전체를 누적하고,
         // 실패로 끝난 실행에는 outcome 자체가 없다(중단 지점까지의 발견은 스토어에 남아 있다).
         historyDiscoveredStatuses = (try? store.discoveredStatuses()) ?? []
-        await refreshSummaries()
+        await recomputeFromLog()
     }
 
-    /// 통산과 시즌을 각각 집계한다. 같은 이벤트 로그를 두 범위로 읽을 뿐이다.
-    private func refreshSummaries() async {
+    /// 이벤트 로그와 미러에서 파생되는 모든 것을 다시 만든다 — 보드가 읽는 상태와
+    /// 통산·시즌 요약.
+    ///
+    /// 동기화 성공과 로그인·백필 종료가 **공통으로 지나는 유일한 지점**이고, 이미
+    /// 이벤트 로그와 미러를 둘 다 읽고 있다. 보드 갱신을 위해 새 갱신 시점이나 새
+    /// 스토어 읽기를 만들 이유가 없다.
+    private func recomputeFromLog() async {
         guard let events = try? store.loadEvents(),
               let mirror = try? store.loadMirror() else { return }
         let now = clock()
+        // 한 번만 읽어 캐시한다. 예전에는 이 함수 안에서만 두 번 불렀고 화면이 렌더마다
+        // 또 불렀다(후속 항목 §4.2).
+        let workflowMap = effectiveWorkflow()
+        boardWorkflow = workflowMap
+
+        issues = mirror.values.sorted { $0.key < $1.key }
+        statusEnteredAt = StatusTimeline.latestStatusEntry(from: events)
+        hygiene = HygieneCalculator(rules: rules, workflow: workflowMap, calendar: calendar)
+            .evaluate(issues, now: now)
+
         let engine = ScoreEngine(
-            rules: rules, workflow: effectiveWorkflow(),
+            rules: rules, workflow: workflowMap,
             calendar: calendar, myAccountId: myAccountId
         )
         lifetimeSummary = engine.recompute(events: events, issues: mirror, now: now).summary
@@ -570,6 +610,9 @@ public final class AppModel {
         // "내가 직접 옮긴 것만 XP"(스펙 §4.2)를 판정하려면 내가 누구인지 알아야 한다.
         // 여기가 accountId를 손에 넣는 유일한 지점이다.
         myAccountId = me.accountId
+        // 티켓 링크를 만들 때 쓴다. APITokenAuth와 같은 정규화를 거쳐야 사용자가 어떻게
+        // 입력했든 같은 호스트가 된다.
+        siteHost = JiraSite.normalize(creds.site)
         // 이 시점 이전에 시작된 동기화는 더 이상 유효하지 않다 — 이 사용자로(또는 이
         // 사용자가 다른 계정으로) 새로 인증됐으니, 그 전에 날아간 페치가 나중에 끝나도
         // 스토어에 쓰면 안 된다(I4).
