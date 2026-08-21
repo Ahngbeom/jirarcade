@@ -1531,6 +1531,43 @@ git commit -m "feat: 3단 워크플로 폴백 (매핑 → statusCategory → 미
 - Consumes: `JiraIssueWithChangelog`·`JiraChangelogHistory` (Task 6)
 - Produces: `ChangelogParser.parse(issue:) -> [ParsedTransition]`, `struct ParsedTransition { let event: DomainEvent; let historyId: String; let fromStatusId: String?; let toStatusId: String? }`
 
+- [ ] **Step 0: changelog DTO에 `public init` 추가**
+
+`Sources/JiraKit/ChangelogDTO.swift`의 네 struct는 지금 **테스트에서 만들 수 없다.**
+Swift의 memberwise initializer는 암묵적으로 `internal`이라 모듈 밖에서는 보이지 않는다.
+Task 6 테스트는 `@testable import JiraKit`이라 통과했지만, 이 태스크의 테스트는
+`ArcadeCoreTests`에서 **일반 `import JiraKit`** 으로 쓰므로 컴파일되지 않는다:
+
+```
+'JiraChangelogHistory' initializer is inaccessible due to 'internal' protection level
+```
+
+`JiraChangelogItem` / `JiraChangelogHistory` / `JiraChangelogPage` /
+`JiraIssueWithChangelog` 각각에 memberwise와 같은 시그니처의 `public init`을 넣는다.
+이후 Task 10~15의 백필 테스트도 이 픽스처를 만들어야 하므로 여기서 한 번에 연다.
+
+```swift
+public struct JiraChangelogItem: Sendable, Equatable {
+    public let field: String
+    public let fromId: String?
+    public let fromString: String?
+    public let toId: String?
+    public let toString: String?
+
+    public init(field: String, fromId: String?, fromString: String?,
+                toId: String?, toString: String?) {
+        self.field = field
+        self.fromId = fromId
+        self.fromString = fromString
+        self.toId = toId
+        self.toString = toString
+    }
+}
+```
+
+나머지 셋도 같은 방식으로 연다. 디코딩 경로(`RawItem.model` 등)는 이 이니셜라이저를
+그대로 쓰면 되므로 **기존 동작은 바뀌지 않는다.**
+
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 `Tests/ArcadeCoreTests/ChangelogParserTests.swift`:
@@ -1566,53 +1603,69 @@ private func issue(
 }
 
 /// status 항목만 이벤트가 된다. description·Link·Fix Version은 버린다(스펙 §4.1).
-@Test func onlyStatusItemsBecomeEvents() {
+@Test func onlyStatusItemsBecomeEvents() throws {
     let parsed = ChangelogParser().parse(issue: issue(histories: [
         history(id: "1", at: iso("2023-02-01T00:00:00Z"), author: "acc-me", items: [
-            JiraChangelogItem(field: "description", fromId: nil, fromString: "옛",
-                              toId: nil, toString: "새"),
+            JiraChangelogItem(field: "description", fromId: nil, fromString: "old",
+                              toId: nil, toString: "new"),
             statusItem(fromId: "1", from: "To Do", toId: "2", to: "In Progress"),
             JiraChangelogItem(field: "Link", fromId: nil, fromString: nil,
                               toId: nil, toString: "blocks MPT-2"),
         ])
     ]))
     #expect(parsed.count == 1)
-    #expect(parsed[0].event.kind == .statusChanged)
-    #expect(parsed[0].event.fromStatus == "To Do")
-    #expect(parsed[0].event.toStatus == "In Progress")
+    // #expect는 실패해도 멈추지 않는다. 위 count가 어긋난 채 parsed[0]을 쓰면
+    // 테스트 실패가 아니라 인덱스 범위 초과로 프로세스가 죽는다 — try #require로 꺼낸다.
+    let only = try #require(parsed.first)
+    #expect(only.event.kind == .statusChanged)
+    #expect(only.event.fromStatus == "To Do")
+    #expect(only.event.toStatus == "In Progress")
 }
 
 /// observedAt은 전이 시각이지 백필 실행 시각이 아니다. 틀리면 3년치가 오늘로 몰린다.
-@Test func observedAtIsTheTransitionTime() {
+@Test func observedAtIsTheTransitionTime() throws {
     let when = iso("2023-02-28T10:15:06Z")
     let parsed = ChangelogParser().parse(issue: issue(histories: [
         history(id: "1", at: when, author: "acc-me",
                 items: [statusItem(fromId: "1", from: "A", toId: "2", to: "B")])
     ]))
-    #expect(parsed[0].event.observedAt == when)
+    #expect(try #require(parsed.first).event.observedAt == when)
 }
 
-@Test func historyIdAndStatusIdsAreCarried() {
+@Test func historyIdAndStatusIdsAreCarried() throws {
     let parsed = ChangelogParser().parse(issue: issue(histories: [
         history(id: "50347", at: iso("2023-02-28T00:00:00Z"), author: "acc-me",
                 items: [statusItem(fromId: "10009", from: "To Do", toId: "10016", to: "In Progress")])
     ]))
-    #expect(parsed[0].historyId == "50347")
-    #expect(parsed[0].fromStatusId == "10009")
-    #expect(parsed[0].toStatusId == "10016")
+    let only = try #require(parsed.first)
+    #expect(only.historyId == "50347")
+    #expect(only.fromStatusId == "10009")
+    #expect(only.toStatusId == "10016")
 }
 
-@Test func actorComesFromTheHistoryAuthor() {
+/// 백필의 actorAccountId는 changelog가 알려준 **실제 행위자**다. 라이브 동기화가 쓰는
+/// assignee 근사값과 다르다 — "내가 직접 옮긴 것만 XP"를 판정하려면 이 값이어야 한다.
+@Test func actorComesFromTheHistoryAuthor() throws {
     let parsed = ChangelogParser().parse(issue: issue(histories: [
         history(id: "1", at: iso("2023-02-01T00:00:00Z"), author: "acc-someone",
                 items: [statusItem(fromId: "1", from: "A", toId: "2", to: "B")])
     ]))
-    #expect(parsed[0].event.actorAccountId == "acc-someone")
+    #expect(try #require(parsed.first).event.actorAccountId == "acc-someone")
+}
+
+/// 행위자를 모르는 history도 있다(자동화·삭제된 계정). nil이면 nil로 남긴다 —
+/// 내 계정으로 추측하면 남의 전이가 내 XP가 된다.
+@Test func missingAuthorStaysNil() throws {
+    let parsed = ChangelogParser().parse(issue: issue(histories: [
+        history(id: "1", at: iso("2023-02-01T00:00:00Z"), author: nil,
+                items: [statusItem(fromId: "1", from: "A", toId: "2", to: "B")])
+    ]))
+    #expect(try #require(parsed.first).event.actorAccountId == nil)
 }
 
 /// priorUpdatedAt은 **직전 history의 created**다. 티켓의 모든 변경이 changelog에 남으므로
 /// 어떤 전이 직전의 마지막 수정 시각은 곧 그 앞 history의 시각이다(스펙 §4.3).
-@Test func priorUpdatedAtComesFromThePrecedingHistory() {
+@Test func priorUpdatedAtComesFromThePrecedingHistory() throws {
     let first = iso("2023-02-01T00:00:00Z")
     let second = iso("2023-02-10T00:00:00Z")
     let parsed = ChangelogParser().parse(issue: issue(created: iso("2023-01-01T00:00:00Z"), histories: [
@@ -1621,38 +1674,56 @@ private func issue(
         history(id: "2", at: second, author: "acc-me",
                 items: [statusItem(fromId: "2", from: "B", toId: "3", to: "C")]),
     ]))
-    #expect(parsed[1].event.priorUpdatedAt == first)
+    #expect(parsed.count == 2)
+    #expect(try #require(parsed.dropFirst().first).event.priorUpdatedAt == first)
 }
 
 /// 첫 history 앞에는 변경이 없으므로 티켓 생성 시각을 쓴다.
-@Test func firstHistoryUsesIssueCreationAsPrior() {
+@Test func firstHistoryUsesIssueCreationAsPrior() throws {
     let created = iso("2023-01-01T00:00:00Z")
     let parsed = ChangelogParser().parse(issue: issue(created: created, histories: [
         history(id: "1", at: iso("2023-02-01T00:00:00Z"), author: "acc-me",
                 items: [statusItem(fromId: "1", from: "A", toId: "2", to: "B")])
     ]))
-    #expect(parsed[0].event.priorUpdatedAt == created)
+    #expect(try #require(parsed.first).event.priorUpdatedAt == created)
 }
 
 /// status가 아닌 history도 priorUpdatedAt 계산에는 참여한다 — 그 시점에 티켓이 수정됐으므로.
-@Test func nonStatusHistoriesStillAdvanceThePriorTimestamp() {
+@Test func nonStatusHistoriesStillAdvanceThePriorTimestamp() throws {
     let edit = iso("2023-02-05T00:00:00Z")
     let parsed = ChangelogParser().parse(issue: issue(created: iso("2023-01-01T00:00:00Z"), histories: [
         history(id: "1", at: iso("2023-02-01T00:00:00Z"), author: "acc-me",
                 items: [statusItem(fromId: "1", from: "A", toId: "2", to: "B")]),
         history(id: "2", at: edit, author: "acc-me", items: [
-            JiraChangelogItem(field: "description", fromId: nil, fromString: "옛",
-                              toId: nil, toString: "새")
+            JiraChangelogItem(field: "description", fromId: nil, fromString: "old",
+                              toId: nil, toString: "new")
         ]),
         history(id: "3", at: iso("2023-02-20T00:00:00Z"), author: "acc-me",
                 items: [statusItem(fromId: "2", from: "B", toId: "3", to: "C")]),
     ]))
     #expect(parsed.count == 2)
-    #expect(parsed[1].event.priorUpdatedAt == edit, "description 수정도 티켓을 갱신한다")
+    #expect(try #require(parsed.dropFirst().first).event.priorUpdatedAt == edit,
+            "description 수정도 티켓을 갱신한다")
+}
+
+/// 한 history 안에 status가 여러 개 있으면 모두 같은 priorUpdatedAt을 갖는다 —
+/// 하나의 저장 묶음이므로 그 사이에 "직전 수정"이 끼어들 수 없다.
+@Test func twoStatusItemsInOneHistoryShareThePrior() throws {
+    let created = iso("2023-01-01T00:00:00Z")
+    let at = iso("2023-02-01T00:00:00Z")
+    let parsed = ChangelogParser().parse(issue: issue(created: created, histories: [
+        history(id: "1", at: at, author: "acc-me", items: [
+            statusItem(fromId: "1", from: "A", toId: "2", to: "B"),
+            statusItem(fromId: "2", from: "B", toId: "3", to: "C"),
+        ])
+    ]))
+    #expect(parsed.count == 2)
+    #expect(parsed.allSatisfy { $0.event.priorUpdatedAt == created })
+    #expect(parsed.allSatisfy { $0.historyId == "1" })
 }
 
 /// 마감일 변경 이력이 있으면 그 시점의 값을 쓴다(스펙 §4.3).
-@Test func dueDateAtObservationTracksDuedateChanges() {
+@Test func dueDateAtObservationTracksDuedateChanges() throws {
     let parsed = ChangelogParser().parse(issue: issue(
         created: iso("2023-01-01T00:00:00Z"),
         due: iso("2023-04-01T00:00:00Z"),      // 현재 값
@@ -1666,17 +1737,34 @@ private func issue(
         ]
     ))
     // 첫 전이 시점의 마감일은 변경 **이전** 값이어야 한다.
-    #expect(parsed[0].event.dueDateAtObservation == iso("2023-02-15T00:00:00Z"))
+    #expect(try #require(parsed.first).event.dueDateAtObservation == iso("2023-02-15T00:00:00Z"))
+}
+
+/// status와 duedate가 **같은 저장 묶음**에서 바뀌면 그 전이에는 새 마감일을 적용한다.
+/// 동시에 일어난 변경이므로 "그때의 마감일"은 바꾼 결과값으로 본다.
+@Test func simultaneousDueDateChangeUsesTheNewValue() throws {
+    let parsed = ChangelogParser().parse(issue: issue(
+        created: iso("2023-01-01T00:00:00Z"),
+        due: iso("2023-04-01T00:00:00Z"),
+        histories: [
+            history(id: "1", at: iso("2023-03-01T00:00:00Z"), author: "acc-me", items: [
+                statusItem(fromId: "1", from: "A", toId: "2", to: "B"),
+                JiraChangelogItem(field: "duedate", fromId: nil, fromString: "2023-02-15",
+                                  toId: nil, toString: "2023-04-01"),
+            ])
+        ]
+    ))
+    #expect(try #require(parsed.first).event.dueDateAtObservation == iso("2023-04-01T00:00:00Z"))
 }
 
 /// 마감일 변경 이력이 없으면 현재 값이 그때도 같았다는 뜻이다.
-@Test func dueDateFallsBackToTheCurrentValue() {
+@Test func dueDateFallsBackToTheCurrentValue() throws {
     let due = iso("2023-04-01T00:00:00Z")
     let parsed = ChangelogParser().parse(issue: issue(due: due, histories: [
         history(id: "1", at: iso("2023-02-01T00:00:00Z"), author: "acc-me",
                 items: [statusItem(fromId: "1", from: "A", toId: "2", to: "B")])
     ]))
-    #expect(parsed[0].event.dueDateAtObservation == due)
+    #expect(try #require(parsed.first).event.dueDateAtObservation == due)
 }
 
 /// history가 시간 역순으로 와도 결과는 시간순이어야 한다 — Jira는 최신순으로 준다.
@@ -1771,11 +1859,14 @@ public struct ChangelogParser: Sendable {
         let current: Date?
 
         func value(at when: Date) -> Date? {
-            // 가장 이른 변경보다 앞이면 그 변경의 previous가 당시 값이다.
-            for change in changes where when < change.at {
-                return change.previous
-            }
-            return current
+            // `when`보다 **나중에** 일어난 첫 변경을 찾으면, 그 변경의 previous가
+            // 그 시점에 유효했던 값이다. 그런 변경이 없으면 이후로 바뀐 적이 없다는
+            // 뜻이므로 현재 값을 쓴다.
+            //
+            // 등호는 일부러 포함하지 않는다(`<`이지 `<=`가 아니다) — status와 duedate가
+            // 같은 저장 묶음에서 바뀌면 동시에 일어난 변경이므로 그 전이에는 바뀐
+            // 결과값을 적용한다.
+            changes.first { when < $0.at }?.previous ?? current
         }
     }
 
@@ -1792,13 +1883,18 @@ public struct ChangelogParser: Sendable {
         return DueTimeline(changes: changes, current: current)
     }
 
-    private static func dateOnly(_ raw: String) -> Date? {
+    /// DateFormatter 생성은 비싸다. 백필은 티켓 1,000여 개를 훑으므로 한 번만 만든다.
+    private static let dueDateFormatter: DateFormatter = {
         let formatter = DateFormatter()
         formatter.calendar = Calendar(identifier: .gregorian)
         formatter.locale = Locale(identifier: "en_US_POSIX")
         formatter.timeZone = TimeZone(identifier: "UTC")
         formatter.dateFormat = "yyyy-MM-dd"
-        return formatter.date(from: raw)
+        return formatter
+    }()
+
+    private static func dateOnly(_ raw: String) -> Date? {
+        dueDateFormatter.date(from: raw)
     }
 }
 ```
@@ -1806,12 +1902,13 @@ public struct ChangelogParser: Sendable {
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `cd Packages/Jirarcade && swift test --filter ChangelogParser`
-Expected: PASS (11 tests)
+Expected: PASS (14 tests)
 
 - [ ] **Step 5: 커밋**
 
 ```bash
-git add Packages/Jirarcade/Sources/ArcadeCore/Backfill/ChangelogParser.swift \
+git add Packages/Jirarcade/Sources/JiraKit/ChangelogDTO.swift \
+        Packages/Jirarcade/Sources/ArcadeCore/Backfill/ChangelogParser.swift \
         Packages/Jirarcade/Tests/ArcadeCoreTests/ChangelogParserTests.swift
 git commit -m "feat: changelog를 전이 이벤트로 번역하는 순수 파서"
 ```
