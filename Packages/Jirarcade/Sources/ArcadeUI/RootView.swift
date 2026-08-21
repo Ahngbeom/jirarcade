@@ -63,10 +63,18 @@ private struct RootContent: View {
     /// 둘을 한눈에 구분할 수 있다.
     private var expiredBanner: some View {
         HStack(spacing: 8) {
-            Text("토큰이 만료됐습니다. 다시 로그인해 주세요.")
+            Text("토큰이 만료됐습니다. 새 토큰을 발급받아 다시 로그인해 주세요.")
                 .font(.callout.bold())
                 .foregroundStyle(theme.surfaceBase)
             Spacer()
+            // 재발급 경로를 여기 두는 이유: 이 링크는 로그인 화면에도 있지만, 거기 닿으려면
+            // 먼저 로그아웃해야 한다. 만료는 사용자가 고를 수 있는 상황이 아니라 반드시
+            // 거쳐야 하는 길목이므로, 그 길목에서 바로 갈 수 있어야 한 단계가 준다.
+            // 색은 accent가 아니라 surfaceBase다 — 배너가 danger로 채워져 있어
+            // accent를 얹으면 대비가 무너진다.
+            Link("새 토큰 발급", destination: AtlassianLinks.apiTokens)
+                .font(.callout)
+                .foregroundStyle(theme.surfaceBase)
             Button("로그아웃") { Task { await model.signOut() } }
                 .font(.callout)
         }

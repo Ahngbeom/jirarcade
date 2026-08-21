@@ -103,3 +103,48 @@ private func swiftFiles(in directory: URL) -> [URL] {
         }
     }
 }
+
+/// 토큰이 만료되면 재발급 페이지로 **그 자리에서** 갈 수 있어야 한다.
+///
+/// 같은 링크가 로그인 화면에도 있지만 거기 닿으려면 먼저 로그아웃해야 한다.
+/// 만료는 사용자가 고를 수 있는 상황이 아니라 반드시 거쳐야 하는 길목이므로,
+/// 그 길목에 링크가 없으면 재설정이 한 단계 길어진다.
+///
+/// ArcadeUI에는 테스트 타깃이 없어 뷰 배선은 소스 텍스트로 지킨다
+/// (같은 파일의 색 리터럴 검사와 같은 방식이다).
+@Test func theExpiredBannerLinksToTokenReissue() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("ArcadeUI")
+        .appendingPathComponent("RootView.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    let marker = "private var expiredBanner"
+    let start = try #require(text.range(of: marker),
+                             "expiredBanner를 찾지 못했다 — 이름이 바뀌었나?")
+    // 배너 선언부터 다음 멤버 선언 전까지가 검사 범위다. 파일 어딘가에 링크가
+    // 있기만 해서는 안 되고 **이 배너 안에** 있어야 한다.
+    let rest = text[start.upperBound...]
+    let end = rest.range(of: "\n    private ")?.lowerBound ?? rest.endIndex
+    let banner = String(rest[..<end])
+
+    #expect(banner.contains("AtlassianLinks.apiTokens"),
+            "만료 배너에 토큰 재발급 링크가 없다 — 사용자가 로그아웃해야만 그 링크를 만난다")
+}
+
+/// 토큰 발급 URL은 한곳에서만 정의한다.
+///
+/// 로그인 화면과 만료 배너가 같은 곳을 가리켜야 하는데, 각자 리터럴을 들고 있으면
+/// 한쪽만 고쳤을 때 사용자가 어느 경로로 왔느냐에 따라 다른 페이지에 도착한다.
+@Test func theTokenPageURLIsDefinedInExactlyOnePlace() throws {
+    let files = swiftFiles(in: sourcesDirectory())
+    #expect(!files.isEmpty)
+
+    let needle = "manage-profile/security/api-tokens"
+    var holders: [String] = []
+    for file in files where try String(contentsOf: file, encoding: .utf8).contains(needle) {
+        holders.append(file.lastPathComponent)
+    }
+
+    #expect(holders == ["AtlassianLinks.swift"],
+            "토큰 URL이 여러 곳에 있다: \(holders.sorted())")
+}
