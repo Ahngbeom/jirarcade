@@ -21,6 +21,9 @@ defaults:
 jobs:
   test:
     runs-on: macos-26
+    # 기본 잡 타임아웃은 360분이고 macOS 러너는 10배 단가로 과금된다.
+    # 멈춘 테스트나 입력을 기다리는 명령 하나가 가장 비싼 분을 여섯 시간 태우게 두지 않는다.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v7
 
@@ -40,3 +43,12 @@ jobs:
 
       - name: 테스트
         run: swift test
+
+      # make-app.sh와 verify-bundle.sh는 v* 태그를 밀기 전까지 한 번도 실행되지
+      # 않아, 두 스크립트의 버그가 공개된 태그 위에서만 드러난다. 유니버설은
+      # 쓰지 않아 빠르다 — 여기서는 인자 처리와 번들 구조만 확인하면 된다.
+      - name: 번들 스모크
+        working-directory: .
+        run: |
+          ./scripts/make-app.sh --config release --version 0.0.0-ci --build 0
+          ./scripts/verify-bundle.sh Packages/Jirarcade/.build/Jirarcade.app 0.0.0-ci
