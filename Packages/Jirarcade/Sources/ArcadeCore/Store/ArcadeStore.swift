@@ -16,6 +16,9 @@ public enum ArcadeStoreError: Error, Equatable {
     /// `beginSyncRun`이 돌려준 식별자로 레코드를 되찾지 못했다.
     /// 정상 흐름에서는 발생하지 않지만, 조용히 넘기면 동기화 이력이 영구히 미완료로 남는다.
     case syncRunNotFound
+    /// `beginBackfill`이 돌려준 식별자로 레코드를 되찾지 못했다.
+    /// 조용히 넘기면 진행 상황이 저장되지 않은 채 호출자는 성공으로 안다.
+    case backfillRunNotFound
 }
 
 /// SwiftData 모델과 순수 값 타입 사이의 유일한 경계.
@@ -32,12 +35,16 @@ public final class ArcadeStore {
     public static func makeInMemoryContainer() throws -> ModelContainer {
         try ModelContainer(
             for: IssueSnapshot.self, IssueEventRecord.self, SyncRunRecord.self,
+            BackfillRun.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
     }
 
     public static func makePersistentContainer() throws -> ModelContainer {
-        try ModelContainer(for: IssueSnapshot.self, IssueEventRecord.self, SyncRunRecord.self)
+        try ModelContainer(
+            for: IssueSnapshot.self, IssueEventRecord.self, SyncRunRecord.self,
+            BackfillRun.self
+        )
     }
 
     // MARK: - 미러
@@ -213,6 +220,109 @@ public final class ArcadeStore {
         let today = calendar.startOfDay(for: now)
         let elapsed = calendar.dateComponents([.day], from: start, to: today).day ?? 0
         return max(1, elapsed + 1)
+    }
+
+    // MARK: - 백필 이력
+
+    /// 재개에 필요한 정보만 담은 값 타입. `@Model` 인스턴스를 밖으로 내보내지 않는다.
+    public struct BackfillSnapshot: Sendable {
+        public let id: PersistentIdentifier
+        public let jql: String
+        public let nextPageToken: String?
+        public let processedIssueCount: Int
+        public let totalIssueCount: Int
+        public let discovered: [String]
+        public let partiallyRestored: [String]
+    }
+
+    /// 식별자로 run을 되찾는다. 없으면 nil.
+    ///
+    /// `context.model(for:)`를 쓰지 않는다 — 다른 스토어에서 온 식별자를 주면 nil을
+    /// 돌려주는 대신 클래스가 맞는 껍데기를 만들어 주고, 프로퍼티에 손대는 순간
+    /// "backing data could no longer be found"로 크래시한다. 존재 여부를 물어야 하는
+    /// 자리라서 fetch로 확인한다. run은 백필 한 번에 한 행이라 전량 조회해도 싸다.
+    private func backfillRun(for id: PersistentIdentifier) throws -> BackfillRun? {
+        try context.fetch(FetchDescriptor<BackfillRun>())
+            .first { $0.persistentModelID == id }
+    }
+
+    public func beginBackfill(
+        jql: String, at start: Date, totalIssueCount: Int
+    ) throws -> PersistentIdentifier {
+        // 새로 시작한다는 건 이전 미완료 run을 이어받지 않겠다는 뜻이다. 그대로 두면
+        // resumableBackfill()이 계속 그걸 집어 "이어서 하시겠습니까"가 영원히 뜬다.
+        // 버려진 진행 상태는 보존 가치가 없으므로 지운다 — 완료된 run은 이력으로 남는다.
+        for abandoned in try context.fetch(
+            FetchDescriptor<BackfillRun>(predicate: #Predicate { $0.finishedAt == nil })
+        ) {
+            context.delete(abandoned)
+        }
+
+        let run = BackfillRun(startedAt: start, jql: jql, totalIssueCount: totalIssueCount)
+        context.insert(run)
+        try context.save()
+        return run.persistentModelID
+    }
+
+    public func advanceBackfill(
+        _ id: PersistentIdentifier, nextPageToken: String?, processedIssueCount: Int,
+        discovered: [String], partiallyRestored: [String]
+    ) throws {
+        // 조용히 return하면 진행 상황이 저장되지 않은 채 호출자는 성공으로 안다.
+        // 재개할 때 nextPageToken이 없어 1,000여 건을 처음부터 다시 훑게 된다.
+        // finishSyncRun이 syncRunNotFound를 던지는 것과 같은 이유다.
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.nextPageToken = nextPageToken
+        run.processedIssueCount = processedIssueCount
+        // 정렬해서 저장한다. Set을 그대로 Array로 만들면 순서가 비결정적이라
+        // 매핑 마법사의 후보 목록이 열 때마다 뒤바뀐다.
+        run.discoveredUnmappedStatuses =
+            Set(run.discoveredUnmappedStatuses).union(discovered).sorted()
+        run.partiallyRestoredKeys =
+            Set(run.partiallyRestoredKeys).union(partiallyRestored).sorted()
+        try context.save()
+    }
+
+    public func finishBackfill(
+        _ id: PersistentIdentifier, at end: Date, failure: String?
+    ) throws {
+        // 조용히 return하면 이 run이 finishedAt == nil로 영원히 남아
+        // resumableBackfill()이 매번 "이어서 하시겠습니까"를 띄운다.
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.finishedAt = end
+        run.failureMessage = failure
+        try context.save()
+    }
+
+    /// 아직 끝나지 않은 백필. 있으면 "이어서 불러오기"를 제안한다.
+    public func resumableBackfill() throws -> BackfillSnapshot? {
+        var descriptor = FetchDescriptor<BackfillRun>(
+            predicate: #Predicate { $0.finishedAt == nil },
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        guard let run = try context.fetch(descriptor).first else { return nil }
+        return BackfillSnapshot(
+            id: run.persistentModelID, jql: run.jql, nextPageToken: run.nextPageToken,
+            processedIssueCount: run.processedIssueCount,
+            totalIssueCount: run.totalIssueCount,
+            discovered: run.discoveredUnmappedStatuses,
+            partiallyRestored: run.partiallyRestoredKeys
+        )
+    }
+
+    /// 마지막으로 끝난 백필의 실패 사유. 성공했으면 nil이다.
+    public func lastBackfillFailure() throws -> String? {
+        var descriptor = FetchDescriptor<BackfillRun>(
+            predicate: #Predicate { $0.finishedAt != nil },
+            sortBy: [SortDescriptor(\.finishedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first?.failureMessage
     }
 }
 

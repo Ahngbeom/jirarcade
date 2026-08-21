@@ -106,3 +106,29 @@ public final class SyncRunRecord {
         self.observedIssueCount = 0
     }
 }
+
+/// 백필 한 번의 진행 상태. `nextPageToken`이 있어 중단 지점부터 재개한다(스펙 §7.2).
+@Model
+public final class BackfillRun {
+    public var startedAt: Date
+    public var finishedAt: Date?
+    /// 어떤 범위를 백필했는지. 나중에 범위가 넓어지면 이 값으로 구분한다.
+    public var jql: String
+    public var nextPageToken: String?
+    public var processedIssueCount: Int
+    public var totalIssueCount: Int
+    /// 매핑되지 않아 폴백 처리한 상태명. 백필 후 매핑 마법사 후보가 된다.
+    public var discoveredUnmappedStatuses: [String]
+    /// changelog 보충 조회에 실패해 일부만 복원한 티켓.
+    public var partiallyRestoredKeys: [String]
+    public var failureMessage: String?
+
+    public init(startedAt: Date, jql: String, totalIssueCount: Int) {
+        self.startedAt = startedAt
+        self.jql = jql
+        self.processedIssueCount = 0
+        self.totalIssueCount = totalIssueCount
+        self.discoveredUnmappedStatuses = []
+        self.partiallyRestoredKeys = []
+    }
+}
