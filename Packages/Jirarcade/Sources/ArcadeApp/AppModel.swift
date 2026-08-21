@@ -95,6 +95,10 @@ public final class AppModel {
     /// 스케줄러의 실패 집계. UI가 "연결하지 못했습니다"를 언제 보여줄지 판단한다.
     public var schedulerState: SyncScheduler.State { scheduler?.state ?? .init() }
 
+    /// 주기 동기화 루프가 도는 중인가. 백필이 동기화를 멈췄다가 **원래 돌고 있었을 때만**
+    /// 되살린다는 규칙을 바깥에서 확인할 수 있는 유일한 창이다.
+    public var isSyncScheduled: Bool { scheduler?.isRunning ?? false }
+
     public init(
         store: ArcadeStore,
         credentials: any CredentialStore,
@@ -226,6 +230,23 @@ public final class AppModel {
     /// 못 읽었다고 화면을 막을 일이 아니고, 표시가 빠질 뿐이다.
     public var currentFallbacks: WorkflowMap {
         (try? workflow.loadFallbacks()) ?? WorkflowMap(statusToStage: [:])
+    }
+
+    /// **지금 이 순간** 추정값으로 채점되고 있는 상태. 설정 화면의 경고가 이 값을 센다.
+    ///
+    /// `historyDiscoveredStatuses.count`를 쓰면 두 가지로 거짓이 된다.
+    /// ① 그 목록은 백필 시점의 스냅샷이라 사용자가 12개를 전부 지정해도 줄지 않는다.
+    /// ② 폴백이 닿지 않은 상태(카탈로그를 못 받은 run에서는 전부 여기 해당한다)까지
+    ///    섞여서, "상태 목록을 불러오지 못했습니다"(=전부 0점)와 "N개가 추정값으로
+    ///    채점되고 있습니다"가 같은 화면에 나란히 뜬다.
+    ///
+    /// 저장된 폴백에 있으면서 사용자 매핑에도 제외 목록에도 없는 것만 센다 —
+    /// 그것이 실제로 추정이 적용되는 집합이다(`effectiveWorkflow()`와 같은 규칙).
+    public var guessScoredStatuses: [String] {
+        let mapping = currentMapping
+        return currentFallbacks.statusToStage.keys
+            .filter { mapping.statusToStage[$0] == nil && !mapping.excludedStatuses.contains($0) }
+            .sorted()
     }
 
     /// 저장된 워크플로 매핑. 마법사를 다시 열 때 초기값으로 쓴다 —
@@ -395,6 +416,17 @@ public final class AppModel {
         // 이미 돌고 있으면 두 번 시작하지 않는다 — 같은 페이지를 두 곳에서 훑으면
         // 진행률이 뒤엉킨다(이벤트 중복은 historyId가 막지만 카운터는 못 막는다).
         guard backfillTask == nil else { return }
+        // 백필이 도는 동안에는 라이브 동기화를 멈춘다. 백필이 changelog를 받은 뒤 이벤트를
+        // 넣기까지의 창(티켓별 보충 조회가 그 사이에 있다)에 동기화가 같은 티켓의 **새**
+        // 전이를 기록하면, 그 전이는 방금 받은 changelog에 없으면서 백필의 대체 로직에
+        // 지워진다. 다음 백필이 복원하지만 그 사이 점수가 튄다. 애초에 같은 데이터를 두
+        // 경로로 받을 이유가 없다.
+        //
+        // 되살리는 것은 **원래 돌고 있었을 때만**이다. 무조건 켜면 아직 동기화를 시작하지
+        // 않은 화면(설정에서 바로 백필을 누른 경우)에서 백필이 동기화를 시작시킨다.
+        let wasSyncing = scheduler?.isRunning ?? false
+        stopSyncing()
+        defer { if wasSyncing { startSyncing() } }
         let task = Task { await runBackfill(resume: resume) }
         backfillTask = task
         // 첫 await 이전에 세운다 — 버튼을 누른 순간 화면이 반응해야 한다.
@@ -472,7 +504,7 @@ public final class AppModel {
         // 발견 목록도 스토어가 원본이다. `BackfillOutcome`에서 받으면 안 되는 이유가 둘 있다:
         // 재개한 실행의 outcome에는 **이번 실행분만** 담기지만 스토어는 run 전체를 누적하고,
         // 실패로 끝난 실행에는 outcome 자체가 없다(중단 지점까지의 발견은 스토어에 남아 있다).
-        historyDiscoveredStatuses = (try? store.lastDiscoveredStatuses()) ?? []
+        historyDiscoveredStatuses = (try? store.discoveredStatuses()) ?? []
         await refreshSummaries()
     }
 

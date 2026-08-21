@@ -10,6 +10,17 @@ struct WorkflowMappingView: View {
     /// 상태명 → 선택된 단계. 비어 있으면 매핑하지 않은 것이다.
     @State private var selection: [String: Stage]
 
+    /// "채점하지 않음"으로 지정한 상태. `selection`에 **없는 것**과 다르다 —
+    /// 그건 "아직 정하지 않았다"이고 폴백 추정이 그대로 적용된다.
+    @State private var excluded: Set<String>
+
+    /// 행에서 고를 수 있는 것. `Stage?`로는 표현되지 않는다 — "아직 정하지 않음"과
+    /// "채점하지 않음"이 둘 다 nil이 되어, 잘못 추정된 상태를 **끄는 것**이 불가능해진다.
+    private enum RowChoice: Hashable {
+        case undecided, excluded
+        case stage(Stage)
+    }
+
     init(model: AppModel, candidates: [String]) {
         self.model = model
         self.candidates = candidates
@@ -21,6 +32,9 @@ struct WorkflowMappingView: View {
         // 실려 보존된다 — 화면에 안 보이는 것을 저장하는 셈이지만, 사용자가 예전에
         // 의도적으로 매핑한 값이라 지우는 것보다 낫다.
         _selection = State(initialValue: model.currentMapping.statusToStage)
+        // 제외 목록도 같은 이유로 실려 보존된다 — 다시 연 마법사가 빈 집합으로 시작하면
+        // 확정하는 순간 사용자가 꺼둔 상태가 전부 다시 추정 채점으로 돌아간다.
+        _excluded = State(initialValue: model.currentMapping.excludedStatuses)
     }
 
     /// 현재 미Done 티켓에서 본 상태 + 백필이 과거 이력에서 발견한 상태.
@@ -33,12 +47,21 @@ struct WorkflowMappingView: View {
              + historical.sorted().map { ($0, true) }
     }
 
-    /// 화면에 뜬 후보 중 아직 단계를 고르지 않은 것의 수.
+    /// 화면에 뜬 후보 중 **어떤 방식으로도 채점되지 않는** 것의 수.
+    ///
+    /// 매핑되지 않은 것을 그냥 세면 안 된다 — 폴백이 있는 상태는 반영되지 **않는** 것이
+    /// 아니라 추정으로 반영되고 있어서, 같은 화면의 행에 붙은 "지금은 '완료'로 추정해
+    /// 채점 중입니다"와 정확히 반대되는 문장이 뜬다. 제외한 상태도 빼고 센다 —
+    /// 사용자가 스스로 끈 것을 경고할 일은 아니다.
     ///
     /// `selection.count`를 빼면 안 된다 — 다시 연 마법사의 selection에는 후보 목록에 없는
     /// 기존 매핑까지 들어 있어 값이 음수로 내려간다.
-    private var unmappedCount: Int {
-        allCandidates.count { selection[$0.name] == nil }
+    private var unscoredCount: Int {
+        allCandidates.count { entry in
+            selection[entry.name] == nil
+                && !excluded.contains(entry.name)
+                && model.currentFallbacks.stage(for: entry.name) == nil
+        }
     }
 
     /// 후보 개수 문구. 과거 이력에서 온 것이 섞여 있으면 출처를 함께 밝힌다 —
@@ -75,8 +98,8 @@ struct WorkflowMappingView: View {
                 .frame(maxHeight: 320)
             }
 
-            if unmappedCount > 0 && !allCandidates.isEmpty {
-                Text("상태 \(unmappedCount)개가 매핑되지 않았습니다. 해당 티켓의 전이는 점수에 반영되지 않습니다.")
+            if unscoredCount > 0 && !allCandidates.isEmpty {
+                Text("상태 \(unscoredCount)개가 매핑되지 않았습니다. 해당 티켓의 전이는 점수에 반영되지 않습니다.")
                     .font(.callout)
                     .foregroundStyle(theme.inkTertiary)
             }
@@ -87,7 +110,11 @@ struct WorkflowMappingView: View {
                     .foregroundStyle(theme.inkTertiary)
                 Spacer()
                 Button("시작하기") {
-                    Task { await model.confirmMapping(WorkflowMap(statusToStage: selection)) }
+                    Task {
+                        await model.confirmMapping(
+                            WorkflowMap(statusToStage: selection, excludedStatuses: excluded)
+                        )
+                    }
                 }
                 .keyboardShortcut(.defaultAction)
             }
@@ -113,21 +140,29 @@ struct WorkflowMappingView: View {
                 // 이 값을 초기 선택으로 채우지는 않는다. 그러면 확인만 눌러도 추정값 전부가
                 // 사용자 매핑으로 승격돼 이후 폴백 갱신이 영영 이기지 못한다.
                 if let guess = model.currentFallbacks.stage(for: entry.name),
-                   selection[entry.name] == nil {
+                   selection[entry.name] == nil, !excluded.contains(entry.name) {
                     Text("지금은 '\(label(for: guess))'로 추정해 채점 중입니다")
+                        .font(.caption2)
+                        .foregroundStyle(theme.inkTertiary)
+                }
+                // 껐다는 사실을 행에 남긴다 — 추정 문구가 사라지는 것만으로는
+                // "꺼진 것"과 "추정할 값이 애초에 없던 것"이 구분되지 않는다.
+                if excluded.contains(entry.name) {
+                    Text("채점하지 않습니다 — 추정도 적용되지 않습니다")
                         .font(.caption2)
                         .foregroundStyle(theme.inkTertiary)
                 }
             }
             Spacer()
             Picker("", selection: binding(for: entry.name)) {
-                Text("— 사용 안 함 —").tag(Stage?.none)
+                Text("— 아직 정하지 않음 —").tag(RowChoice.undecided)
+                Text("채점하지 않음").tag(RowChoice.excluded)
                 ForEach(Stage.allCases, id: \.self) { stage in
-                    Text(label(for: stage)).tag(Stage?.some(stage))
+                    Text(label(for: stage)).tag(RowChoice.stage(stage))
                 }
             }
             .labelsHidden()
-            .frame(width: 160)
+            .frame(width: 180)
         }
         .padding(.horizontal, 12)
         .padding(.vertical, 8)
@@ -135,12 +170,28 @@ struct WorkflowMappingView: View {
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }
 
-    private func binding(for status: String) -> Binding<Stage?> {
+    /// 제외와 매핑은 동시에 성립할 수 없다(하나는 "채점하지 마라", 다른 하나는 "이 단계로
+    /// 채점하라"다). 한쪽을 고르면 다른 쪽을 반드시 지워, 모순된 조합이 애초에 저장되지
+    /// 않게 한다 — 실효 맵은 매핑을 우선하므로, 남겨두면 사용자가 껐다고 믿는 상태가
+    /// 계속 채점된다.
+    private func binding(for status: String) -> Binding<RowChoice> {
         Binding(
-            get: { selection[status] },
-            set: { newValue in
-                if let newValue { selection[status] = newValue }
-                else { selection.removeValue(forKey: status) }
+            get: {
+                if let stage = selection[status] { return .stage(stage) }
+                return excluded.contains(status) ? .excluded : .undecided
+            },
+            set: { choice in
+                switch choice {
+                case .undecided:
+                    selection.removeValue(forKey: status)
+                    excluded.remove(status)
+                case .excluded:
+                    selection.removeValue(forKey: status)
+                    excluded.insert(status)
+                case .stage(let stage):
+                    excluded.remove(status)
+                    selection[status] = stage
+                }
             }
         )
     }

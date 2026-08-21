@@ -136,8 +136,12 @@ struct SettingsView: View {
                 .font(.callout)
                 .foregroundStyle(theme.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
-            if !model.historyDiscoveredStatuses.isEmpty {
-                Text("과거 이력에서 찾은 상태 \(model.historyDiscoveredStatuses.count)개가 추정값으로 채점되고 있습니다.")
+            // 발견 목록이 아니라 **지금 실제로 추정이 적용되는** 상태를 센다. 발견 목록은
+            // 백필 시점의 스냅샷이라 사용자가 전부 지정한 뒤에도 개수가 그대로고, 폴백이
+            // 닿지 않아 0점 처리된 상태까지 섞여 "불러오지 못했습니다"와 나란히 뜬다.
+            let guessed = model.guessScoredStatuses
+            if !guessed.isEmpty {
+                Text("과거 이력에서 찾은 상태 \(guessed.count)개가 추정값으로 채점되고 있습니다.")
                     .font(.caption)
                     .foregroundStyle(theme.inkTertiary)
                     .fixedSize(horizontal: false, vertical: true)

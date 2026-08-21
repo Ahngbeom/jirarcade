@@ -444,17 +444,21 @@ public class ArcadeStore {
         return try context.fetch(descriptor).first?.catalogUnavailable ?? false
     }
 
-    /// 가장 최근 백필이 발견한 미매핑 상태명. **완료 여부와 무관하게** 마지막 run을 본다.
+    /// 백필이 발견한 미매핑 상태명을 **모든 run의 합집합**으로 돌려준다.
     ///
-    /// `resumableBackfill()`을 대신 쓰면 백필이 정상 종료되는 순간 후보가 통째로 사라진다 —
-    /// 정작 매핑이 필요한 시점은 백필이 끝난 뒤다. 정렬 키가 `startedAt`인 것은
-    /// `lastBackfillFailure()`와 같은 이유다: `finishedAt`은 실패한 run에서 nil이다.
-    public func lastDiscoveredStatuses() throws -> [String] {
-        var descriptor = FetchDescriptor<BackfillRun>(
-            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
-        )
-        descriptor.fetchLimit = 1
-        return try context.fetch(descriptor).first?.discoveredUnmappedStatuses ?? []
+    /// 마지막 run 하나만 보면 안 된다: 정상 완료된 백필이 12건을 발견한 뒤 사용자가 다시
+    /// 눌렀는데 첫 페이지에서 실패하면, 발견이 0건인 그 run이 마지막이 되어 마법사에서
+    /// 과거 상태 행이 통째로 사라진다 — 고쳐야 할 추정은 그대로 채점되는 채로.
+    /// 이전 run의 행은 남아 있으므로 데이터가 아니라 조회가 문제였다.
+    ///
+    /// `resumableBackfill()`을 대신 쓰면 백필이 정상 종료되는 순간 후보가 사라진다 —
+    /// 정작 매핑이 필요한 시점은 백필이 끝난 뒤다.
+    ///
+    /// 계정이 바뀌면 `reset()`이 `BackfillRun`을 전부 지우므로 이전 조직의 상태명은
+    /// 새 계정의 후보에 섞이지 않는다.
+    public func discoveredStatuses() throws -> [String] {
+        let runs = try context.fetch(FetchDescriptor<BackfillRun>())
+        return Set(runs.flatMap(\.discoveredUnmappedStatuses)).sorted()
     }
 }
 

@@ -253,3 +253,49 @@ private func makeStore() throws -> ArcadeStore {
     failure = try store.lastBackfillFailure()
     #expect(failure == "rate limited")
 }
+
+/// 발견 목록은 **모든 run의 합집합**이다.
+///
+/// 마지막 run 하나만 보면, 정상 완료된 백필이 발견한 상태를 그 뒤에 첫 페이지에서 실패한
+/// run이 화면에서 통째로 지운다 — 고쳐야 할 추정은 그대로 채점되는데 마법사에는 행이
+/// 뜨지 않는다. 데이터는 완료된 run에 남아 있으므로 문제는 조회 쪽이었다.
+@MainActor
+@Test func discoveriesFromEarlierRunsAreNotHiddenByALaterEmptyRun() throws {
+    let store = try makeStore()
+    let start = iso("2026-08-13T09:00:00Z")
+
+    let completed = try store.beginBackfill(jql: "q", at: start, totalIssueCount: 100)
+    try store.advanceBackfill(completed, nextPageToken: nil, processedIssueCount: 100,
+                              discovered: ["Merged to Staging", "QA Done"],
+                              partiallyRestored: [])
+    try store.finishBackfill(completed, at: start.addingTimeInterval(600), failure: nil)
+
+    // 사용자가 다시 눌렀지만 첫 페이지에서 실패했다 — 이 run의 발견은 0건이다.
+    let retried = try store.beginBackfill(jql: "q", at: start.addingTimeInterval(3600),
+                                          totalIssueCount: 100)
+    try store.recordBackfillFailure(retried, message: "SyncFailure")
+
+    #expect(try store.discoveredStatuses() == ["Merged to Staging", "QA Done"],
+            "이전 run이 발견한 상태가 남아야 마법사에서 고칠 수 있다")
+}
+
+/// 여러 run의 발견이 겹쳐도 중복 없이, 정렬된 순서로 나온다 —
+/// 순서가 흔들리면 마법사 후보 목록이 열 때마다 뒤바뀐다.
+@MainActor
+@Test func discoveredStatusesAreDeduplicatedAndSorted() throws {
+    let store = try makeStore()
+    let start = iso("2026-08-13T09:00:00Z")
+
+    let first = try store.beginBackfill(jql: "q", at: start, totalIssueCount: 10)
+    try store.advanceBackfill(first, nextPageToken: nil, processedIssueCount: 10,
+                              discovered: ["QA Done", "Merged to Staging"], partiallyRestored: [])
+    try store.finishBackfill(first, at: start.addingTimeInterval(60), failure: nil)
+
+    let second = try store.beginBackfill(jql: "q", at: start.addingTimeInterval(120),
+                                         totalIssueCount: 10)
+    try store.advanceBackfill(second, nextPageToken: nil, processedIssueCount: 10,
+                              discovered: ["Merged to Staging", "On Hold"], partiallyRestored: [])
+    try store.finishBackfill(second, at: start.addingTimeInterval(180), failure: nil)
+
+    #expect(try store.discoveredStatuses() == ["Merged to Staging", "On Hold", "QA Done"])
+}

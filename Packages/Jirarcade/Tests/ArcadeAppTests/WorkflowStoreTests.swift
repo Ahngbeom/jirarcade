@@ -118,3 +118,29 @@ private func withTempDirectory<T>(_ body: (URL) throws -> T) rethrows -> T {
         try FileWorkflowStore(directory: dir).clear()
     }
 }
+
+/// 제외 목록이 생기기 전에 저장된 `workflow.json`을 그대로 읽는다.
+///
+/// 이게 깨지면 기존 사용자는 앱을 켤 때마다 매핑을 통째로 잃고 마법사부터 다시 한다 —
+/// 자동 합성 `Codable`이 누락 키를 에러로 만들기 때문이다. 실제 파일을 손으로 써서
+/// 확인한다(`WorkflowMap`을 인코딩해 만들면 새 키가 들어가 아무것도 검증하지 못한다).
+@Test func mappingFileWrittenBeforeExclusionsExistedStillLoads() throws {
+    try withTempDirectory { dir in
+        let legacy = #"{"statusToStage":{"To Do":"backlog","Done":"done"}}"#
+        try Data(legacy.utf8).write(to: dir.appendingPathComponent("workflow.json"))
+
+        let loaded = try FileWorkflowStore(directory: dir).load()
+        let map = try #require(loaded)
+        #expect(map.statusToStage == ["To Do": .backlog, "Done": .done])
+        #expect(map.excludedStatuses.isEmpty)
+    }
+}
+
+@Test func exclusionsRoundTripThroughTheFile() throws {
+    try withTempDirectory { dir in
+        let store = FileWorkflowStore(directory: dir)
+        let map = WorkflowMap(statusToStage: ["Done": .done], excludedStatuses: ["On Hold"])
+        try store.save(map)
+        #expect(try store.load() == map)
+    }
+}

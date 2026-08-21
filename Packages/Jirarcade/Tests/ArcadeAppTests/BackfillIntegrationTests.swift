@@ -805,3 +805,202 @@ private func uiSource(_ fileName: String) throws -> String {
         .appendingPathComponent("Sources/ArcadeUI/\(fileName)")
     return try String(contentsOf: url, encoding: .utf8)
 }
+
+// MARK: - 정정 사슬: 발견 → 확인 → 확정 → 재집계
+
+/// 다시 누른 백필이 첫 페이지에서 실패해도 **이전 실행의 발견 목록이 남는다.**
+///
+/// 마지막 run 하나만 보면 발견 0건인 실패 run이 마지막이 되어 마법사에서 과거 상태 행이
+/// 통째로 사라진다 — 잘못 추정된 상태는 그대로 채점되는데 고칠 화면이 없어지는 셈이라,
+/// "폴백 추정 → 마법사에서 확인 → 확정 → 재집계" 사슬이 여기서 끊긴다.
+@MainActor
+@Test func discoveriesSurviveARetryThatFailsOnItsFirstPage() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let completed = try store.beginBackfill(jql: "assignee = currentUser()",
+                                            at: iso("2026-08-13T09:00:00Z"), totalIssueCount: 100)
+    try store.advanceBackfill(completed, nextPageToken: nil, processedIssueCount: 100,
+                              discovered: ["Merged to Staging", "QA Done"], partiallyRestored: [])
+    try store.finishBackfill(completed, at: iso("2026-08-13T09:30:00Z"), failure: nil)
+
+    // 사용자가 "처음부터 다시 불러오기"를 눌렀고, 첫 페이지 조회가 실패한다.
+    let source = StubChangelogSource(pages: [])
+    source.failOnToken = .some(nil)
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+
+    await model.startBackfill()
+
+    #expect(model.lastBackfillFailure == "StubError", "실패가 실제로 일어났는지 확인한다")
+    #expect(model.historyDiscoveredStatuses == ["Merged to Staging", "QA Done"],
+            "실패한 재시도가 이전 실행의 발견 목록을 화면에서 지우면 안 된다")
+}
+
+/// "N개가 추정값으로 채점되고 있습니다"는 **지금 실제로 추정이 적용되는** 상태를 세야 한다.
+/// 백필 시점의 발견 목록을 세면 사용자가 전부 지정한 뒤에도 개수가 줄지 않는다.
+@MainActor
+@Test func theGuessCountDropsAsTheUserFixesTheMapping() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                        totalIssueCount: 10)
+    try store.advanceBackfill(runId, nextPageToken: nil, processedIssueCount: 10,
+                              discovered: ["Merged to Staging", "On Hold"], partiallyRestored: [])
+    try store.finishBackfill(runId, at: iso("2026-08-13T09:30:00Z"), failure: nil)
+
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [:]))
+    try workflow.saveFallbacks(
+        WorkflowMap(statusToStage: ["Merged to Staging": .active, "On Hold": .done])
+    )
+    let model = try makeModel(store: store, credentials: signedIn(), workflow: workflow)
+    await model.start()
+
+    #expect(model.guessScoredStatuses == ["Merged to Staging", "On Hold"])
+
+    // 하나는 단계를 지정하고, 하나는 아예 채점하지 않기로 한다.
+    await model.confirmMapping(
+        WorkflowMap(statusToStage: ["Merged to Staging": .review], excludedStatuses: ["On Hold"])
+    )
+
+    #expect(model.guessScoredStatuses.isEmpty,
+            "지정한 것도 제외한 것도 더 이상 추정으로 채점되지 않는다")
+    #expect(model.historyDiscoveredStatuses.count == 2,
+            "발견 목록 자체는 백필의 사실이므로 그대로다 — 세는 값이 달라야 한다")
+}
+
+/// 카탈로그를 못 받은 run에서는 발견 상태가 전부 **0점**이지 추정이 아니다.
+/// 그때 발견 개수를 세면 "상태 목록을 불러오지 못했습니다"(전부 0점)와
+/// "N개가 추정값으로 채점되고 있습니다"가 같은 화면에 나란히 뜬다.
+@MainActor
+@Test func statusesWithNoFallbackAreNotCountedAsGuesses() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                        totalIssueCount: 10)
+    try store.advanceBackfill(runId, nextPageToken: nil, processedIssueCount: 10,
+                              discovered: ["Merged to Staging"], partiallyRestored: [])
+    try store.finishBackfill(runId, at: iso("2026-08-13T09:30:00Z"), failure: nil)
+
+    let model = try makeModel(store: store, credentials: signedIn())
+    await model.start()
+
+    #expect(model.historyDiscoveredStatuses == ["Merged to Staging"])
+    #expect(model.guessScoredStatuses.isEmpty, "폴백이 없으면 추정이 아니라 0점이다")
+}
+
+/// **이 태스크의 존재 이유.** 잘못 추정된 상태를 끄면 그 자리에서 XP가 정정된다.
+///
+/// 제외 목록이 없으면 사용자가 할 수 있는 일은 다른 단계로 바꾸는 것뿐이고, 폴백이
+/// 밑에 깔려 계속 채점된다 — 실물에서 보류 성격의 상태가 done으로 추정돼 마감 보너스까지
+/// 받고 있었다.
+@MainActor
+@Test func excludingAGuessedStatusRemovesItsXPRightAway() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let event = DomainEvent(
+        issueKey: "MPT-1", kind: .statusChanged,
+        fromStatus: "In Progress", toStatus: "On Hold",
+        observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
+        priorUpdatedAt: iso("2026-08-01T00:00:00Z")
+    )
+    _ = try store.appendBackfillEvents([event], historyIds: ["h-1"], fullyRestoredKeys: [])
+    let workflow = InMemoryWorkflowStore(
+        seeded: WorkflowMap(statusToStage: ["In Progress": .active])
+    )
+    // 보류 성격의 상태가 statusCategory상 done이라 완료 전이로 추정됐다.
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["On Hold": .done]))
+    let model = try makeModel(store: store, credentials: signedIn(), workflow: workflow)
+    await model.start()
+
+    let before = try #require(model.lifetimeSummary)
+    #expect(before.totalXP > 0, "추정대로면 active -> done 전진이라 XP가 붙는다")
+
+    await model.confirmMapping(
+        WorkflowMap(statusToStage: ["In Progress": .active], excludedStatuses: ["On Hold"])
+    )
+
+    let after = try #require(model.lifetimeSummary)
+    #expect(after.totalXP == 0, "끈 상태는 추정도 적용되지 않아야 한다")
+}
+
+/// 제외는 저장돼 다음 실행까지 살아남는다. 메모리에만 있으면 사용자가 끈 상태가
+/// 앱을 다시 켜는 순간 추정 채점으로 되돌아간다.
+@MainActor
+@Test func exclusionsSurviveRelaunch() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [:]))
+    let model = try makeModel(credentials: signedIn(), workflow: workflow)
+    await model.start()
+    await model.confirmMapping(
+        WorkflowMap(statusToStage: ["In Progress": .active], excludedStatuses: ["On Hold"])
+    )
+
+    let relaunched = try makeModel(credentials: signedIn(), workflow: workflow)
+    await relaunched.start()
+
+    #expect(relaunched.currentMapping.excludedStatuses == ["On Hold"])
+}
+
+// MARK: - 백필 중 동기화 정지
+
+/// 백필이 도는 동안에는 라이브 동기화가 멈춘다. 백필이 changelog를 받은 뒤 이벤트를
+/// 넣기까지의 창에 동기화가 같은 티켓의 새 전이를 기록하면, 그 전이는 백필의 대체 로직에
+/// 지워진다 — 다음 백필이 복원할 때까지 점수가 튄다.
+@MainActor
+@Test func backfillStopsLiveSyncingWhileItRuns() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [([], nil)])
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+    model.startSyncing()
+    #expect(model.isSyncScheduled, "멈출 것이 실제로 돌고 있어야 이 테스트가 무언가를 검증한다")
+
+    source.onFetchPage = { _ in
+        await MainActor.run {
+            #expect(model.isSyncScheduled == false, "백필이 도는 동안에는 동기화가 멈춰 있어야 한다")
+        }
+    }
+
+    await model.startBackfill()
+
+    #expect(source.requestedTokens.count == 1, "훅이 돌지 않으면 위 검사는 조용히 통과한다")
+    #expect(model.isSyncScheduled, "끝나면 되살려야 한다 — 안 그러면 앱이 조용히 갱신을 멈춘다")
+    model.stopSyncing()
+}
+
+/// 백필이 끝났다고 **원래 멈춰 있던** 동기화를 켜면 안 된다.
+/// 로그인 직후 설정에서 바로 백필을 누른 경우가 그렇다.
+@MainActor
+@Test func backfillDoesNotStartSyncingThatWasNotRunning() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [([], nil)])
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+    #expect(model.isSyncScheduled == false)
+
+    await model.startBackfill()
+
+    #expect(model.isSyncScheduled == false, "백필이 꺼져 있던 동기화를 켜면 안 된다")
+}
+
+// MARK: - 화면 배선 (정정 사슬)
+
+/// 설정 화면이 발견 개수가 아니라 **지금 추정이 적용되는** 개수를 세는지 소스로 확인한다.
+/// ArcadeUI에는 테스트 타깃이 없으므로 `ModuleBoundaryTests`가 색 리터럴을 잡는 것과
+/// 같은 방식이다.
+@Test func settingsCountsWhatIsActuallyGuessedRightNow() throws {
+    let text = try uiSource("SettingsView.swift")
+
+    let usesLiveCount = text.contains("model.guessScoredStatuses")
+    let usesSnapshotCount = text.contains("model.historyDiscoveredStatuses.count")
+    #expect(usesLiveCount, "지금 추정이 적용되는 상태를 세야 매핑한 뒤 개수가 줄어든다")
+    #expect(!usesSnapshotCount, "백필 시점의 스냅샷을 세면 무엇을 고쳐도 개수가 그대로다")
+}
+
+/// 마법사가 "채점하지 않음"을 실제로 저장하는지 소스로 확인한다.
+/// 저장하지 않으면 사용자가 끈 상태에 폴백이 다시 깔려, 화면은 껐다고 말하는데
+/// 채점은 계속된다.
+@Test func theMappingWizardCanTurnAStatusOff() throws {
+    let text = try uiSource("WorkflowMappingView.swift")
+
+    let seedsExclusions =
+        text.contains("State(initialValue: model.currentMapping.excludedStatuses)")
+    let savesExclusions = text.contains("excludedStatuses: excluded")
+    #expect(seedsExclusions, "다시 연 마법사가 기존 제외 목록을 들고 있어야 한다")
+    #expect(savesExclusions, "고른 제외가 저장되지 않으면 폴백이 다시 깔린다")
+}
