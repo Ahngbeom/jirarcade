@@ -23,8 +23,13 @@ public enum ArcadeStoreError: Error, Equatable {
 
 /// SwiftData 모델과 순수 값 타입 사이의 유일한 경계.
 /// 규칙 엔진은 이 타입 너머의 @Model을 절대 보지 않는다.
+///
+/// `final`이 아닌 이유: 백필 엔진이 이벤트를 티켓마다가 아니라 페이지마다 넣는지를
+/// 테스트가 호출 횟수로 확인한다(`@testable` 서브클래스). 이 규모가 2차식이 되면
+/// 1,200건 백필 동안 UI가 100초 넘게 멈춘다. `open`이 아니므로 모듈 밖에서는
+/// 여전히 상속할 수 없다.
 @MainActor
-public final class ArcadeStore {
+public class ArcadeStore {
     private let container: ModelContainer
     private var context: ModelContext { container.mainContext }
 
@@ -307,6 +312,20 @@ public final class ArcadeStore {
         try context.save()
     }
 
+    /// 실패 사유만 적고 run은 미완료로 남긴다.
+    ///
+    /// `finishBackfill(..., failure:)`을 쓰지 않는 이유: `finishedAt`을 채우면 그 run이
+    /// `resumableBackfill()`에서 빠져 여기까지 받은 1,000여 건의 진행 지점을 버리게 된다.
+    /// 실패는 알리되 재개 가능성은 지킨다.
+    public func recordBackfillFailure(_ id: PersistentIdentifier, message: String) throws {
+        // 조용히 return하면 실패가 흔적 없이 사라지고 설정 화면은 아무 말도 하지 않는다.
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.failureMessage = message
+        try context.save()
+    }
+
     /// 아직 끝나지 않은 백필. 있으면 "이어서 불러오기"를 제안한다.
     public func resumableBackfill() throws -> BackfillSnapshot? {
         var descriptor = FetchDescriptor<BackfillRun>(
@@ -324,11 +343,14 @@ public final class ArcadeStore {
         )
     }
 
-    /// 마지막으로 끝난 백필의 실패 사유. 성공했으면 nil이다.
+    /// 가장 최근에 시작한 백필의 실패 사유. 성공했거나 아직 실패하지 않았으면 nil이다.
+    ///
+    /// 완료 여부를 가리지 않는 이유: 실패한 run은 재개할 수 있도록 일부러 미완료로 남기므로
+    /// (`recordBackfillFailure`), 끝난 run만 보면 엔진이 적은 사유가 영원히 보이지 않는다.
+    /// 정렬 키가 `startedAt`인 것도 같은 이유다 — `finishedAt`은 실패한 run에서 nil이다.
     public func lastBackfillFailure() throws -> String? {
         var descriptor = FetchDescriptor<BackfillRun>(
-            predicate: #Predicate { $0.finishedAt != nil },
-            sortBy: [SortDescriptor(\.finishedAt, order: .reverse)]
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
         )
         descriptor.fetchLimit = 1
         return try context.fetch(descriptor).first?.failureMessage

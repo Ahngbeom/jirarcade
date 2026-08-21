@@ -79,12 +79,15 @@ private func makeStore() throws -> ArcadeStore {
     }
 }
 
-/// 미완료 run만 버린다. 완료된 run은 이력이라 남아야 한다 —
-/// 실패로 끝난 백필을 다시 시도했을 때 `lastBackfillFailure()`가 사유를 잃으면
-/// 설정 화면에서 왜 실패했는지 알 수 없다.
+/// 미완료 run만 버린다. 완료된 run은 이력이라 남아야 한다.
+///
+/// `lastBackfillFailure()`로 보지 않는 이유: 그건 가장 최근에 **시작한** run을 보므로
+/// 방금 시작한 q2(아직 실패하지 않음)를 집는다. 여기서 확인할 것은 q1 레코드가
+/// 지워지지 않았다는 사실 자체다.
 @MainActor
 @Test func startingANewBackfillKeepsFinishedRuns() throws {
-    let store = try makeStore()
+    let container = try ArcadeStore.makeInMemoryContainer()
+    let store = ArcadeStore(container: container)
     let start = iso("2026-08-13T09:00:00Z")
 
     let failed = try store.beginBackfill(jql: "q1", at: start, totalIssueCount: 10)
@@ -92,8 +95,41 @@ private func makeStore() throws -> ArcadeStore {
 
     _ = try store.beginBackfill(jql: "q2", at: start.addingTimeInterval(120), totalIssueCount: 10)
 
+    let runs = try container.mainContext.fetch(FetchDescriptor<BackfillRun>())
+    let kept = try #require(runs.first { $0.jql == "q1" })
+    #expect(kept.failureMessage == "offline", "새 run을 시작해도 완료된 run은 이력으로 남는다")
+}
+
+/// 실패 사유를 적어도 run은 미완료로 남는다 — 재개 지점을 잃지 않는다.
+/// `finishBackfill(failure:)`로 닫으면 여기까지 받은 1,000여 건의 진행이 버려진다.
+@MainActor
+@Test func recordingAFailureKeepsTheRunResumable() throws {
+    let store = try makeStore()
+    let start = iso("2026-08-13T09:00:00Z")
+    let id = try store.beginBackfill(jql: "q", at: start, totalIssueCount: 1263)
+    try store.advanceBackfill(id, nextPageToken: "tok-3", processedIssueCount: 300,
+                              discovered: [], partiallyRestored: [])
+
+    try store.recordBackfillFailure(id, message: "URLError")
+
+    let resumable = try #require(try store.resumableBackfill())
+    #expect(resumable.nextPageToken == "tok-3")
     let failure = try store.lastBackfillFailure()
-    #expect(failure == "offline", "새 run을 시작해도 완료된 run은 이력으로 남는다")
+    #expect(failure == "URLError", "끝나지 않은 run의 사유도 보여야 한다")
+}
+
+/// 없는 run에 사유를 적으려 하면 던진다. 조용히 return하면 실패가 흔적 없이 사라지고
+/// 설정 화면은 아무 말도 하지 않는다.
+@MainActor
+@Test func recordingAFailureOnAMissingRunThrows() throws {
+    let store = try makeStore()
+    let id = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                     totalIssueCount: 10)
+
+    let other = try makeStore()   // 다른 컨테이너 — 이 id는 여기에 없다
+    #expect(throws: ArcadeStoreError.backfillRunNotFound) {
+        try other.recordBackfillFailure(id, message: "URLError")
+    }
 }
 
 /// 미완료 run이 여러 개면 가장 최근에 시작한 것을 집는다.
@@ -188,11 +224,11 @@ private func makeStore() throws -> ArcadeStore {
     #expect(snapshot.partiallyRestored == ["MPT-1", "MPT-2"])
 }
 
-/// `lastBackfillFailure()`가 보는 것은 **가장 마지막에 끝난** run이다.
-/// 옵셔널 `finishedAt`으로 정렬하므로, 아직 끝나지 않은 run이 nil로 섞여 들어와
-/// 최근 것으로 뽑히지 않는지도 함께 고정한다 — 그러면 실패가 조용히 사라진다.
+/// `lastBackfillFailure()`가 보는 것은 **가장 최근에 시작한** run이다.
+/// 나중에 성공했으면 옛 실패는 더 이상 보이지 않고, 아직 끝나지 않은 run이 섞여도
+/// 사유 없는 run은 사유 없음으로 읽힌다.
 @MainActor
-@Test func lastBackfillFailureLooksAtTheMostRecentlyFinishedRun() throws {
+@Test func lastBackfillFailureLooksAtTheMostRecentlyStartedRun() throws {
     let store = try makeStore()
     let start = iso("2026-08-13T09:00:00Z")
 

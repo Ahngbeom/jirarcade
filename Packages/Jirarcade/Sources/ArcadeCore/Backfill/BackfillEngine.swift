@@ -120,14 +120,37 @@ public final class BackfillEngine {
         // 실패해도 여기까지 넣은 이벤트는 유효하고 진행 지점이 저장돼 있다.
         // run을 미완료로 남기면 다음 실행에서 "이어서 하시겠습니까"가 뜬다 —
         // 그게 맞는 동작이므로 실패 경로에서는 finishBackfill로 닫지 않는다.
-        let outcome = try await walk(
-            jql: jql, runId: runId, catalog: catalog,
-            catalogUnavailable: catalogUnavailable,
-            token: token, processed: processed,
-            totalIssueCount: totalIssueCount, progress: progress
-        )
-        try store.finishBackfill(runId, at: now, failure: nil)
-        return outcome
+        do {
+            let outcome = try await walk(
+                jql: jql, runId: runId, catalog: catalog,
+                catalogUnavailable: catalogUnavailable,
+                token: token, processed: processed,
+                totalIssueCount: totalIssueCount, progress: progress
+            )
+            try store.finishBackfill(runId, at: now, failure: nil)
+            return outcome
+        } catch is CancellationError {
+            // 사용자가 스스로 누른 중단은 실패가 아니다. 사유를 적으면 다음 실행에서
+            // "지난 백필이 실패했습니다"가 뜬다 — run은 미완료로만 남겨 재개 대상이 되게 한다.
+            throw CancellationError()
+        } catch {
+            // 사유만 적고 run은 미완료로 둔다. finishedAt을 채우면 재개 대상에서 빠져
+            // 여기까지 받은 1,000여 건의 진행 지점을 버리게 된다.
+            // 기록 자체가 실패해도 원래 에러를 가리면 안 되므로 try?로 넘긴다.
+            try? store.recordBackfillFailure(runId, message: Self.failureDescription(error))
+            throw error
+        }
+    }
+
+    /// 저장할 실패 사유. 설정 화면에 그대로 노출되므로 조직 정보가 섞이면 안 된다.
+    ///
+    /// `localizedDescription`이나 `String(describing:)`에는 호스트·JQL·토큰 조각이 실려 올 수
+    /// 있어 타입 이름만 남긴다. 우리가 정의한 에러는 케이스 이름 자체가 진단이고 조직 정보를
+    /// 담지 않으므로 그것만 예외로 둔다. (`ArcadeApp`의 `redactedErrorDescription`은
+    /// 모듈 경계상 `ArcadeCore`에서 쓸 수 없다.)
+    private static func failureDescription(_ error: any Error) -> String {
+        if let error = error as? BackfillError { return "BackfillError.\(error)" }
+        return String(describing: type(of: error))
     }
 
     private func walk(
@@ -155,8 +178,15 @@ public final class BackfillEngine {
 
             let page = try await source.fetchPage(jql: jql, pageToken: token)
 
+            // 페이지 하나 분량을 모았다가 한 번에 넣는다. 티켓마다 부르면
+            // appendBackfillEvents가 호출마다 기존 백필 이벤트를 전량 조회하므로 2차식이 된다
+            // (실측: 티켓 800건 46초). 엔진은 @MainActor이고 스토어 호출은 동기라 그동안 UI가 멈춘다.
+            var pageEvents: [DomainEvent] = []
+            var pageHistoryIds: [String] = []
+
             for issue in page.issues {
-                let resolved = await resolve(issue: issue, partiallyRestored: &partiallyRestored)
+                let resolved = try await resolve(issue: issue,
+                                                 partiallyRestored: &partiallyRestored)
                 let transitions = parser.parse(issue: resolved)
 
                 // 폴백 판정을 태워 미매핑 상태와 폴백 매핑을 수집한다. 반환값은 쓰지 않지만
@@ -168,11 +198,12 @@ public final class BackfillEngine {
                                       name: transition.event.toStatus)
                 }
 
-                inserted += try store.appendBackfillEvents(
-                    transitions.map(\.event), historyIds: transitions.map(\.historyId)
-                )
+                pageEvents.append(contentsOf: transitions.map(\.event))
+                pageHistoryIds.append(contentsOf: transitions.map(\.historyId))
                 processed += 1
             }
+
+            inserted += try store.appendBackfillEvents(pageEvents, historyIds: pageHistoryIds)
 
             token = page.nextPageToken
 
@@ -200,15 +231,29 @@ public final class BackfillEngine {
     /// 부분 복원으로 기록한다 — 한 티켓 때문에 전체를 멈추지 않는다.
     private func resolve(
         issue: JiraIssueWithChangelog, partiallyRestored: inout [String]
-    ) async -> JiraIssueWithChangelog {
+    ) async throws -> JiraIssueWithChangelog {
         guard issue.changelog.isTruncated else { return issue }
         do {
             let full = try await fetchWholeChangelog(key: issue.key)
+            // 보충이 짧게 와도(서버가 total보다 적게 주고 멈춤) 받은 것을 완전한 changelog인 양
+            // 돌려주게 된다. 기록하지 않으면 전이 5개 중 1개로 XP가 계산되는데
+            // 사용자는 이 티켓이 온전히 소급됐다고 믿는다.
+            if full.isTruncated { partiallyRestored.append(issue.key) }
             return JiraIssueWithChangelog(
                 key: issue.key, createdAt: issue.createdAt,
                 dueDate: issue.dueDate, changelog: full
             )
+        } catch is CancellationError {
+            // 취소는 이 티켓의 문제가 아니다. 여기서 삼키면 사용자가 중단을 눌렀는데도
+            // 백필이 끝까지 돌아 run이 "정상 완료"로 닫히고, 잘린 changelog가 영구히 남는다
+            // (재시도해도 historyId 중복 검사는 이미 들어간 것만 거를 뿐이다).
+            throw CancellationError()
         } catch {
+            // 취소를 걸러낸 뒤에도 여기에는 조직적 실패(인증 만료·레이트 리밋)가 섞여 들어와
+            // 티켓 하나의 문제로 뭉개진다. 그럼에도 넓게 잡는 이유는 한 티켓의 404가
+            // 3년치 백필 전체를 되돌리게 두는 편이 더 나쁘기 때문이다 —
+            // 여기까지 넣은 이벤트는 유효하고 재시도는 historyId 검사 덕에 안전하다.
+            // 조직적 실패를 구분해 즉시 중단하는 것은 별도 과제로 남긴다(리뷰 m3).
             partiallyRestored.append(issue.key)
             return issue
         }
@@ -224,10 +269,12 @@ public final class BackfillEngine {
         while true {
             try Task.checkCancellation()
             let page = try await source.fetchIssueChangelog(key: key, startAt: startAt)
-            total = page.total
             // 서버가 빈 페이지를 주면 더 받을 게 없다. 이 검사가 없으면
             // total이 실제보다 큰 경우에 무한 루프가 된다.
+            // 빈 페이지가 말하는 total은 반영하지 않는다 — 범위를 벗어난 startAt에
+            // 0을 돌려주는 서버가 있고, 그걸 믿으면 짧게 온 보충이 완전 복원으로 보인다.
             guard !page.histories.isEmpty else { break }
+            total = max(total, page.total)
             histories.append(contentsOf: page.histories)
             guard histories.count < total else { break }
             startAt = histories.count
