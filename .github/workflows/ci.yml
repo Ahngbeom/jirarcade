@@ -5,6 +5,9 @@ on:
   push:
     branches: [main]
 
+permissions:
+  contents: read
+
 # 연속 푸시가 러너를 겹쳐 잡지 않게 한다. 낡은 실행은 취소한다.
 concurrency:
   group: ci-${{ github.ref }}
@@ -30,7 +33,7 @@ jobs:
           swift --version
           xcodebuild -version
           echo "설치된 Xcode:"
-          ls /Applications | grep -i '^Xcode' || true
+          find /Applications -maxdepth 1 -iname 'Xcode*' -print || true
 
       - name: 빌드
         run: swift build --build-tests
