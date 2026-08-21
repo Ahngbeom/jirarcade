@@ -93,3 +93,28 @@ private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
     #expect(model.hygiene == nil)
     #expect(model.siteHost == nil)
 }
+
+/// 뷰가 시계와 달력을 직접 만들지 않도록 모델이 스냅샷을 준다.
+@MainActor
+@Test func buildsTheBoardSnapshotWithTheInjectedClock() async throws {
+    let model = try makeModel(workflow: InMemoryWorkflowStore(seeded: demoWorkflow),
+                              now: now)
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    model.seedIssuesForTesting([
+        issue(key: "DEMO-1", status: "In Progress",
+              updated: now.addingTimeInterval(-30 * 86_400)),
+    ])
+
+    let snapshot = model.boardSnapshot(minimumSpacing: 0.1)
+
+    #expect(snapshot.lanes.map(\.stage) == [.backlog, .active, .review, .verify])
+    #expect(snapshot.lanes[1].slots.first?.daysStagnant == 30)
+    #expect(snapshot.axis.map(\.days) == [0, 7, 21, 45])
+}
+
+@MainActor
+@Test func exposesTheWIPLimitFromTheRuleSet() throws {
+    let model = try makeModel(now: now)
+
+    #expect(model.wipLimit == RuleSet.default.wipLimit)
+}
