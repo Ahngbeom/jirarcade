@@ -14,7 +14,7 @@ public struct APITokenAuth: AuthProvider, CustomStringConvertible {
     ///
     /// - Throws: 사이트 문자열로 URL을 만들 수 없으면 `JiraError.invalidSite`.
     public init(site: String, email: String, token: String) throws {
-        let host = Self.normalizeHost(site)
+        let host = JiraSite.normalize(site)
         guard !host.isEmpty, let url = URL(string: "https://\(host)/rest/api/3") else {
             throw JiraError.invalidSite
         }
@@ -33,13 +33,4 @@ public struct APITokenAuth: AuthProvider, CustomStringConvertible {
     public func recoverFromUnauthorized() async throws -> Bool { false }
 
     public var description: String { "APITokenAuth(host: \(host))" }
-
-    private static func normalizeHost(_ site: String) -> String {
-        var text = site.trimmingCharacters(in: .whitespacesAndNewlines)
-        for prefix in ["https://", "http://"] where text.hasPrefix(prefix) {
-            text.removeFirst(prefix.count)
-        }
-        while text.hasSuffix("/") { text.removeLast() }
-        return text
-    }
 }

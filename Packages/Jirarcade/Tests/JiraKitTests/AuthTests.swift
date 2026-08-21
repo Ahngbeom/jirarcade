@@ -126,3 +126,26 @@ func invalidSiteThrowsInsteadOfCrashing(site: String) {
         _ = try await resolveCloudId(site: "example.atlassian.net", http: http)
     }
 }
+
+// MARK: - 사이트 정규화
+
+/// 호스트명은 대소문자를 구분하지 않는다. 대문자로 적은 사이트가 소문자로 적은 사이트와
+/// 다른 값으로 남으면, 이 값을 비교하는 쪽(계정 바인딩)이 같은 사이트를 다르게 본다.
+@Test(arguments: [
+    ("example.atlassian.net", "example.atlassian.net"),
+    ("  example.atlassian.net  ", "example.atlassian.net"),
+    ("https://example.atlassian.net", "example.atlassian.net"),
+    ("HTTPS://Example.Atlassian.NET/", "example.atlassian.net"),
+    ("http://example.atlassian.net///", "example.atlassian.net"),
+    ("EXAMPLE.ATLASSIAN.NET", "example.atlassian.net"),
+    ("jira.internal:8443", "jira.internal:8443"),
+])
+func siteNormalizationReducesEquivalentSpellings(input: String, expected: String) {
+    #expect(JiraSite.normalize(input) == expected)
+}
+
+/// 유효성 판정은 URL을 만드는 쪽의 몫이다 — 정규화는 걸러내지 않는다.
+@Test func siteNormalizationDoesNotJudgeValidity() {
+    #expect(JiraSite.normalize("https://") == "")
+    #expect(JiraSite.normalize("   ") == "")
+}

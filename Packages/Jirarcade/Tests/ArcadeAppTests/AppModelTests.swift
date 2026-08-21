@@ -805,3 +805,101 @@ private func assertDoesNotLeak(
     #expect(mapping?.statusToStage == ["Done": .done])
     #expect(fallbacks?.statusToStage == ["In Progress": .active])
 }
+
+/// N2. Atlassian Cloud의 accountId는 **사이트가 아니라 Atlassian 계정**에 붙는다 —
+/// 회사 Jira에서 다른 조직의 Jira로 옮기면 같은 accountId가 돌아온다. accountId만
+/// 비교하면 그 이동이 전환으로 잡히지 않아, 이전 조직의 미러·이벤트·워크플로 매핑이
+/// 그대로 남고 새 조직의 전이가 남의 조직 기준으로 채점된다.
+@MainActor
+@Test func sameAccountOnADifferentSiteClearsTheMirrorAndMapping() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    // myselfBody가 돌려주는 accountId("acc-me")와 **같은** 값으로 묶어 둔다 — 사이트만
+    // 다르다. accountId만 보는 구현은 이 테스트를 통과하지 못한다.
+    let accountBinding = InMemoryAccountBindingStore(
+        seeded: AccountBinding(site: "example.atlassian.net", accountId: "acc-me").rawValue
+    )
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try store.applySync(
+        issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
+                               issueType: "Task", priority: nil, assigneeAccountId: nil,
+                               assigneeName: nil, dueDate: nil,
+                               jiraUpdatedAt: iso("2026-08-14T09:00:00Z"))],
+        events: [DomainEvent(issueKey: "DEMO-1", kind: .appeared, fromStatus: nil,
+                             toStatus: "To Do", observedAt: iso("2026-08-14T09:00:00Z"),
+                             actorAccountId: "acc-me")],
+        observedAt: iso("2026-08-14T09:00:00Z")
+    )
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    let model = AppModel(
+        store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        clientFactory: { auth in
+            JiraClient(auth: auth, http: ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
+            ]))
+        },
+        clock: { iso("2026-08-14T09:00:00Z") }, calendar: utc
+    )
+
+    // 두 번째 사이트를 atlassian.net 밖의 호스트로 둔 이유: ModuleBoundaryTests가
+    // 리포지토리 전체에서 예시 사이트 하나만 허용한다(실제 조직명 유출 방지).
+    await model.signIn(site: "jira.example.com", email: "u@e.com", token: "t")
+
+    #expect(try store.loadMirror().isEmpty, "다른 조직의 티켓이 남으면 안 된다")
+    #expect(try store.loadEvents().isEmpty, "이전 조직의 이벤트가 새 조직의 XP에 합산된다")
+    #expect(try workflow.load() == nil,
+            "이전 조직의 상태 매핑이 남으면 새 조직의 전이가 남의 기준으로 채점된다")
+    #expect(try accountBinding.load()
+            == AccountBinding(site: "jira.example.com", accountId: "acc-me").rawValue)
+}
+
+/// 업데이트 경로. 앱을 업데이트하기 전에 저장된 바인딩에는 accountId만 들어 있다.
+/// 그 값을 "사이트가 다르다"로 읽으면 같은 사이트·같은 계정을 쓰던 사용자가 업데이트
+/// 한 번에 이벤트 로그를 잃는다 — 이벤트 로그는 다시 동기화해도 복구되지 않는다.
+@MainActor
+@Test func legacyBindingFromAnOlderBuildDoesNotLookLikeAnAccountSwitch() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    // 옛 형식: 사이트 없이 accountId만.
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-me")
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try store.applySync(
+        issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
+                               issueType: "Task", priority: nil, assigneeAccountId: nil,
+                               assigneeName: nil, dueDate: nil,
+                               jiraUpdatedAt: iso("2026-08-14T09:00:00Z"))],
+        events: [DomainEvent(issueKey: "DEMO-1", kind: .appeared, fromStatus: nil,
+                             toStatus: "To Do", observedAt: iso("2026-08-14T09:00:00Z"),
+                             actorAccountId: "acc-me")],
+        observedAt: iso("2026-08-14T09:00:00Z")
+    )
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    let model = AppModel(
+        store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        clientFactory: { auth in
+            JiraClient(auth: auth, http: ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+            ]))
+        },
+        clock: { iso("2026-08-14T09:00:00Z") }, calendar: utc
+    )
+
+    await model.start()
+
+    #expect(model.phase == .ready)
+    #expect(try store.loadMirror().count == 1, "업데이트만으로 미러를 지우면 안 된다")
+    #expect(try store.loadEvents().count == 1, "업데이트만으로 이벤트 로그를 잃으면 안 된다")
+    #expect(try workflow.load() != nil, "업데이트만으로 매핑을 다시 묻게 하면 안 된다")
+    // 옛 값은 여기서 새 형식으로 승격된다 — 다음 로그인부터는 사이트까지 비교된다.
+    #expect(try accountBinding.load()
+            == AccountBinding(site: "example.atlassian.net", accountId: "acc-me").rawValue)
+}

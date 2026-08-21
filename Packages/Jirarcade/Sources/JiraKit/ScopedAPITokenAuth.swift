@@ -45,11 +45,7 @@ public struct ScopedAPITokenAuth: AuthProvider, CustomStringConvertible {
 /// 덕분에 사용자에게 UUID를 묻지 않아도 스코프 토큰 경로를 만들 수 있다 — 로그인 화면은
 /// 지금처럼 사이트 주소·이메일·토큰 세 개만 받으면 된다.
 public func resolveCloudId(site: String, http: any HTTPClient) async throws -> String {
-    var host = site.trimmingCharacters(in: .whitespacesAndNewlines)
-    for prefix in ["https://", "http://"] where host.hasPrefix(prefix) {
-        host.removeFirst(prefix.count)
-    }
-    while host.hasSuffix("/") { host.removeLast() }
+    let host = JiraSite.normalize(site)
 
     guard !host.isEmpty, let url = URL(string: "https://\(host)/_edge/tenant_info") else {
         throw JiraError.invalidSite

@@ -171,7 +171,7 @@ public final class AppModel {
         stopSyncing()
         scheduler = nil
         // 세대를 올려 진행 중이던 페치가 끝나도 이 계정의 스토어에 쓰지 못하게 막는다
-        // (I4). `boundAccountId`는 여기서 지우지 않는다 — 지우면 다음 로그인이 "계정이
+        // (I4). 계정 바인딩(`accountBinding`)은 여기서 지우지 않는다 — 지우면 다음 로그인이 "계정이
         // 바뀌었는지" 판단할 근거를 잃는다. validate() 참고.
         syncGeneration += 1
         try? credentials.clear()
@@ -589,16 +589,22 @@ public final class AppModel {
         // 신뢰할 수 없다는 뜻이므로 **쓰지도 않는다** — 미러는 보수적으로 남겨둔 채 바인딩만
         // 새 accountId로 덮으면, 다음 실행에서는 둘이 서로 다른 계정을 가리키는데 검사는
         // 통과한다. 그 순간 두 계정의 티켓과 이벤트가 한 스토어에 섞인다.
+        //
+        // 바인딩은 accountId만이 아니라 **사이트까지** 담는다. Atlassian Cloud의
+        // accountId는 사이트가 아니라 Atlassian 계정에 붙어서, 같은 사람이 다른 조직의
+        // Jira로 옮겨도 accountId는 그대로다 — accountId만 보면 그 이동이 전환으로 잡히지
+        // 않는다(AccountBinding 참고).
         do {
-            let bound = try accountBinding.load()
-            if let bound, bound != me.accountId {
+            let current = AccountBinding(site: creds.site, accountId: me.accountId)
+            let bound = try accountBinding.load().map(AccountBinding.init(rawValue:))
+            if let bound, !bound.identifiesSameAccount(as: current) {
                 try? store.reset()
                 // 채점 **입력**도 함께 버린다. 미러·이벤트만 지우면 이전 조직의 워크플로
                 // 매핑과 백필이 추정한 폴백이 남아 `effectiveWorkflow()`에 계속 병합되고,
                 // 새 계정의 전이가 남의 조직 기준으로 채점된다(WorkflowStore.clear 참고).
                 try? workflow.clear()
             }
-            try? accountBinding.save(me.accountId)
+            try? accountBinding.save(current.rawValue)
         } catch {
             // 미러도 바인딩도 건드리지 않는다. 지우는 쪽도 덮는 쪽도 되돌릴 수 없다.
         }
