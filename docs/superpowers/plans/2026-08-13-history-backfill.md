@@ -4040,7 +4040,7 @@ private func backfilledEvents() -> [DomainEvent] {
 ///
 /// 이 불변식은 `statusEnteredAt` 재구성이 두 호출에서 공유되기 때문에 성립한다. 시즌 필터를
 /// 정렬 직후에 적용하도록 바꾸면 시즌 안 첫 전이의 정체일이 0으로 리셋되어 조용히 깨진다.
-@Test func sameEventScoresIdenticallyInSeasonAndLifetime() {
+@Test func sameEventScoresIdenticallyInSeasonAndLifetime() throws {
     let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc,
                              myAccountId: "acc-me")
     let now = iso("2026-08-20T00:00:00Z")
@@ -4059,16 +4059,15 @@ private func backfilledEvents() -> [DomainEvent] {
     let season = engine.recompute(events: events, issues: [:], now: now,
                                   since: iso("2026-07-21T00:00:00Z"))
 
-    let inLifetime = lifetime.scored.first { $0.event.issueKey == "DEMO-2" }?.xp
-    let inSeason = season.scored.first { $0.event.issueKey == "DEMO-2" }?.xp
-    #expect(inLifetime != nil)
+    let inLifetime = try #require(lifetime.scored.first { $0.event.issueKey == "DEMO-2" }?.xp)
+    let inSeason = try #require(season.scored.first { $0.event.issueKey == "DEMO-2" }?.xp)
     #expect(inLifetime == inSeason,
             "시즌은 범위를 자를 뿐이다 — 같은 이벤트의 XP가 달라지면 statusEnteredAt이 공유되지 않은 것이다")
-    #expect((inSeason ?? 0) > 0, "0끼리 비교하면 아무것도 검증하지 못한다")
+    #expect(inSeason > 0, "0끼리 비교하면 아무것도 검증하지 못한다")
 }
 
 /// 남이 옮긴 전이가 섞여도 statusEnteredAt은 갱신된다 — 정체일이 부풀지 않는다(스펙 §4.2).
-@Test func othersTransitionsStillAdvanceTheStagnationBaseline() {
+@Test func othersTransitionsStillAdvanceTheStagnationBaseline() throws {
     let issue = JiraIssueWithChangelog(
         key: "MPT-1", createdAt: iso("2023-01-01T00:00:00Z"), dueDate: nil,
         changelog: JiraChangelogPage(startAt: 0, maxResults: 100, total: 2, histories: [
@@ -4090,11 +4089,44 @@ private func backfilledEvents() -> [DomainEvent] {
     let result = engine.recompute(events: events, issues: [:],
                                   now: iso("2026-08-13T00:00:00Z"))
 
-    // 첫 전이(남)는 0점, 두 번째(나)는 7일 정체 기준으로 채점된다.
-    // 남의 전이를 버렸다면 정체가 38일이 되어 XP가 훨씬 커졌을 것이다.
-    #expect(result.scored[0].xp == 0)
-    #expect(result.scored[1].xp > 0)
-    #expect(result.scored[1].xp < 100, "7일 정체이므로 보스전 수준 XP가 나오면 안 된다")
+    #expect(result.scored.count == 2)
+    let others = try #require(result.scored.first)
+    let mine = try #require(result.scored.dropFirst().first)
+    #expect(others.xp == 0, "남이 옮긴 전이는 기록하되 점수를 주지 않는다")
+    #expect(mine.xp > 0)
+
+    // "기준선이 전진한다"를 상수로 확인하면 RuleSet이 바뀔 때 의미가 흔들린다.
+    // 남의 전이를 뺀 채로 한 번 더 채점해 직접 비교한다 — 그쪽은 정체가 7일이 아니라
+    // 38일로 계산되므로 XP가 더 커야 한다. 그 차이가 곧 이 불변식의 내용이다.
+    let withoutOthers = events.filter { $0.actorAccountId == "acc-me" }
+    let inflated = engine.recompute(events: withoutOthers, issues: [:],
+                                    now: iso("2026-08-13T00:00:00Z"))
+    let inflatedXP = try #require(inflated.scored.first).xp
+    #expect(inflatedXP > mine.xp,
+            "남의 전이를 버리면 정체가 38일로 부풀어 XP가 커진다 — 그래서 기록은 남겨야 한다")
+}
+
+/// 백필을 두 번 돌려도 XP가 두 배가 되지 않는다. 이 계획의 핵심 약속이고,
+/// historyId 중복 검사가 그것을 지킨다. 이벤트 수만 보는 검사(Task 11)와 달리
+/// **점수 층위에서** 고정한다 — 사용자가 실제로 보는 값이 그쪽이기 때문이다.
+@MainActor
+@Test func runningBackfillTwiceDoesNotDoubleXP() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc,
+                             myAccountId: "acc-me")
+    let now = iso("2026-08-13T00:00:00Z")
+    let events = backfilledEvents()
+    let historyIds = events.enumerated().map { "h-\($0.offset)" }
+
+    _ = try store.appendBackfillEvents(events, historyIds: historyIds)
+    let after1 = engine.recompute(events: try store.loadEvents(), issues: [:], now: now)
+
+    _ = try store.appendBackfillEvents(events, historyIds: historyIds)
+    let after2 = engine.recompute(events: try store.loadEvents(), issues: [:], now: now)
+
+    #expect(after1.summary.totalXP > 0, "0끼리 비교하면 아무것도 검증하지 못한다")
+    #expect(after1.summary.totalXP == after2.summary.totalXP)
+    #expect(after1.summary.level == after2.summary.level)
 }
 ```
 
