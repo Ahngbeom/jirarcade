@@ -177,3 +177,29 @@ private func swiftFiles(in directory: URL) -> [URL] {
     #expect(holders == ["AtlassianLinks.swift"],
             "티켓 URL이 여러 곳에서 조립된다: \(holders.sorted())")
 }
+
+/// 매핑되지 않은 티켓을 보드가 반드시 보여준다. 어느 레인에도 들어가지 못하므로
+/// 화면이 따로 다루지 않으면 조용히 사라지고, 사용자는 티켓이 없어졌다고 생각한다.
+@Test func theBoardSurfacesUnmappedIssues() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("ArcadeUI")
+        .appendingPathComponent("QuestBoard")
+        .appendingPathComponent("QuestBoardView.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    #expect(text.contains("unmappedIssues"),
+            "보드가 BoardSnapshot.unmappedIssues를 읽지 않는다 — 티켓이 조용히 사라진다")
+}
+
+/// 매핑 마법사로 가는 길이 보드 안에 있어야 한다. 설정을 거치게 하면 사용자가
+/// 문제를 본 자리에서 고칠 수 없다.
+@Test func theUnmappedLaneLinksToTheMappingWizard() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("ArcadeUI")
+        .appendingPathComponent("QuestBoard")
+        .appendingPathComponent("UnmappedLaneView.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    #expect(text.contains("reopenMapping"),
+            "매핑되지 않은 레인에 마법사로 가는 길이 없다")
+}
