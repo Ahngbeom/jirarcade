@@ -9,6 +9,16 @@ public protocol WorkflowStore: Sendable {
     /// 사용자가 지정하면 폴백은 덮이는 게 아니라 밑에 깔린 채 남아야 한다.
     func loadFallbacks() throws -> WorkflowMap?
     func saveFallbacks(_ map: WorkflowMap) throws
+    /// 사용자 매핑과 폴백을 **둘 다** 버린다. 계정이 바뀔 때만 쓴다.
+    ///
+    /// 폴백을 버리는 이유: 백필이 `statusCategory`로 추정한 (상태명 → 단계) 맵은 그 조직의
+    /// 워크플로에 대한 추정이다. 남겨두면 `Done`·`In Progress` 같은 흔한 이름이 겹칠 때
+    /// 새 계정의 전이가 남의 조직 추정으로 채점된다.
+    ///
+    /// 사용자 매핑도 함께 버리는 이유: 조직이 다르면 상태 이름 체계가 다르고, 남겨두면
+    /// `load() != nil`이라 다음 로그인에서 마법사가 뜨지 않아 새 조직 상태를 설정할 기회가
+    /// 사라진다. 같은 계정으로 다시 로그인하는 경로에서는 불리지 않으므로 영향이 없다.
+    func clear() throws
 }
 
 /// 앱 지원 디렉터리의 JSON 파일. 사용자가 직접 열어 고칠 수 있어야 하므로
@@ -44,6 +54,18 @@ public struct FileWorkflowStore: WorkflowStore {
 
     public func saveFallbacks(_ map: WorkflowMap) throws {
         try write(map, to: fallbackURL)
+    }
+
+    public func clear() throws {
+        try remove(fileURL)
+        try remove(fallbackURL)
+    }
+
+    /// 없는 파일을 지우는 것은 실패가 아니다 — 매핑을 한 번도 저장하지 않은 계정에서
+    /// 계정 전환이 에러로 보이면 안 된다. 다른 실패(권한 등)는 그대로 던진다.
+    private func remove(_ url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
     }
 
     private func read(from url: URL) throws -> WorkflowMap? {
@@ -91,5 +113,12 @@ public final class InMemoryWorkflowStore: WorkflowStore, @unchecked Sendable {
 
     public func saveFallbacks(_ map: WorkflowMap) throws {
         lock.withLock { storedFallbacks = map }
+    }
+
+    public func clear() throws {
+        lock.withLock {
+            stored = nil
+            storedFallbacks = nil
+        }
     }
 }

@@ -136,18 +136,39 @@ public class ArcadeStore {
         ))
     }
 
-    /// 백필 이벤트를 append한다. 이미 같은 `historyId`로 기록된 것은 건너뛰고,
-    /// 새로 넣은 개수를 돌려준다.
+    /// 백필 이벤트를 append하면서, 같은 티켓의 라이브 관측 전이를 대체한다.
+    /// 이미 같은 `historyId`로 기록된 것은 건너뛰고, 새로 넣은 개수를 돌려준다.
     ///
     /// `events`와 `historyIds`는 같은 길이여야 하며 인덱스로 짝지어진다.
     /// 중복 판정을 시각·상태명이 아니라 Jira가 준 id로 하는 이유: 같은 초에 두 전이가
     /// 일어날 수 있고, 왕복 전이(A→B, B→A)는 되돌아왔을 때 값이 겹친다.
+    ///
+    /// **대체가 필요한 이유:** historyId 검사는 백필끼리만 막는다. 라이브 동기화가 넣은
+    /// 이벤트는 `sourceHistoryId`가 nil이라 이 검사에 걸리지 않으므로, 같은 실제 전이가
+    /// 두 행으로 남고 둘 다 채점된다. `AbuseGuard`의 중복 창도 못 막는다 — 전이와 관측
+    /// 사이가 24시간을 넘거나(밤·주말), 동기화 간격 사이에 두 칸을 옮겨 라이브가 한 건으로
+    /// 뭉치면 중복 시그니처(`issueKey|from|to`)가 아예 겹치지 않는다.
+    ///
+    /// changelog는 그 티켓의 완전한 이력이므로 라이브 diff보다 정확하다 — 실제 전이 시각과
+    /// 행위자를 담고, 뭉친 두 칸 이동도 두 건으로 남긴다. 그래서 라이브 쪽을 지운다.
+    ///
+    /// - Parameter fullyRestoredKeys: changelog를 온전히 받은 티켓. 부분 복원된 티켓은
+    ///   대체하지 않는다 — 불완전한 이력으로 관측 기록을 지우면 있었던 전이가 사라진다.
+    ///
+    /// **남은 틈:** 이 티켓의 changelog를 받은 뒤 여기까지 오는 사이(페이지 하나 분량의
+    /// 보충 조회가 그 사이에 있다)에 라이브 동기화가 **새** 전이를 기록하면, 그 전이는
+    /// changelog에 없으면서 여기서 지워진다. 백필 중에도 동기화 스케줄러는 계속 돌기 때문에
+    /// 일어날 수 있다. 다음 백필이 다시 넣어 주므로 영구 손실은 아니다.
     public func appendBackfillEvents(
-        _ events: [DomainEvent], historyIds: [String]
+        _ events: [DomainEvent], historyIds: [String], fullyRestoredKeys: Set<String>
     ) throws -> Int {
         precondition(events.count == historyIds.count,
                      "events와 historyIds는 인덱스로 짝지어진다")
-        guard !events.isEmpty else { return 0 }
+        // 온전히 받은 티켓이 전이를 하나도 만들지 않았어도 대체는 해야 한다 —
+        // "changelog에 상태 변경이 없다"도 그 티켓에 대한 완전한 사실이다.
+        guard !events.isEmpty || !fullyRestoredKeys.isEmpty else { return 0 }
+
+        try replaceObservedTransitions(forFullyRestored: fullyRestoredKeys)
 
         let existing = try context.fetch(FetchDescriptor<IssueEventRecord>(
             predicate: #Predicate { $0.sourceHistoryId != nil }
@@ -169,6 +190,27 @@ public class ArcadeStore {
         }
         try context.save()
         return inserted
+    }
+
+    /// changelog를 온전히 받은 티켓의 라이브 관측 **상태 전이**를 지운다.
+    ///
+    /// `.statusChanged`만 지우는 이유: `.appeared`/`.vanished`/`.touched`는 관측 자체의
+    /// 기록이라 changelog에 대응물이 없다. 함께 지우면 대체가 아니라 소실이 된다.
+    ///
+    /// 이미 지워졌으면 아무것도 하지 않으므로 백필을 두 번 돌려도 결과가 같다.
+    private func replaceObservedTransitions(forFullyRestored keys: Set<String>) throws {
+        guard !keys.isEmpty else { return }
+
+        // `#Predicate` 안에서 Set 멤버십을 물을 수 없어 origin/kind로만 좁히고 키는
+        // 밖에서 거른다. 조회 범위는 라이브 관측 전이뿐이라 백필 이벤트 수와 무관하다.
+        let observed = EventOrigin.observed
+        let transition = EventKind.statusChanged.rawValue
+        let candidates = try context.fetch(FetchDescriptor<IssueEventRecord>(
+            predicate: #Predicate { $0.origin == observed && $0.kindRaw == transition }
+        ))
+        for row in candidates where keys.contains(row.issueKey) {
+            context.delete(row)
+        }
     }
 
     // MARK: - 동기화 이력

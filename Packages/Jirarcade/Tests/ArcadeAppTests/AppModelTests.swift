@@ -754,3 +754,54 @@ private func assertDoesNotLeak(
     #expect(model.lifetimeSummary == synced)
     #expect(synced.totalXP - synced.hygieneBonusXP > 0, "내 전이의 XP는 남아 있어야 한다")
 }
+
+/// 계정이 바뀌면 채점 **입력**도 버린다.
+///
+/// `store.reset()`이 미러·이벤트·백필 run을 버리고 `signOut()`이 발견 목록을 비우는데
+/// 워크플로 매핑만 남으면, 이전 조직에서 `statusCategory`로 추정한 (상태명 → 단계) 맵이
+/// `effectiveWorkflow()`에 계속 병합된다. `Done`·`In Progress` 같은 흔한 이름이 겹치면
+/// 새 계정의 전이가 남의 조직 추정으로 채점된다(리뷰 B2).
+///
+/// 사용자 매핑까지 버리는 이유: 남겨두면 `load() != nil`이라 다음 로그인에서 마법사가
+/// 뜨지 않아 새 조직 상태를 설정할 기회가 사라진다.
+@MainActor
+@Test func signingInAsADifferentAccountClearsTheWorkflowMapping() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "first@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["Done": .done]))
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["In Progress": .active]))
+    // myselfBody가 "acc-me"를 돌려주므로 다른 값으로 묶어 둬야 "계정이 바뀌었다"가 된다.
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-first")
+    let model = try makeModel(credentials: creds, workflow: workflow,
+                              accountBinding: accountBinding)
+
+    await model.signIn(site: "example.atlassian.net", email: "second@e.com", token: "t2")
+
+    let mapping = try workflow.load()
+    let fallbacks = try workflow.loadFallbacks()
+    #expect(mapping == nil, "남의 조직 상태 이름 체계를 새 계정에 물려주면 안 된다")
+    #expect(fallbacks == nil, "폴백은 이전 조직 워크플로에 대한 추정이다")
+}
+
+/// 비교가 통째로 사라져 "무조건 삭제"가 되는 뮤테이션은 위 테스트로 잡히지 않는다 —
+/// 그 테스트는 어차피 매핑이 비어 있길 기대하기 때문이다. 같은 계정으로 다시 로그인하면
+/// 매핑이 살아남아야 한다(그 경로에서는 `store.reset()`도 불리지 않는다).
+@MainActor
+@Test func signingInAsTheSameAccountAgainKeepsTheWorkflowMapping() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "same@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["Done": .done]))
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["In Progress": .active]))
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-me")
+    let model = try makeModel(credentials: creds, workflow: workflow,
+                              accountBinding: accountBinding)
+
+    await model.signIn(site: "example.atlassian.net", email: "same@e.com", token: "t")
+
+    let mapping = try workflow.load()
+    let fallbacks = try workflow.loadFallbacks()
+    #expect(mapping?.statusToStage == ["Done": .done])
+    #expect(fallbacks?.statusToStage == ["In Progress": .active])
+}

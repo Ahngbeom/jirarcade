@@ -561,6 +561,10 @@ public final class AppModel {
             let bound = try accountBinding.load()
             if let bound, bound != me.accountId {
                 try? store.reset()
+                // 채점 **입력**도 함께 버린다. 미러·이벤트만 지우면 이전 조직의 워크플로
+                // 매핑과 백필이 추정한 폴백이 남아 `effectiveWorkflow()`에 계속 병합되고,
+                // 새 계정의 전이가 남의 조직 기준으로 채점된다(WorkflowStore.clear 참고).
+                try? workflow.clear()
             }
             try? accountBinding.save(me.accountId)
         } catch {

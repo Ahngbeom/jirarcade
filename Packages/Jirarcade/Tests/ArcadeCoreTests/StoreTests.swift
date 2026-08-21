@@ -232,8 +232,10 @@ private func makeStore() throws -> ArcadeStore {
         observedAt: iso("2023-03-02T12:13:52Z"), actorAccountId: "acc-me"
     )
 
-    let first = try store.appendBackfillEvents([event], historyIds: ["50347"])
-    let second = try store.appendBackfillEvents([event], historyIds: ["50347"])
+    let first = try store.appendBackfillEvents([event], historyIds: ["50347"],
+                                               fullyRestoredKeys: [])
+    let second = try store.appendBackfillEvents([event], historyIds: ["50347"],
+                                                fullyRestoredKeys: [])
 
     #expect(first == 1)
     #expect(second == 0, "같은 historyId는 다시 넣지 않는다")
@@ -252,7 +254,7 @@ private func makeStore() throws -> ArcadeStore {
                         fromStatus: "In Progress", toStatus: "To Do",
                         observedAt: when, actorAccountId: "acc-me")
 
-    _ = try store.appendBackfillEvents([a, b], historyIds: ["1", "2"])
+    _ = try store.appendBackfillEvents([a, b], historyIds: ["1", "2"], fullyRestoredKeys: [])
     #expect(try store.loadEvents().count == 2)
 }
 
@@ -270,9 +272,119 @@ private func makeStore() throws -> ArcadeStore {
         DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
                     fromStatus: "To Do", toStatus: "In Progress",
                     observedAt: iso("2023-01-01T00:00:00Z"), actorAccountId: "acc-me")
-    ], historyIds: ["1"])
+    ], historyIds: ["1"], fullyRestoredKeys: [])
 
     var utc = Calendar(identifier: .gregorian)
     utc.timeZone = TimeZone(identifier: "UTC")!
     #expect(try store.observationDayCount(now: today, calendar: utc) == 1)
+}
+
+// MARK: - 백필이 라이브 관측을 대체한다
+
+/// 라이브 관측 전이 하나를 넣는다. `applySync(issues: nil, ...)`은 미러를 건드리지 않고
+/// 이벤트만 기록하므로, 만들어지는 레코드는 `origin == observed`에 `sourceHistoryId == nil`이다.
+@MainActor
+private func recordLiveTransition(
+    _ store: ArcadeStore, key: String, at when: Date
+) throws {
+    try store.applySync(issues: nil, events: [
+        DomainEvent(issueKey: key, kind: .statusChanged,
+                    fromStatus: "In Progress", toStatus: "Done",
+                    observedAt: when, actorAccountId: "acc-me")
+    ], observedAt: when)
+}
+
+/// changelog를 온전히 받은 티켓은 라이브 관측 전이를 **대체**한다.
+///
+/// historyId 중복 검사는 백필끼리만 막는다 — 라이브 이벤트는 `sourceHistoryId`가 nil이라
+/// 그 집합에 없으므로, 지우지 않으면 같은 실제 전이가 두 행으로 남고 둘 다 채점된다(리뷰 C1).
+@MainActor
+@Test func fullyRestoredTicketLosesItsLiveObservedTransitions() throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try recordLiveTransition(store, key: "MPT-1", at: iso("2026-08-10T09:00:00Z"))
+    // 같은 백필에 들어 있지만 changelog가 온전하지 않은 티켓. 불완전한 이력으로 관측
+    // 기록을 지우면 있었던 전이가 사라지므로 대체 대상이 아니다.
+    try recordLiveTransition(store, key: "MPT-2", at: iso("2026-08-10T09:00:00Z"))
+
+    _ = try store.appendBackfillEvents(
+        [DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                     fromStatus: "In Progress", toStatus: "Done",
+                     observedAt: iso("2026-08-07T18:00:00Z"), actorAccountId: "acc-me")],
+        historyIds: ["h-1"], fullyRestoredKeys: ["MPT-1"]
+    )
+
+    let records = try store.rawEventRecords()
+    #expect(records.filter { $0.issueKey == "MPT-1" }.map(\.origin) == [EventOrigin.backfill],
+            "온전히 받은 티켓에는 백필 이벤트만 남는다")
+    #expect(records.filter { $0.issueKey == "MPT-2" }.map(\.origin) == [EventOrigin.observed],
+            "부분 복원된 티켓의 관측 기록은 지우지 않는다")
+}
+
+/// 대체 대상은 `.statusChanged`뿐이다. `.appeared`/`.vanished`/`.touched`는 관측 자체의
+/// 기록이라 changelog에 대응물이 없다 — 함께 지우면 대체가 아니라 소실이 된다.
+@MainActor
+@Test func replacingLiveTransitionsKeepsObservationOnlyEvents() throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let when = iso("2026-08-10T09:00:00Z")
+    try store.applySync(issues: nil, events: [
+        DomainEvent(issueKey: "MPT-1", kind: .appeared, fromStatus: nil, toStatus: "To Do",
+                    observedAt: when, actorAccountId: "acc-me"),
+        DomainEvent(issueKey: "MPT-1", kind: .touched, fromStatus: nil, toStatus: nil,
+                    observedAt: when, actorAccountId: "acc-me"),
+        DomainEvent(issueKey: "MPT-1", kind: .vanished, fromStatus: "Done", toStatus: nil,
+                    observedAt: when, actorAccountId: "acc-me"),
+        DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                    fromStatus: "In Progress", toStatus: "Done",
+                    observedAt: when, actorAccountId: "acc-me"),
+    ], observedAt: when)
+
+    _ = try store.appendBackfillEvents(
+        [DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                     fromStatus: "In Progress", toStatus: "Done",
+                     observedAt: iso("2026-08-07T18:00:00Z"), actorAccountId: "acc-me")],
+        historyIds: ["h-1"], fullyRestoredKeys: ["MPT-1"]
+    )
+
+    let kinds = Set(try store.rawEventRecords()
+        .filter { $0.origin == EventOrigin.observed }
+        .map(\.kindRaw))
+    #expect(kinds == [EventKind.appeared.rawValue, EventKind.touched.rawValue,
+                      EventKind.vanished.rawValue],
+            "관측 자체의 기록은 남는다 — 지워지는 것은 전이뿐이다")
+}
+
+/// 백필을 두 번 돌려도 결과가 같다. 두 번째 호출에는 지울 관측 전이가 이미 없고
+/// historyId 검사가 삽입을 막으므로 이벤트 로그가 그대로여야 한다.
+@MainActor
+@Test func replacingLiveTransitionsIsIdempotent() throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try recordLiveTransition(store, key: "MPT-1", at: iso("2026-08-10T09:00:00Z"))
+    let events = [DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                              fromStatus: "In Progress", toStatus: "Done",
+                              observedAt: iso("2026-08-07T18:00:00Z"),
+                              actorAccountId: "acc-me")]
+
+    let first = try store.appendBackfillEvents(events, historyIds: ["h-1"],
+                                               fullyRestoredKeys: ["MPT-1"])
+    let afterFirst = try store.loadEvents()
+    let second = try store.appendBackfillEvents(events, historyIds: ["h-1"],
+                                                fullyRestoredKeys: ["MPT-1"])
+
+    #expect(first == 1)
+    #expect(second == 0)
+    #expect(try store.loadEvents() == afterFirst)
+}
+
+/// 전이를 하나도 만들지 않은 티켓도 대체한다. "changelog에 상태 변경이 없다"도 그
+/// 티켓에 대한 완전한 사실이므로, 라이브가 뭉쳐서 기록한 전이를 남길 근거가 되지 못한다.
+@MainActor
+@Test func fullyRestoredTicketWithNoTransitionsStillReplaces() throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try recordLiveTransition(store, key: "MPT-1", at: iso("2026-08-10T09:00:00Z"))
+
+    let inserted = try store.appendBackfillEvents([], historyIds: [],
+                                                  fullyRestoredKeys: ["MPT-1"])
+
+    #expect(inserted == 0)
+    #expect(try store.loadEvents().isEmpty, "빈 이벤트 배열이라고 대체를 건너뛰면 안 된다")
 }

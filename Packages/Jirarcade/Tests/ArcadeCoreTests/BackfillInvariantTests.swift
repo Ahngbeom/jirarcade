@@ -94,42 +94,78 @@ private func backfilledEvents() -> [DomainEvent] {
     #expect(first.scored == second.scored)
 }
 
+/// 2026-07-06(월)부터 평일마다 전진 이벤트 하나씩. 티켓 키를 매번 다르게 주는 이유는
+/// 같은 시그니처가 반복되면 `AbuseGuard`가 중복으로 0점 처리해 체크인이 끊기기 때문이다.
+private func weekdayDrumbeat(from start: Date, through end: Date,
+                             calendar: Calendar) -> [DomainEvent] {
+    var result: [DomainEvent] = []
+    var day = start
+    while day <= end {
+        if !calendar.isDateInWeekend(day) {
+            result.append(DomainEvent(
+                issueKey: "DRUM-\(result.count)", kind: .statusChanged,
+                fromStatus: "To Do", toStatus: "In Progress",
+                observedAt: day, actorAccountId: "acc-me",
+                priorUpdatedAt: day.addingTimeInterval(-days(1))
+            ))
+        }
+        // UTC 달력이라 DST가 없다 — 하루를 초로 더해도 날짜가 어긋나지 않는다.
+        day = day.addingTimeInterval(days(1))
+    }
+    return result
+}
+
 /// 시즌은 **범위만** 자르고 채점 규칙은 바꾸지 않는다. 같은 이벤트는 통산과 시즌에서
 /// 같은 XP를 받아야 한다 — 사용자가 HUD의 시즌 레벨과 프로필의 통산 레벨을 나란히 보므로
 /// 어긋나면 즉시 드러난다.
 ///
-/// 이 불변식은 `statusEnteredAt` 재구성이 두 호출에서 공유되기 때문에 성립한다. 시즌 필터를
-/// 정렬 직후에 적용하도록 바꾸면 시즌 안 첫 전이의 정체 기준선이 사라져 조용히 깨진다.
-/// 그래서 두 이벤트를 **같은 티켓**에 둔다 — 티켓이 다르면 기준선을 공유할 일이 없어
-/// 이 테스트가 아무것도 지키지 못한다.
+/// 픽스처가 두 가지를 동시에 만든다.
+/// 1. **정체 기준선 공유**: 비교 대상 이벤트를 같은 티켓의 이전 전이 뒤에 둔다.
+///    시즌 필터를 정렬 직후에 적용하면 시즌 안 첫 전이의 기준선이 사라져 XP가 갈린다.
+/// 2. **연속 배수 공유**: 시즌 시작 **전부터** 평일 연속이 쌓이게 하고, 비교 대상을
+///    시즌이 시작한 지 얼마 안 된 날에 둔다. 통산은 상한(14일)에 닿은 배수를,
+///    시즌 안에서만 다시 세면 3일치 배수를 준다 — 같은 이벤트에 48% 차이가 난다.
+///    (예전 픽스처는 두 이벤트가 6개월 떨어져 있어 양쪽 다 연속 1일이었다. 이름이
+///    주장하는 것을 실제로는 검증하지 못했다.)
 @Test func sameEventScoresIdenticallyInSeasonAndLifetime() throws {
     let engine = engine()
     let now = iso("2026-08-20T00:00:00Z")
-    let events = [
-        DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
-                    fromStatus: "To Do", toStatus: "In Progress",
-                    observedAt: iso("2026-02-01T00:00:00Z"), actorAccountId: "acc-me",
-                    priorUpdatedAt: iso("2026-01-11T00:00:00Z")),
-        // 시즌 안의 전이. 통산에서는 위 전이가 정체 기준선(6개월 전)을 만들어 준다.
-        DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
-                    fromStatus: "In Progress", toStatus: "In Review",
-                    observedAt: iso("2026-08-15T00:00:00Z"), actorAccountId: "acc-me",
-                    priorUpdatedAt: iso("2026-08-14T00:00:00Z")),
-    ]
+    let seasonStart = iso("2026-07-21T00:00:00Z")   // now - 30일
+    let compared = iso("2026-07-23T00:00:00Z")      // 시즌 3번째 평일, 통산 14번째 평일
+
+    let events = weekdayDrumbeat(from: iso("2026-07-06T00:00:00Z"),
+                                 through: iso("2026-08-14T00:00:00Z"), calendar: utc)
+        + [
+            // 시즌 밖. 통산에서는 이 전이가 아래 전이의 정체 기준선을 만들어 준다.
+            DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
+                        fromStatus: "To Do", toStatus: "In Progress",
+                        observedAt: iso("2026-02-01T00:00:00Z"), actorAccountId: "acc-me",
+                        priorUpdatedAt: iso("2026-01-11T00:00:00Z")),
+            // 비교 대상. 같은 티켓이어야 기준선을 공유할 일이 생긴다.
+            DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
+                        fromStatus: "In Progress", toStatus: "In Review",
+                        observedAt: compared, actorAccountId: "acc-me",
+                        priorUpdatedAt: iso("2026-07-22T00:00:00Z")),
+        ]
 
     let lifetime = engine.recompute(events: events, issues: [:], now: now)
-    let season = engine.recompute(events: events, issues: [:], now: now,
-                                  since: iso("2026-07-21T00:00:00Z"))
+    let season = engine.recompute(events: events, issues: [:], now: now, since: seasonStart)
 
-    #expect(season.scored.count == 1, "시즌은 범위 밖 이벤트를 집계에서 빼야 한다")
-    let inSeason = try #require(season.scored.first).xp
-    let inLifetime = try #require(
-        lifetime.scored.first { $0.event.observedAt == iso("2026-08-15T00:00:00Z") }
-    ).xp
+    #expect(season.scored.allSatisfy { $0.event.observedAt >= seasonStart },
+            "시즌은 범위 밖 이벤트를 집계에서 빼야 한다")
+    #expect(season.scored.count < lifetime.scored.count, "잘라내지 않으면 비교가 무의미하다")
+
+    func comparedXP(_ result: (scored: [ScoredEvent], summary: PlayerSummary)) throws -> Int {
+        try #require(result.scored.first {
+            $0.event.issueKey == "DEMO-1" && $0.event.observedAt == compared
+        }).xp
+    }
+    let inSeason = try comparedXP(season)
+    let inLifetime = try comparedXP(lifetime)
 
     #expect(inSeason > 0, "0끼리 비교하면 아무것도 검증하지 못한다")
     #expect(inLifetime == inSeason,
-            "시즌은 범위를 자를 뿐이다 — 같은 이벤트의 XP가 달라지면 statusEnteredAt이 공유되지 않은 것이다")
+            "시즌은 범위를 자를 뿐이다 — 같은 이벤트의 XP가 달라지면 정체 기준선이나 연속 배수가 공유되지 않은 것이다")
 }
 
 /// 남이 옮긴 전이는 0점이지만 **버리지는 않는다**. 버리면 다음 전이의 정체 기준선이
@@ -225,15 +261,65 @@ private func backfilledEvents() -> [DomainEvent] {
     let events = backfilledEvents()
     let historyIds = events.enumerated().map { "h-\($0.offset)" }
 
-    let firstInsert = try store.appendBackfillEvents(events, historyIds: historyIds)
+    let firstInsert = try store.appendBackfillEvents(events, historyIds: historyIds,
+                                                    fullyRestoredKeys: [])
     #expect(firstInsert == events.count)
     let after1 = engine.recompute(events: try store.loadEvents(), issues: [:], now: now)
 
-    let secondInsert = try store.appendBackfillEvents(events, historyIds: historyIds)
+    let secondInsert = try store.appendBackfillEvents(events, historyIds: historyIds,
+                                                     fullyRestoredKeys: [])
     #expect(secondInsert == 0, "같은 historyId는 두 번 들어가지 않는다")
     let after2 = engine.recompute(events: try store.loadEvents(), issues: [:], now: now)
 
     #expect(after1.summary.totalXP > 0, "0끼리 비교하면 아무것도 검증하지 못한다")
     #expect(after1.summary.totalXP == after2.summary.totalXP)
     #expect(after1.summary.level == after2.summary.level)
+}
+
+/// 한 번 일어난 전이는 한 번만 채점된다 — 라이브가 먼저 봤든 백필이 나중에 받았든.
+///
+/// historyId 중복 검사는 백필끼리만 막고, 라이브 이벤트는 `sourceHistoryId`가 nil이라
+/// 그 집합에 없다. 그래서 백필이 changelog를 온전히 받은 티켓의 관측 전이를 대체한다(리뷰 C1).
+///
+/// 전이 시각과 관측 시각을 주말만큼 벌린다. `AbuseGuard`의 중복 창(24시간) 안에 두면
+/// 두 번째가 어차피 0점이라 대체가 있으나 없으나 XP가 같아 이 테스트가 아무것도 지키지 못한다.
+@MainActor
+@Test func backfillReplacesTheLiveObservationInsteadOfAddingToIt() throws {
+    let engine = engine()
+    let now = iso("2026-08-13T00:00:00Z")
+    // 실제로 일어난 전이 한 건: 금요일 저녁.
+    let fromChangelog = DomainEvent(
+        issueKey: "DEMO-1", kind: .statusChanged, fromStatus: "In Progress", toStatus: "Done",
+        observedAt: iso("2026-08-07T18:00:00Z"), actorAccountId: "acc-me",
+        priorUpdatedAt: iso("2026-08-03T09:00:00Z")
+    )
+    // 앱은 주말이 지난 월요일 아침에야 그 결과를 봤다. 같은 전이의 관측이다.
+    let fromLiveSync = DomainEvent(
+        issueKey: "DEMO-1", kind: .statusChanged, fromStatus: "In Progress", toStatus: "Done",
+        observedAt: iso("2026-08-10T09:00:00Z"), actorAccountId: "acc-me",
+        priorUpdatedAt: iso("2026-08-03T09:00:00Z")
+    )
+
+    func totalXPAfterBackfill(replacing: Bool) throws -> Int {
+        let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+        try store.applySync(issues: nil, events: [fromLiveSync],
+                            observedAt: fromLiveSync.observedAt)
+        _ = try store.appendBackfillEvents(
+            [fromChangelog], historyIds: ["h-1"],
+            fullyRestoredKeys: replacing ? ["DEMO-1"] : []
+        )
+        return engine.recompute(events: try store.loadEvents(), issues: [:], now: now)
+            .summary.totalXP
+    }
+
+    let backfillOnly = engine.recompute(events: [fromChangelog], issues: [:], now: now)
+        .summary.totalXP
+    let replaced = try totalXPAfterBackfill(replacing: true)
+    let kept = try totalXPAfterBackfill(replacing: false)
+
+    #expect(backfillOnly > 0, "0끼리 비교하면 아무것도 검증하지 못한다")
+    #expect(replaced == backfillOnly,
+            "대체하면 남는 것은 백필 이벤트뿐이다 — 라이브 관측은 같은 전이의 사본이다")
+    #expect(kept > replaced,
+            "대체하지 않으면 한 번 일어난 전이에 XP가 두 벌 붙는다")
 }

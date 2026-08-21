@@ -219,10 +219,15 @@ public final class BackfillEngine {
             // (실측: 티켓 800건 46초). 엔진은 @MainActor이고 스토어 호출은 동기라 그동안 UI가 멈춘다.
             var pageEvents: [DomainEvent] = []
             var pageHistoryIds: [String] = []
+            // 이 페이지에서 changelog를 온전히 받은 티켓. 스토어가 이 티켓들의 라이브 관측
+            // 전이를 백필 이벤트로 대체한다(appendBackfillEvents 참고).
+            var pageFullyRestored = Set<String>()
 
             for issue in page.issues {
-                let resolved = try await resolve(issue: issue,
-                                                 partiallyRestored: &partiallyRestored)
+                let (resolved, fullyRestored) = try await resolve(
+                    issue: issue, partiallyRestored: &partiallyRestored
+                )
+                if fullyRestored { pageFullyRestored.insert(issue.key) }
                 let transitions = parser.parse(issue: resolved)
 
                 // 폴백 판정을 태워 미매핑 상태와 폴백 매핑을 수집한다. 반환값은 쓰지 않지만
@@ -239,7 +244,9 @@ public final class BackfillEngine {
                 processed += 1
             }
 
-            inserted += try store.appendBackfillEvents(pageEvents, historyIds: pageHistoryIds)
+            inserted += try store.appendBackfillEvents(
+                pageEvents, historyIds: pageHistoryIds, fullyRestoredKeys: pageFullyRestored
+            )
 
             token = page.nextPageToken
 
@@ -265,20 +272,23 @@ public final class BackfillEngine {
 
     /// changelog가 잘려 왔으면 보충 조회로 채운다. 실패하면 원래 것을 그대로 쓰고
     /// 부분 복원으로 기록한다 — 한 티켓 때문에 전체를 멈추지 않는다.
+    ///
+    /// - Returns: `fullyRestored`는 이 티켓의 changelog를 온전히 받았는지다. 부분 복원의
+    ///   반대이며, 호출부가 이 값으로 "라이브 관측 전이를 대체해도 되는 티켓"을 가린다.
     private func resolve(
         issue: JiraIssueWithChangelog, partiallyRestored: inout [String]
-    ) async throws -> JiraIssueWithChangelog {
-        guard issue.changelog.isTruncated else { return issue }
+    ) async throws -> (issue: JiraIssueWithChangelog, fullyRestored: Bool) {
+        guard issue.changelog.isTruncated else { return (issue, true) }
         do {
             let full = try await fetchWholeChangelog(key: issue.key)
             // 보충이 짧게 와도(서버가 total보다 적게 주고 멈춤) 받은 것을 완전한 changelog인 양
             // 돌려주게 된다. 기록하지 않으면 전이 5개 중 1개로 XP가 계산되는데
             // 사용자는 이 티켓이 온전히 소급됐다고 믿는다.
             if full.isTruncated { partiallyRestored.append(issue.key) }
-            return JiraIssueWithChangelog(
+            return (JiraIssueWithChangelog(
                 key: issue.key, createdAt: issue.createdAt,
                 dueDate: issue.dueDate, changelog: full
-            )
+            ), !full.isTruncated)
         } catch is CancellationError {
             // 취소는 이 티켓의 문제가 아니다. 여기서 삼키면 사용자가 중단을 눌렀는데도
             // 백필이 끝까지 돌아 run이 "정상 완료"로 닫히고, 잘린 changelog가 영구히 남는다
@@ -291,7 +301,7 @@ public final class BackfillEngine {
             // 여기까지 넣은 이벤트는 유효하고 재시도는 historyId 검사 덕에 안전하다.
             // 조직적 실패를 구분해 즉시 중단하는 것은 별도 과제로 남긴다(리뷰 m3).
             partiallyRestored.append(issue.key)
-            return issue
+            return (issue, false)
         }
     }
 

@@ -23,10 +23,11 @@ private final class CallCountingStore: ArcadeStore {
     private(set) var appendBatchSizes: [Int] = []
 
     override func appendBackfillEvents(
-        _ events: [DomainEvent], historyIds: [String]
+        _ events: [DomainEvent], historyIds: [String], fullyRestoredKeys: Set<String>
     ) throws -> Int {
         appendBatchSizes.append(events.count)
-        return try super.appendBackfillEvents(events, historyIds: historyIds)
+        return try super.appendBackfillEvents(events, historyIds: historyIds,
+                                              fullyRestoredKeys: fullyRestoredKeys)
     }
 }
 
@@ -861,4 +862,82 @@ private func transitionIssue(
 
     #expect(try store.lastBackfillFailure() == nil,
             "재시도가 시작된 시점에 옛 실패는 더 이상 최신 사실이 아니다")
+}
+
+/// 엔진은 changelog를 온전히 받은 티켓만 대체 대상으로 넘긴다.
+///
+/// 부분 복원된 티켓까지 넘기면 불완전한 이력으로 관측 기록을 지우게 되어, 실제로 있었던
+/// 전이가 로그에서 사라진다 — 대체가 아니라 소실이다(리뷰 C1).
+@MainActor
+@Test func onlyFullyRestoredTicketsReplaceTheirLiveObservations() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let observedAt = iso("2026-08-10T09:00:00Z")
+    try store.applySync(issues: nil, events: ["MPT-1", "MPT-2"].map { key in
+        DomainEvent(issueKey: key, kind: .statusChanged,
+                    fromStatus: "To Do", toStatus: "In Progress",
+                    observedAt: observedAt, actorAccountId: "acc-me")
+    }, observedAt: observedAt)
+
+    let source = ScriptedChangelogSource(pages: [([
+        // 온전히 온 changelog.
+        transitionIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-07T18:00:00Z"), author: "acc-me"),
+        // total 5를 말하면서 1건만 준다. 보충도 짧게 와서 부분 복원으로 남는다.
+        transitionIssue(key: "MPT-2", historyId: "2",
+                        at: iso("2026-08-07T18:00:00Z"), author: "acc-me", total: 5),
+    ], nil)])
+    source.supplementPages["MPT-2"] = [
+        JiraChangelogPage(startAt: 0, maxResults: 100, total: 5, histories: [
+            statusHistory(id: "2", at: iso("2026-08-07T18:00:00Z"), author: "acc-me",
+                          fromId: "10009", from: "To Do", toId: "10016", to: "In Progress"),
+        ]),
+    ]
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+
+    let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
+                                       progress: { _, _ in })
+
+    #expect(outcome.partiallyRestored == ["MPT-2"], "픽스처가 의도한 구분이 성립해야 한다")
+    let records = try store.rawEventRecords()
+    #expect(records.filter { $0.issueKey == "MPT-1" }.map(\.origin) == [EventOrigin.backfill],
+            "온전히 받은 티켓의 라이브 관측 전이는 백필 이벤트로 대체된다")
+    #expect(records.filter { $0.issueKey == "MPT-2" }.map(\.origin).sorted()
+            == [EventOrigin.backfill, EventOrigin.observed].sorted(),
+            "부분 복원된 티켓은 관측 기록을 잃지 않는다")
+}
+
+/// 라이브 이벤트가 섞여 있어도 백필을 두 번 돌린 결과가 같다.
+///
+/// 대체는 지우는 동작이라 재실행에 약하다 — 두 번째 실행이 첫 실행이 넣은 백필 이벤트까지
+/// 지우거나, 지운 뒤 다시 넣지 못하면 이벤트 로그가 실행 횟수에 따라 달라진다.
+@MainActor
+@Test func runningTwiceOverLiveEventsLeavesTheSameLog() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let observedAt = iso("2026-08-10T09:00:00Z")
+    try store.applySync(issues: nil, events: [
+        DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+                    fromStatus: "To Do", toStatus: "In Progress",
+                    observedAt: observedAt, actorAccountId: "acc-me"),
+        // 관측 자체의 기록은 대체 대상이 아니므로 두 실행 모두 그대로 남아야 한다.
+        DomainEvent(issueKey: "MPT-1", kind: .appeared, fromStatus: nil, toStatus: "To Do",
+                    observedAt: observedAt, actorAccountId: "acc-me"),
+    ], observedAt: observedAt)
+
+    func page() -> [(issues: [JiraIssueWithChangelog], nextPageToken: String?)] {
+        [([transitionIssue(key: "MPT-1", historyId: "1",
+                           at: iso("2026-08-07T18:00:00Z"), author: "acc-me")], nil)]
+    }
+    let engine = BackfillEngine(source: ScriptedChangelogSource(pages: page()),
+                                store: store, workflow: demoWorkflow)
+    _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"), progress: { _, _ in })
+    let afterFirst = try store.loadEvents()
+
+    let second = BackfillEngine(source: ScriptedChangelogSource(pages: page()),
+                                store: store, workflow: demoWorkflow)
+    let outcome = try await second.run(jql: "q", now: iso("2026-08-13T01:00:00Z"),
+                                       progress: { _, _ in })
+
+    #expect(afterFirst.count == 2, "0끼리 비교하면 아무것도 검증하지 못한다")
+    #expect(outcome.insertedEvents == 0, "같은 historyId는 두 번 들어가지 않는다")
+    #expect(try store.loadEvents() == afterFirst)
 }

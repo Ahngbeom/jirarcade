@@ -175,7 +175,7 @@ private func backfillIssue(
         observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-08-01T00:00:00Z")
     )
-    _ = try store.appendBackfillEvents([event], historyIds: ["h-1"])
+    _ = try store.appendBackfillEvents([event], historyIds: ["h-1"], fullyRestoredKeys: [])
 
     // 사용자는 review로 지정했는데 폴백은 active로 추정했다.
     let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
@@ -283,7 +283,8 @@ private func backfillIssue(
         observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-07-20T00:00:00Z")
     )
-    _ = try store.appendBackfillEvents([old, recent], historyIds: ["h-old", "h-recent"])
+    _ = try store.appendBackfillEvents([old, recent], historyIds: ["h-old", "h-recent"],
+                                       fullyRestoredKeys: [])
 
     let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
         "To Do": .backlog, "In Progress": .active,
@@ -734,7 +735,7 @@ private func backfillIssue(
         observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-08-01T00:00:00Z")
     )
-    _ = try store.appendBackfillEvents([event], historyIds: ["h-1"])
+    _ = try store.appendBackfillEvents([event], historyIds: ["h-1"], fullyRestoredKeys: [])
     let workflow = InMemoryWorkflowStore(
         seeded: WorkflowMap(statusToStage: ["In Progress": .active])
     )

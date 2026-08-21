@@ -93,3 +93,28 @@ private func withTempDirectory<T>(_ body: (URL) throws -> T) rethrows -> T {
         #expect(fallbacks?.statusToStage == ["Merged to Staging": .active])
     }
 }
+
+/// 계정 전환에서 두 파일을 **둘 다** 지운다. 폴백만 지우면 이전 조직의 사용자 매핑이
+/// 남아 마법사가 뜨지 않고, 사용자 매핑만 지우면 추정 폴백이 계속 채점에 병합된다.
+@Test func clearRemovesBothTheUserMappingAndTheFallbacks() throws {
+    try withTempDirectory { dir in
+        let store = FileWorkflowStore(directory: dir)
+        try store.save(WorkflowMap(statusToStage: ["Done": .done]))
+        try store.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+        try store.clear()
+
+        let user = try store.load()
+        let fallbacks = try store.loadFallbacks()
+        #expect(user == nil)
+        #expect(fallbacks == nil)
+    }
+}
+
+/// 매핑을 한 번도 저장하지 않은 계정에서도 전환이 실패로 보이면 안 된다 —
+/// 없는 파일을 지우는 것은 오류가 아니다.
+@Test func clearOnAnEmptyDirectoryDoesNotThrow() throws {
+    try withTempDirectory { dir in
+        try FileWorkflowStore(directory: dir).clear()
+    }
+}
