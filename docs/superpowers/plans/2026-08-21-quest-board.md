@@ -1093,9 +1093,13 @@ import JiraKit
 private let now = iso("2026-08-21T09:00:00Z")
 
 /// 동기화 한 번을 흉내낸다. `/myself` → 검색 응답 순서로 스크립트한다.
+///
+/// 워크플로를 미리 심는 이유: 매핑이 없으면 `routeAfterAuthentication()`이 마법사로
+/// 보내고 `HygieneCalculator`가 단계를 못 갈라 위생 지표가 전부 0이 된다.
 @MainActor
 private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
     let model = try makeModel(
+        workflow: InMemoryWorkflowStore(seeded: demoWorkflow),
         http: {
             ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
@@ -1111,9 +1115,9 @@ private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
 
 @MainActor
 @Test func exposesTheMirrorSortedByKey() async throws {
-    let model = try await modelAfterSync(issuesJSON: searchBody([
-        searchIssue(key: "DEMO-9", status: "In Progress", updated: "2026-08-20T00:00:00.000+0000"),
-        searchIssue(key: "DEMO-2", status: "To Do", updated: "2026-08-20T00:00:00.000+0000"),
+    let model = try await modelAfterSync(issuesJSON: issuesBody(pairs: [
+        (key: "DEMO-9", status: "In Progress", assignee: "acc-me"),
+        (key: "DEMO-2", status: "To Do", assignee: "acc-me"),
     ]))
 
     #expect(model.issues.map(\.key) == ["DEMO-2", "DEMO-9"])
@@ -1131,9 +1135,9 @@ private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
 
 @MainActor
 @Test func exposesTheHygieneReport() async throws {
-    let model = try await modelAfterSync(issuesJSON: searchBody([
-        searchIssue(key: "DEMO-1", status: "In Progress", updated: "2026-08-20T00:00:00.000+0000"),
-    ]))
+    let model = try await modelAfterSync(issuesJSON: issuesBody(
+        status: "In Progress", assignee: "acc-me"
+    ))
 
     #expect(model.hygiene != nil)
     #expect(model.hygiene?.wipCount == 1)
@@ -1153,9 +1157,9 @@ private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
 
 @MainActor
 @Test func clearsBoardStateOnSignOut() async throws {
-    let model = try await modelAfterSync(issuesJSON: searchBody([
-        searchIssue(key: "DEMO-1", status: "In Progress", updated: "2026-08-20T00:00:00.000+0000"),
-    ]))
+    let model = try await modelAfterSync(issuesJSON: issuesBody(
+        status: "In Progress", assignee: "acc-me"
+    ))
     #expect(!model.issues.isEmpty)
 
     await model.signOut()
@@ -1167,9 +1171,12 @@ private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
 }
 ```
 
-> **주의:** `searchBody(_:)`/`searchIssue(...)`/`signIn(site:email:token:)`의 정확한
-> 시그니처는 `Tests/ArcadeAppTests/TestSupport.swift`와 `AppModel`에 이미 있다.
-> 이름이 다르면 그쪽을 따르고 이 테스트를 맞춘다 — 새로 만들지 말 것.
+> **주의:** 검색 응답 픽스처는 `TestSupport.swift`의 `issuesBody(pairs:)`와
+> `issuesBody(status:assignee:)`다. 이 헬퍼는 `updated`를
+> `2026-08-14T09:00:00.000+0000`으로 **고정**하고 `duedate`를 넣지 않는다 —
+> 정체일이나 마감을 흔들어야 하는 테스트는 HTTP를 거치지 말고
+> `seedIssuesForTesting`(Task 6에서 추가)을 쓴다. 기존 헬퍼를 고치지 말 것.
+> `AppModel.signIn(site:email:token:)`은 `async`이며 **throws가 아니다**.
 
 - [ ] **Step 2: 테스트가 실패하는지 확인한다**
 
@@ -1714,7 +1721,7 @@ diff가 이벤트를 만들고 `ScoreEngine`이 여느 이벤트와 똑같이 �
             ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),   // /myself
                 .init(status: 204, body: Data()),                  // POST transitions
-                .init(status: 200, body: Data(searchBody([]).utf8)),// 뒤따르는 동기화
+                .init(status: 200, body: Data(issuesBody(pairs: []).utf8)), // 뒤따르는 동기화
             ])
         },
         now: now,
