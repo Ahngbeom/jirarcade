@@ -76,14 +76,20 @@ Swift 모듈은 `public`을 붙이지 않은 타입이 모듈 밖에서 보이�
 ### 3.1 캐비닛 인터페이스
 
 ```swift
+@MainActor
 public protocol Cabinet: Identifiable {
     var id: String { get }
     var title: String { get }
     var marqueeLines: [String] { get }   // 플로어에 보이는 미리보기 3줄
-    var accent: Color { get }
-    @MainActor func makeView() -> AnyView
+    var accentToken: String { get }      // PaletteTokens의 키. Color가 아니다 — 아래 참고
+    func makeView() -> AnyView
 }
 ```
+
+캐비닛은 색이 아니라 **토큰 이름**을 들고 있다. `Color`를 직접 보유하면 캐비닛이 색 값을
+결정하게 되어 라이트/다크 전환이 캐비닛을 지나치고, "`ArcadeUI` 뷰 코드에 색 리터럴을 두지
+않는다"는 제약도 캐비닛에서 깨진다. 토큰만 들고 셸이 `ArcadeTheme.color(forToken:)`으로
+해석하면 테마 전환이 저절로 따라온다.
 
 캐비닛은 셸에 데이터를 요청하지 않는다. 모든 캐비닛이 `ArcadeCore`의 공유 저장소를 각자 읽는다.
 따라서 캐비닛끼리 서로를 모르며, 하나를 제거해도 나머지가 깨지지 않는다.
@@ -406,6 +412,13 @@ signedOut ─로그인─▶ validating ─/myself 성공─▶ signedIn
 
 - 토큰은 Keychain에만 둔다(`kSecClassInternetPassword`, server = 사이트 호스트, account = 이메일). 앱 DB는 평문 파일이며 백업에 포함되므로 자격증명을 두지 않는다.
 - 로그아웃은 Keychain 항목만 삭제하고 미러는 남긴다. 단 **다른 계정으로 로그인하면 미러 전체를 초기화**한다.
+- **에러 문자열도 같은 규칙을 받는다.** 앱 DB가 평문이라는 사실은 자격증명뿐 아니라 거기 저장되는
+  모든 문자열에 적용된다. `JiraError.transitionRejected(reason:)`는 Jira 응답 본문의
+  `errorMessages`를 그대로 나르고 클라이언트의 에러 매핑이 그 케이스를 4xx 전반에 붙이는데,
+  Jira 응답에는 이메일이 들어 있다. 따라서 **저장되거나 화면에 닿을 수 있는 실패 문자열에는
+  에러 페이로드를 넣지 않는다** — `JiraKit`의 `redactedErrorDescription(_:)`을 거쳐 케이스
+  이름이나 타입 이름만 남긴다. `SyncRunRecord.failureMessage`(디스크)와
+  `SyncScheduler.State.lastFailure`(화면)가 그 경계다.
 
 ### 8.3 OAuth 확장 지점
 

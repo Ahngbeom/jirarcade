@@ -22,7 +22,7 @@ private let auth = fixtureAuth(site: "example.atlassian.net",
 }
 
 /// 로그인 화면은 자유 입력을 받는다. 붙여넣기 사고가 크래시가 되어서는 안 된다.
-@Test(arguments: ["", "   ", "https://", "my site.atlassian.net", "a|b.atlassian.net"])
+@Test(arguments: ["", "   ", "https://", "my site.example.com", "a|b.example.com"])
 func invalidSiteThrowsInsteadOfCrashing(site: String) {
     #expect(throws: JiraError.invalidSite) {
         _ = try APITokenAuth(site: site, email: "user@example.com", token: "secret-token")

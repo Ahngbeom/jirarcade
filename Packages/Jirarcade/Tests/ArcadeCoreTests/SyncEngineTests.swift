@@ -243,3 +243,47 @@ private func makeEngine(_ source: ScriptedSource) throws -> (SyncEngine, ArcadeS
 
     #expect(try store.loadMirror().count == 1, "실패해도 마지막 미러는 남는다")
 }
+
+/// `finishSyncRun`의 `failureMessage`는 SwiftData로 디스크에 남고, `loadSyncRuns()`로
+/// (문서에 적힌 대로) 진단 화면에 노출될 예정이다. `JiraError.transitionRejected(reason:)`의
+/// `reason`은 Jira 응답의 `errorMessages`를 그대로 담으므로, 원본 에러를 그대로 적으면
+/// 응답 본문 조각(이메일 등)이 평문 DB에 영구히 남는다. `SyncEngine`이 반드시
+/// `redactedErrorDescription(_:)`을 거친 문자열만 적는지 고정한다.
+@MainActor
+@Test func failedSyncRecordsARedactedFailureMessageNotRawResponseContent() async throws {
+    let day = iso("2026-08-12T09:00:00Z")
+    let source = ScriptedSource([])
+    let (engine, store) = try makeEngine(source)
+
+    let leakedEmail = "leaked-user@example.com"
+    let reason = "JQL referenced unknown user \(leakedEmail)"
+    source.error = JiraError.transitionRejected(reason: reason)
+
+    await #expect(throws: JiraError.transitionRejected(reason: reason)) {
+        _ = try await engine.sync(jql: "q", now: day)
+    }
+
+    let runs = try store.loadSyncRuns()
+    let failure = try #require(runs.last?.failureMessage)
+    #expect(!failure.contains(leakedEmail), "Jira 응답 본문이 failureMessage로 새면 안 된다")
+    #expect(failure == "JiraError.transitionRejected", "타입/케이스 이름만 남아야 한다")
+}
+
+/// I4: 페치가 끝난 시점에 더 이상 "현재" 동기화가 아니면(로그아웃·계정 전환이 그 사이
+/// 끼어들었으면) 그 결과를 스토어에 쓰면 안 된다. `AppModel`은 `syncGeneration`으로
+/// 이걸 판단해 `isStillCurrent`에 넘긴다 — 여기서는 그 계약만 고정한다: 항상 false를
+/// 돌려주는 클로저를 주면 페치가 성공했어도 미러·이벤트 로그 어느 쪽도 바뀌면 안 된다.
+@MainActor
+@Test func aSyncThatIsNoLongerCurrentAfterFetchLeavesTheStoreUntouched() async throws {
+    let day = iso("2026-08-12T09:00:00Z")
+    let source = ScriptedSource([[issue(key: "DEMO-1", status: "To Do", updated: day)]])
+    let (engine, store) = try makeEngine(source)
+
+    await #expect(throws: CancellationError.self) {
+        _ = try await engine.sync(jql: "q", now: day, isStillCurrent: { false })
+    }
+
+    #expect(try store.loadMirror().isEmpty, "더 이상 유효하지 않은 동기화 결과는 미러에 쓰면 안 된다")
+    #expect(try store.loadEvents().isEmpty, "이벤트 로그에도 쓰면 안 된다")
+    #expect(try store.loadSyncRuns().last?.failureMessage == "aborted")
+}
