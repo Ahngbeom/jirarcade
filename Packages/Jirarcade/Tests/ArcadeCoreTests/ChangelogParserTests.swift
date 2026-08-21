@@ -43,8 +43,29 @@ private func issue(
     // 테스트 실패가 아니라 인덱스 범위 초과로 프로세스가 죽는다 — try #require로 꺼낸다.
     let only = try #require(parsed.first)
     #expect(only.event.kind == .statusChanged)
+    #expect(only.event.issueKey == "MPT-1")
     #expect(only.event.fromStatus == "To Do")
     #expect(only.event.toStatus == "In Progress")
+}
+
+/// issueKey는 이벤트를 티켓에 붙이는 **유일한** 키다. 틀리면 XP가 엉뚱한 티켓에 붙는다.
+/// 티켓을 두 개 돌려 상수가 아니라 입력에서 온 값임을 고정한다 — 한 티켓만 보면
+/// 하드코딩된 키도 통과해 버린다.
+@Test func eventsCarryTheirOwnIssueKey() throws {
+    let parser = ChangelogParser()
+    let twoHistories = [
+        history(id: "1", at: iso("2023-02-01T00:00:00Z"), author: "acc-me",
+                items: [statusItem(fromId: "1", from: "A", toId: "2", to: "B")]),
+        history(id: "2", at: iso("2023-02-10T00:00:00Z"), author: "acc-me",
+                items: [statusItem(fromId: "2", from: "B", toId: "3", to: "C")]),
+    ]
+    let first = parser.parse(issue: issue(key: "MPT-1", histories: twoHistories))
+    let second = parser.parse(issue: issue(key: "MPT-42", histories: twoHistories))
+
+    #expect(first.count == 2)
+    #expect(second.count == 2)
+    #expect(first.allSatisfy { $0.event.issueKey == "MPT-1" })
+    #expect(second.allSatisfy { $0.event.issueKey == "MPT-42" })
 }
 
 /// observedAt은 전이 시각이지 백필 실행 시각이 아니다. 틀리면 3년치가 오늘로 몰린다.
@@ -167,18 +188,28 @@ private func issue(
 
 /// status와 duedate가 **같은 저장 묶음**에서 바뀌면 그 전이에는 새 마감일을 적용한다.
 /// 동시에 일어난 변경이므로 "그때의 마감일"은 바꾼 결과값으로 본다.
+///
+/// 기대값(2023-04-01)은 세 값과 모두 다르게 잡아 두었다 — 바꾸기 **전** 값(2023-02-15)도,
+/// 티켓의 **현재** 값(2023-06-01)도 아니다. 셋이 겹치면 "새 값을 썼다"와 "시간축을 무시하고
+/// 현재 값으로 폴백했다"를 구분하지 못한다.
 @Test func simultaneousDueDateChangeUsesTheNewValue() throws {
     let parsed = ChangelogParser().parse(issue: issue(
         created: iso("2023-01-01T00:00:00Z"),
-        due: iso("2023-04-01T00:00:00Z"),
+        due: iso("2023-06-01T00:00:00Z"),      // 현재 값 — 그때의 값과 달라야 한다
         histories: [
             history(id: "1", at: iso("2023-03-01T00:00:00Z"), author: "acc-me", items: [
                 statusItem(fromId: "1", from: "A", toId: "2", to: "B"),
                 JiraChangelogItem(field: "duedate", fromId: nil, fromString: "2023-02-15",
                                   toId: nil, toString: "2023-04-01"),
-            ])
+            ]),
+            // 나중에 한 번 더 옮겨서 현재 값과 전이 시점 값을 갈라놓는다.
+            history(id: "2", at: iso("2023-05-01T00:00:00Z"), author: "acc-me", items: [
+                JiraChangelogItem(field: "duedate", fromId: nil, fromString: "2023-04-01",
+                                  toId: nil, toString: "2023-06-01")
+            ]),
         ]
     ))
+    #expect(parsed.count == 1)
     #expect(try #require(parsed.first).event.dueDateAtObservation == iso("2023-04-01T00:00:00Z"))
 }
 

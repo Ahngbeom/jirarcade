@@ -28,6 +28,16 @@ public struct ChangelogParser: Sendable {
 
         var result: [ParsedTransition] = []
         // 직전 수정 시각. 첫 history 앞에는 변경이 없으므로 티켓 생성 시각에서 시작한다.
+        //
+        // 이 값은 라이브 동기화가 쓰는 `jiraUpdatedAt`의 **근사**다. 댓글과 워크로그는
+        // changelog에 남지 않으면서 Jira의 `fields.updated`는 올리기 때문에, 백필이 세는
+        // "직전 수정"은 라이브 경로보다 항상 같거나 더 이르다. 그만큼
+        // `observedAt - priorUpdatedAt` 간격이 벌어져 **티켓이 실제보다 더 정체된 것처럼
+        // 채점된다**(정체 깨우기 XP가 후하게 나온다). 활발히 토론된 티켓일수록 커진다.
+        //
+        // 그래도 이 근사를 쓰는 이유: 정확한 댓글 시각을 알려면 티켓마다
+        // `/issue/{key}/comment`를 추가로 조회해야 하는데 1,000여 건 규모에서 비용이 크고,
+        // 틀리는 방향이 "전부 소급"이라는 백필 결정과 같은 쪽이다.
         var priorUpdatedAt = issue.createdAt
 
         for entry in ordered {
@@ -49,6 +59,7 @@ public struct ChangelogParser: Sendable {
                 ))
             }
             // status가 아닌 변경도 티켓을 갱신한다 — 다음 전이의 기준선이 된다.
+            // 단 여기서 보이는 것은 changelog에 남는 변경뿐이다(댓글·워크로그는 안 남는다).
             priorUpdatedAt = entry.createdAt
         }
         return result
