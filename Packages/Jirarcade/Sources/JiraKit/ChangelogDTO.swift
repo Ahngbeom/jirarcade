@@ -213,4 +213,28 @@ public struct JiraStatusCatalogEntry: Sendable, Equatable, Decodable {
         self.name = name
         self.categoryKey = categoryKey
     }
+
+    /// 해석 가능한 항목만 살려서 목록을 만든다.
+    ///
+    /// 관대하게 받는 이유: 이 카탈로그는 매핑에 없는 과거 상태를 statusCategory로 되살리는
+    /// **보조 정보**다(스펙 §5의 폴백 ②). `StatusDetails`에는 required 필드가 하나도 없어서
+    /// 항목 하나가 `id`/`name`/`statusCategory` 중 무엇이든 빠뜨리면 배열 전체 디코드가
+    /// 실패하고, 그러면 폴백 ②가 통째로 죽어 과거 상태가 전부 0점 처리된다. 항목 999개를
+    /// 1개 때문에 잃는 것보다 999개를 쓰는 편이 낫다.
+    ///
+    /// 단, 최상위가 배열이 아닌 등 응답 자체가 어긋나면 그대로 던진다 — 그건 "일부 항목이
+    /// 낯설다"가 아니라 엔드포인트를 잘못 불렀다는 뜻이다.
+    static func decodeList(_ data: Data) throws -> [JiraStatusCatalogEntry] {
+        try JSONDecoder().decode([Lenient].self, from: data).compactMap(\.entry)
+    }
+
+    /// 원소 하나의 디코딩 실패를 그 원소에 가둬 두는 래퍼. 래퍼 자체는 항상 성공하므로
+    /// unkeyed container가 다음 원소로 정상적으로 넘어간다.
+    private struct Lenient: Decodable {
+        let entry: JiraStatusCatalogEntry?
+
+        init(from decoder: any Decoder) throws {
+            entry = try? JiraStatusCatalogEntry(from: decoder)
+        }
+    }
 }

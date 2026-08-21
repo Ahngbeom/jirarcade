@@ -21,6 +21,12 @@ public struct JiraClient: Sendable {
     /// `created`와 `duedate`를 fields에 넣는 이유: 백필 이벤트도 `priorUpdatedAt`과
     /// `dueDateAtObservation`을 채워야 하는데(스펙 §4.3), 첫 history 이전의 기준선은
     /// 티켓 생성 시각이고 마감일은 변경 이력이 없을 때 현재 값을 써야 한다.
+    ///
+    /// `expand`가 배열이 아니라 콤마 구분 **문자열**인 이유: `POST /search/jql`의 request
+    /// body(`SearchAndReconcileRequestBean`)에서만 `expand`의 타입이 `string`이다. 구버전
+    /// `POST /search`는 `array<string>`이라 헷갈리기 쉽지만, 여기서 배열로 보내면 400이거나
+    /// 무시된 채 200이 와서 응답에 `changelog` 키가 없다 — 어느 쪽이든 백필이 0건이 된다.
+    /// (`fields`는 이 엔드포인트에서도 배열이 맞다.)
     public func searchIssuesWithChangelog(
         jql: String, maxResults: Int, pageToken: String?
     ) async throws -> (issues: [JiraIssueWithChangelog], nextPageToken: String?) {
@@ -28,7 +34,7 @@ public struct JiraClient: Sendable {
             "jql": jql,
             "maxResults": maxResults,
             "fields": ["created", "duedate"],
-            "expand": ["changelog"],
+            "expand": "changelog",
         ]
         if let pageToken { payload["nextPageToken"] = pageToken }
 
@@ -38,7 +44,10 @@ public struct JiraClient: Sendable {
         do {
             return try JiraChangelogResponse.decodeSearch(data)
         } catch {
-            throw JiraError.decoding(context: "searchIssuesWithChangelog")
+            // 원본 에러를 문맥에 담는다. `decodeSearch`는 어느 티켓의 어느 필드가 깨졌는지를
+            // 담아 던지므로(예: "issue MPT-1: created=..."), 여기서 버리면 수천 건을 도는
+            // 백필에서 실패한 티켓을 특정할 방법이 사라진다.
+            throw JiraError.decoding(context: "searchIssuesWithChangelog: \(error)")
         }
     }
 
@@ -58,7 +67,7 @@ public struct JiraClient: Sendable {
         do {
             return try JiraChangelogResponse.decodeIssueChangelog(data)
         } catch {
-            throw JiraError.decoding(context: "issueChangelog(\(issueKey))")
+            throw JiraError.decoding(context: "issueChangelog(\(issueKey)): \(error)")
         }
     }
 
@@ -67,9 +76,9 @@ public struct JiraClient: Sendable {
         let data = try await perform(method: "GET", path: "/status",
                                      body: nil, resource: "status")
         do {
-            return try JSONDecoder().decode([JiraStatusCatalogEntry].self, from: data)
+            return try JiraStatusCatalogEntry.decodeList(data)
         } catch {
-            throw JiraError.decoding(context: "statusCatalog")
+            throw JiraError.decoding(context: "statusCatalog: \(error)")
         }
     }
 

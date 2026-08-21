@@ -21,8 +21,9 @@ private let auth = fixtureAuth()
         with: #require(request.httpBody)) as? [String: Any]
     #expect(payload?["jql"] as? String == "assignee = currentUser()")
     #expect(payload?["maxResults"] as? Int == 100)
-    let expand = payload?["expand"] as? [String]
-    #expect(expand?.contains("changelog") == true)
+    // `POST /search/jql`에서만 expand가 배열이 아니라 콤마 구분 문자열이다.
+    // 배열로 보내면 400이거나 changelog 없이 200이 와서 백필이 0건이 된다.
+    #expect(payload?["expand"] as? String == "changelog")
     // created와 duedate가 없으면 priorUpdatedAt/dueDateAtObservation을 복원할 수 없다.
     let fields = payload?["fields"] as? [String]
     #expect(fields?.contains("created") == true)
@@ -83,6 +84,53 @@ private let auth = fixtureAuth()
     let sent = try #require(stub.sentRequests.first?.url)
     let path = try #require(URLComponents(url: sent, resolvingAgainstBaseURL: false)).path
     #expect(path.hasSuffix("/status"))
+}
+
+/// 카탈로그 한 항목이 어긋나도 나머지는 살아야 한다. 폴백 ②가 통째로 죽으면
+/// 매핑에 없는 과거 상태가 전부 0점 처리된다.
+@Test func statusCatalogSkipsUndecodableEntriesAndKeepsTheRest() async throws {
+    let body = """
+    [
+      { "id": "10009", "name": "To Do", "statusCategory": { "key": "new" } },
+      { "id": "10016", "name": "이름 없는 상태" },
+      { "id": "10011", "name": "Done", "statusCategory": { "key": "done" } }
+    ]
+    """
+    let client = JiraClient(auth: auth, http: StubHTTPClient(status: 200, body: body))
+
+    let catalog = try await client.statusCatalog()
+
+    #expect(catalog.map(\.id) == ["10009", "10011"])
+}
+
+/// 최상위 형태가 어긋나면 관대함이 적용되지 않고 그대로 던져야 한다 —
+/// 그건 "낯선 항목"이 아니라 엔드포인트/응답이 통째로 다르다는 뜻이다.
+@Test func statusCatalogThrowsWhenTheResponseIsNotAnArray() async {
+    let client = JiraClient(auth: auth, http: StubHTTPClient(status: 200, body: #"{"values":[]}"#))
+    await #expect(throws: (any Error).self) {
+        _ = try await client.statusCatalog()
+    }
+}
+
+/// 401 복구 후의 재시도가 `query`를 잃으면 `startAt` 없이 첫 페이지를 다시 받아,
+/// 백필이 같은 이력을 중복 삽입하거나 페이지 루프가 끝나지 않는다.
+/// 재시도 요청의 URL을 직접 파싱해 쿼리가 살아 있는지 본다.
+@Test func unauthorizedRetryKeepsTheQueryString() async throws {
+    let page = #"{"startAt":10,"maxResults":100,"total":12,"values":[]}"#
+    let stub = StubHTTPClient([
+        .init(status: 401, body: Data(), headers: [:]),
+        .init(status: 200, body: Data(page.utf8), headers: [:]),
+    ])
+    let client = JiraClient(auth: StubAuthProvider(recovers: true), http: stub)
+
+    _ = try await client.issueChangelog(issueKey: "MPT-1", startAt: 10)
+
+    #expect(stub.sentRequests.count == 2)
+    let retried = try #require(stub.sentRequests.dropFirst().first?.url)
+    let components = try #require(URLComponents(url: retried, resolvingAgainstBaseURL: false))
+    #expect(components.path.hasSuffix("/issue/MPT-1/changelog"))
+    #expect(components.queryItems?.first { $0.name == "startAt" }?.value == "10")
+    #expect(components.queryItems?.first { $0.name == "maxResults" }?.value == "100")
 }
 
 @Test func changelogSearchMapsUnauthorized() async {
