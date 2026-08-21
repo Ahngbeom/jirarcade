@@ -34,7 +34,12 @@ struct TicketCardView: View {
                 .font(.system(size: 10))
                 .foregroundStyle(theme.inkSecondary)
                 .lineLimit(2)
-            if let due = dueLabel {
+            // 실패 블록이 뜨는 동안은 마감일 줄을 감춘다 — 카드를 키우는 대신 이렇게 하는
+            // 이유: 레인 높이는 `rowCount × cardHeight`라서, 카드를 키우면 실패가 없는
+            // 보통 상태의 모든 레인도 함께 늘어난다. 실패는 지금 당장 조치가 필요한
+            // 정보라 그 몇 초 동안은 마감일보다 우선한다 — 실패를 닫으면(취소하거나
+            // dismissTransitionFailure) 마감일이 그대로 돌아온다.
+            if let due = dueLabel, !showsFailureBlock {
                 Text(due)
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(dueColor)
@@ -159,6 +164,11 @@ struct TicketCardView: View {
     private var stagnationLabel: String {
         (slot.isApproximate ? "~" : "") + "\(slot.daysStagnant)d"
     }
+
+    /// 대기(`pending`)가 있으면 항상 대기 배너가 우선이라 실패 블록은 뜨지 않는다
+    /// (`AppModel`이 요청 시점에 `transitionFailures`를 지우므로 둘은 원래도 동시에
+    /// 채워지지 않는다) — 그래도 뷰가 스스로 판정하도록 조건을 명시한다.
+    private var showsFailureBlock: Bool { pending == nil && failure != nil }
 
     private var dueLabel: String? {
         switch slot.dueState {

@@ -8,7 +8,10 @@ struct BoardMetrics {
     let availableWidth: Double
 
     let cardWidth: Double = 132
-    let cardHeight: Double = 96
+    /// 전이 실패 블록(2줄 메시지 + Jira 링크)이 최악의 경우에도 잘리지 않을 높이.
+    /// 마감일 줄은 실패가 뜨는 동안 숨는다(`TicketCardView.showsFailureBlock`) — 그래도
+    /// 두 상태 모두 이 높이 안에 들어오는지는 `TicketCardView`의 계산에서 확인한다.
+    let cardHeight: Double = 112
     let rowGap: Double = 8
     /// 카드 사이에 최소로 남길 여백. 이보다 좁아지면 `LanePacker`가 다음 줄로 내린다.
     let cardGap: Double = 10
