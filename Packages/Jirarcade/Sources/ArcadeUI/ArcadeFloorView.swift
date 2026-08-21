@@ -7,26 +7,39 @@ struct ArcadeFloorView: View {
     let model: AppModel
 
     @State private var openCabinetID: String?
+    @State private var fullScreenCabinetID: String?
     @State private var showingSettings = false
 
     /// 셸이 아는 것은 이 배열뿐이다. 2b에서 캐비닛을 더할 때 이 줄만 늘어난다.
     private var cabinets: [any Cabinet] {
-        [ObservationCabinet(model: model)]
+        [QuestBoardCabinet(model: model), ObservationCabinet(model: model)]
     }
 
     var body: some View {
-        VStack(spacing: 0) {
-            marquee
-            Divider().overlay(theme.line)
-            cabinetRow
-            Divider().overlay(theme.line)
-            statusBar
+        Group {
+            if let id = fullScreenCabinetID,
+               let cabinet = cabinets.first(where: { $0.id == id }) {
+                fullScreen(cabinet)
+            } else {
+                floor
+            }
         }
         .background(theme.surfaceBase)
         .onReceive(NotificationCenter.default.publisher(
             for: NSApplication.didBecomeActiveNotification
         )) { _ in
             Task { await model.syncNow(reason: .foreground) }
+        }
+    }
+
+    /// 기존 플로어 화면. 이전 `body`의 내용을 그대로 옮긴 것이다.
+    private var floor: some View {
+        VStack(spacing: 0) {
+            marquee
+            Divider().overlay(theme.line)
+            cabinetRow
+            Divider().overlay(theme.line)
+            statusBar
         }
         .sheet(item: Binding(
             get: { openCabinetID.map(OpenCabinet.init) },
@@ -52,6 +65,27 @@ struct ArcadeFloorView: View {
         }
     }
 
+    /// 전체 화면 캐비닛. 상단 줄이 플로어로 돌아가는 유일한 길이다.
+    private func fullScreen(_ cabinet: any Cabinet) -> some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 12) {
+                Button("◂ FLOOR") { fullScreenCabinetID = nil }
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .buttonStyle(.plain)
+                    .foregroundStyle(theme.accent)
+                    .keyboardShortcut(.cancelAction)
+                Text(cabinet.title)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(theme.inkSecondary)
+                Spacer()
+            }
+            .padding(.horizontal, 20)
+            .padding(.vertical, 10)
+            Divider().overlay(theme.line)
+            cabinet.makeView()
+        }
+    }
+
     private var marquee: some View {
         HStack(spacing: 12) {
             Text("▨ ARCADE FLOOR ▨")
@@ -74,7 +108,6 @@ struct ArcadeFloorView: View {
                 cabinetCard(cabinet)
             }
             comingSoon()
-            comingSoon()
         }
         .padding(20)
     }
@@ -96,7 +129,12 @@ struct ArcadeFloorView: View {
                         .lineLimit(1)
                 }
                 Spacer()
-                Button("▶ OPEN") { openCabinetID = cabinet.id }
+                Button("▶ OPEN") {
+                    switch cabinet.presentation {
+                    case .sheet:      openCabinetID = cabinet.id
+                    case .fullScreen: fullScreenCabinetID = cabinet.id
+                    }
+                }
                     .font(.system(size: 11, weight: .bold, design: .monospaced))
                     .buttonStyle(.plain)
                     .foregroundStyle(theme.accent)
