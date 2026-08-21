@@ -38,8 +38,14 @@ let myselfBody = #"{"accountId":"acc-me","displayName":"Tester"}"#
 /// 특정 상황을 흉내내는 데만 쓰는, 내용 없는 에러. `Equatable`이라 `#expect(throws:)`에도 쓸 수 있다.
 struct StubError: Error, Equatable {}
 
+/// - Parameters:
+///   - store: 미리 상태를 심어두고 싶을 때 넘긴다. 기본값은 빈 인메모리 스토어다 —
+///     테스트가 모델과 **같은** 스토어를 들고 있어야 결과를 직접 확인할 수 있다.
+///   - changelogSource: 백필이 쓸 소스. 기본값(nil)이면 프로덕션 구현이 쓰인다.
 @MainActor
 func makeModel(
+    store: ArcadeStore? = nil,
+    changelogSource: (any ChangelogSource)? = nil,
     credentials: InMemoryCredentialStore = InMemoryCredentialStore(),
     workflow: InMemoryWorkflowStore = InMemoryWorkflowStore(),
     accountBinding: InMemoryAccountBindingStore = InMemoryAccountBindingStore(),
@@ -49,12 +55,13 @@ func makeModel(
     var utc = Calendar(identifier: .gregorian)
     utc.timeZone = TimeZone(identifier: "UTC")!
     return AppModel(
-        store: ArcadeStore(container: try ArcadeStore.makeInMemoryContainer()),
+        store: try store ?? ArcadeStore(container: ArcadeStore.makeInMemoryContainer()),
         credentials: credentials,
         workflow: workflow,
         accountBinding: accountBinding,
         clientFactory: { auth in JiraClient(auth: auth, http: http()) },
         clock: { now },
-        calendar: utc
+        calendar: utc,
+        changelogSourceFactory: changelogSource.map { source in { _ in source } }
     )
 }

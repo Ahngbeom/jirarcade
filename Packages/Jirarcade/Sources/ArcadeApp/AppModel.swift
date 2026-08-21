@@ -19,6 +19,23 @@ public final class AppModel {
     /// 사용자는 그 사실을 알 방법이 없다.
     public private(set) var workflowSaveWarning: String?
 
+    /// 백필 진행률. 실행 중일 때만 값이 있다.
+    public struct BackfillProgress: Sendable, Equatable {
+        public let processed: Int
+        /// 총계를 모르면 nil이다. 새 검색 API는 total을 주지 않으므로
+        /// 처리한 수를 총계로 삼으면 진행률이 늘 100%로 보인다.
+        public let total: Int?
+    }
+    public private(set) var backfillProgress: BackfillProgress?
+    /// 전체 이력 기준 요약. 프로필에 표시한다.
+    public private(set) var lifetimeSummary: PlayerSummary?
+    /// 최근 `RuleSet.seasonDays`일 기준 요약. HUD의 XP 바가 이 값을 쓴다.
+    public private(set) var seasonSummary: PlayerSummary?
+    /// 중단된 백필이 남아 있는지. 설정 화면이 "이어서 불러오기"를 보여줄 근거다.
+    public private(set) var hasResumableBackfill: Bool = false
+    /// 로그인한 계정. "내가 직접 옮긴 것만 XP" 판정에 쓴다.
+    public private(set) var myAccountId: String?
+
     /// 진행 중이던 동기화가 로그아웃·계정 전환을 가로질러 스토어에 쓰지 않도록 막는 데
     /// 쓰는 세대 값. 인증에 성공할 때(로그인/시작)와 로그아웃할 때마다 올라간다.
     /// `performSync()`가 호출 시점의 값을 캡처해 `SyncEngine.sync(isStillCurrent:)`에
@@ -35,6 +52,9 @@ public final class AppModel {
     private let workflow: any WorkflowStore
     private let accountBinding: any AccountBindingStore
     private let clientFactory: (any AuthProvider) -> JiraClient
+    /// 백필이 쓸 changelog 소스를 만든다. `clientFactory`와 같은 패턴이다 —
+    /// 프로덕션은 기본값으로 실제 구현을 쓰고, 테스트만 갈아 끼운다.
+    private let changelogSourceFactory: (JiraClient) -> any ChangelogSource
     private let clock: () -> Date
     private let calendar: Calendar
     private var scheduler: SyncScheduler?
@@ -43,6 +63,9 @@ public final class AppModel {
 
     /// 로그인 후에만 존재한다. 매핑 조회와 동기화에 쓴다.
     private var client: JiraClient?
+
+    /// 실행 중인 백필. 중단하려면 이걸 취소한다.
+    private var backfillTask: Task<Void, Never>?
 
     /// 스케줄러의 실패 집계. UI가 "연결하지 못했습니다"를 언제 보여줄지 판단한다.
     public var schedulerState: SyncScheduler.State { scheduler?.state ?? .init() }
@@ -56,13 +79,16 @@ public final class AppModel {
         clock: @escaping () -> Date,
         calendar: Calendar,
         rules: RuleSet = .default,
-        settings: AppSettings = .default
+        settings: AppSettings = .default,
+        changelogSourceFactory: ((JiraClient) -> any ChangelogSource)? = nil
     ) {
         self.store = store
         self.credentials = credentials
         self.workflow = workflow
         self.accountBinding = accountBinding
         self.clientFactory = clientFactory
+        self.changelogSourceFactory =
+            changelogSourceFactory ?? { JiraChangelogSource(client: $0) }
         self.clock = clock
         self.calendar = calendar
         self.rules = rules
@@ -122,6 +148,11 @@ public final class AppModel {
         try? credentials.clear()
         client = nil
         summary = nil
+        // 집계값도 함께 버린다 — 이 계정의 이벤트에서 나온 숫자이므로, 남겨두면
+        // 다음 로그인이 끝나기 전까지 남의 XP·레벨이 화면에 떠 있다.
+        lifetimeSummary = nil
+        seasonSummary = nil
+        myAccountId = nil
         lastSync = nil
         credentialSaveWarning = nil
         workflowSaveWarning = nil
@@ -190,8 +221,12 @@ public final class AppModel {
     /// 경우도 마찬가지다. 그래서 `.unauthorized`를 제외한 모든 에러를 스케줄러에 닿기 전에
     /// `SyncFailure`로 한 번 줄인다 — 진단에는 타입/케이스 이름으로 충분하고, 본문은 필요 없다.
     private func performSync() async throws {
-        // `try?`가 Optional을 평탄화하므로(SE-0230) 바인딩은 한 번이면 된다.
-        guard let client, let map = try? workflow.load() else {
+        // `try?`가 Optional을 평탄화하므로(SE-0230) 존재 확인은 한 번이면 된다.
+        // 값을 꺼내 쓰지 않고 **있는지만** 보는 이유: 채점에 넘기는 것은 폴백을 밑에 깐
+        // `effectiveWorkflow()`이지만, "아직 매핑을 안 했다/못 읽었다"는 판정은 여전히
+        // 사용자 매핑만으로 해야 한다. 폴백은 백필이 추정한 값이라 그것만으로 설정을
+        // 끝낸 것으로 볼 수 없다.
+        guard let client, (try? workflow.load()) != nil else {
             // 예전에는 여기서 조용히 return했다. `SyncScheduler.requestSync`는 던지지
             // 않는 `perform()`을 성공으로 취급해 `consecutiveFailures`를 지우고
             // `lastSyncAt`을 갱신한다(I1) — 그런데 이 분기는 요청을 아예 보내지 않았다.
@@ -206,7 +241,7 @@ public final class AppModel {
 
         let engine = SyncEngine(
             source: JiraIssueSource(client: client),
-            store: store, rules: rules, workflow: map, calendar: calendar
+            store: store, rules: rules, workflow: effectiveWorkflow(), calendar: calendar
         )
         // performSync() 시작 시점의 세대를 캡처한다. `SyncEngine.sync()`가 페치를 끝낸
         // 직후 이 값이 그때도 여전히 최신인지 확인한다 — 그 사이 로그아웃하거나 다른
@@ -249,6 +284,110 @@ public final class AppModel {
         } else {
             unmappedStatuses = fromMirror
         }
+    }
+
+    // MARK: - 백필
+
+    /// 과거 기록을 불러온다. 사용자가 설정에서 눌러 시작한다 — 자동 실행하지 않는다.
+    public func startBackfill() async {
+        await launchBackfill(resume: false)
+    }
+
+    /// 중단된 백필이 있으면 이어서 진행한다. 없으면 아무 일도 하지 않는다 —
+    /// 요청조차 나가지 않아야 한다.
+    public func resumeBackfillIfAvailable() async {
+        guard (try? store.resumableBackfill()) != nil else { return }
+        await launchBackfill(resume: true)
+    }
+
+    /// 실행 중인 백필을 중단한다. 이미 넣은 이벤트는 그대로 유효하고, 중단 지점의
+    /// `nextPageToken`이 저장돼 있어 나중에 "이어서 불러오기"로 재개된다.
+    public func cancelBackfill() {
+        backfillTask?.cancel()
+    }
+
+    private func launchBackfill(resume: Bool) async {
+        // 이미 돌고 있으면 두 번 시작하지 않는다 — 같은 페이지를 두 곳에서 훑으면
+        // 진행률이 뒤엉킨다(이벤트 중복은 historyId가 막지만 카운터는 못 막는다).
+        guard backfillTask == nil else { return }
+        let task = Task { await runBackfill(resume: resume) }
+        backfillTask = task
+        await task.value
+        backfillTask = nil
+    }
+
+    private func runBackfill(resume: Bool) async {
+        guard let client else { return }
+        // 동기화(`performSync`)와 달리 statusCategory로 좁히지 않는다 — 이미 Done인
+        // 티켓의 과거 전이야말로 소급해야 할 것들이다.
+        let jql = "assignee = currentUser()"
+
+        // 진행 상태 저장(begin/advance/finish)은 엔진이 직접 한다 — 페이지 경계마다
+        // 저장해야 하는데 여기서는 루프 안을 볼 수 없다. 여기서 또 부르면 이중 기록이 된다.
+        let engine = BackfillEngine(
+            source: changelogSourceFactory(client),
+            store: store,
+            workflow: effectiveWorkflow()
+        )
+
+        do {
+            let outcome = try await engine.run(
+                jql: jql, now: clock(), resume: resume
+            ) { [weak self] processed, total in
+                self?.backfillProgress = BackfillProgress(processed: processed, total: total)
+            }
+            persistFallbacks(outcome.resolvedFallbacks)
+        } catch {
+            // 실패·중단해도 여기까지 넣은 이벤트는 유효하고 진행 지점이 저장돼 있다.
+            // run을 미완료로 남겨 "이어서 불러오기"가 뜨게 하는 것이 의도된 동작이다.
+        }
+
+        backfillProgress = nil
+        await refreshDerivedState()
+    }
+
+    /// 새로 해석한 폴백을 기존 것과 **병합해** 저장한다. 덮어쓰면 이전 실행이
+    /// 해석한 매핑이 사라진다 — 범위를 좁혀 다시 돌리면 폴백이 줄어드는 셈이다.
+    private func persistFallbacks(_ discovered: [String: Stage]) {
+        guard !discovered.isEmpty else { return }
+        var merged = (try? workflow.loadFallbacks())?.statusToStage ?? [:]
+        for (name, stage) in discovered { merged[name] = stage }
+        try? workflow.saveFallbacks(WorkflowMap(statusToStage: merged))
+    }
+
+    /// 사용자 매핑에 백필이 추정한 폴백을 밑에 깔아 만든 채점용 맵.
+    ///
+    /// 동기화 경로와 백필 경로가 **같은 맵**을 써야 한다 — 다르면 같은 이벤트가
+    /// 어느 경로로 집계됐는지에 따라 다른 XP를 받는다.
+    ///
+    /// 폴백 로드가 실패하면 빈 폴백으로 진행한다. 추정값이므로 앱을 막을 이유가 없다
+    /// (사용자 매핑의 로드 실패는 지금처럼 별도로 다룬다).
+    private func effectiveWorkflow() -> WorkflowMap {
+        let base = (try? workflow.load()) ?? WorkflowMap(statusToStage: [:])
+        let fallbacks = (try? workflow.loadFallbacks())?.statusToStage ?? [:]
+        return base.merging(fallbacks)
+    }
+
+    /// 스토어에서 파생되는 상태를 한꺼번에 다시 읽는다. 로그인 직후와 백필 종료 후에
+    /// 부른다 — 두 시점 모두 이벤트 로그와 미완료 run이 바뀌어 있을 수 있다.
+    private func refreshDerivedState() async {
+        hasResumableBackfill = (try? store.resumableBackfill()) != nil
+        await refreshSummaries()
+    }
+
+    /// 통산과 시즌을 각각 집계한다. 같은 이벤트 로그를 두 범위로 읽을 뿐이다.
+    private func refreshSummaries() async {
+        guard let events = try? store.loadEvents(),
+              let mirror = try? store.loadMirror() else { return }
+        let now = clock()
+        let engine = ScoreEngine(
+            rules: rules, workflow: effectiveWorkflow(),
+            calendar: calendar, myAccountId: myAccountId
+        )
+        lifetimeSummary = engine.recompute(events: events, issues: mirror, now: now).summary
+        let seasonStart = now.addingTimeInterval(-Double(rules.seasonDays) * 86_400)
+        seasonSummary = engine.recompute(events: events, issues: mirror, now: now,
+                                         since: seasonStart).summary
     }
 
     // MARK: - 내부
@@ -295,6 +434,9 @@ public final class AppModel {
         }
 
         client = candidate
+        // "내가 직접 옮긴 것만 XP"(스펙 §4.2)를 판정하려면 내가 누구인지 알아야 한다.
+        // 여기가 accountId를 손에 넣는 유일한 지점이다.
+        myAccountId = me.accountId
         // 이 시점 이전에 시작된 동기화는 더 이상 유효하지 않다 — 이 사용자로(또는 이
         // 사용자가 다른 계정으로) 새로 인증됐으니, 그 전에 날아간 페치가 나중에 끝나도
         // 스토어에 쓰면 안 된다(I4).
@@ -335,6 +477,10 @@ public final class AppModel {
             }
         }
         await routeAfterAuthentication()
+        // 로그인 직후에도 집계가 채워지게 한다 — 백필을 돌리지 않은 사용자도 이미 쌓인
+        // 이벤트로 계산된 값을 봐야 한다. 계정 전환 시 미러를 버리는 처리(위)가 끝난
+        // **뒤**에 부르는 것이 중요하다: 먼저 부르면 이전 계정의 숫자가 잡힌다.
+        await refreshDerivedState()
     }
 
     /// 사이트 직접 경로가 401을 돌려줬을 때, 스코프 토큰용 cloudId 경로로 한 번 더 시도한다.
