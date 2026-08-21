@@ -4,7 +4,9 @@ import ArcadeApp
 /// 퀘스트 보드 전체 화면.
 struct QuestBoardView: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: AppModel
+    @Namespace private var cardNamespace
 
     var body: some View {
         GeometryReader { geometry in
@@ -19,6 +21,7 @@ struct QuestBoardView: View {
                         ForEach(snapshot.lanes) { lane in
                             BoardLaneView(
                                 lane: lane, axis: snapshot.axis, metrics: metrics,
+                                model: model, cardNamespace: cardNamespace,
                                 wipLimit: lane.stage == .active ? model.wipLimit : nil
                             )
                         }
@@ -26,6 +29,8 @@ struct QuestBoardView: View {
                     .padding(20)
                 }
             }
+            .animation(reduceMotion ? nil : .spring(duration: 0.35),
+                       value: model.pendingTransitions)
         }
         .background(theme.surfaceBase)
     }

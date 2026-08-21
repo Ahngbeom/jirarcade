@@ -1,5 +1,6 @@
 import SwiftUI
 import ArcadeCore
+import ArcadeApp
 
 /// 단계 하나의 레인 — 헤더 + 축 + 그 위에 놓인 카드들.
 struct BoardLaneView: View {
@@ -7,6 +8,8 @@ struct BoardLaneView: View {
     let lane: BoardLane
     let axis: [AxisTick]
     let metrics: BoardMetrics
+    let model: AppModel
+    let cardNamespace: Namespace.ID
     /// WIP 한도. `active` 레인에만 표시한다.
     let wipLimit: Int?
 
@@ -16,9 +19,16 @@ struct BoardLaneView: View {
             ZStack(alignment: .topLeading) {
                 BoardAxisView(ticks: axis, metrics: metrics)
                 ForEach(lane.slots) { slot in
-                    TicketCardView(slot: slot, metrics: metrics)
-                        .offset(x: metrics.x(for: slot.position),
-                                y: metrics.y(forRow: slot.row))
+                    TicketCardView(
+                        slot: slot, metrics: metrics, model: model,
+                        pending: model.pendingTransitions[slot.issue.key],
+                        failure: model.transitionFailures[slot.issue.key]
+                    )
+                    .offset(x: metrics.x(for: slot.position),
+                            y: metrics.y(forRow: slot.row))
+                    // 레인이 달라져도 같은 카드로 인식되게 한다. 이 id가 없으면
+                    // SwiftUI가 옛 카드를 지우고 새 카드를 그려 이동이 보이지 않는다.
+                    .matchedGeometryEffect(id: slot.issue.key, in: cardNamespace)
                 }
             }
             .frame(height: metrics.laneHeight(rowCount: lane.rowCount),

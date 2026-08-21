@@ -6,6 +6,16 @@ import JiraKit
 
 private let now = iso("2026-08-21T09:00:00Z")
 
+/// `ArcadeCoreTests`의 `demoWorkflow`는 다른 테스트 타깃(`internal`)이라 여기서 보이지
+/// 않는다. `BoardStateTests.swift`의 사본과 같은 이유로 이 파일에서만 쓰는 사본을 둔다.
+private let demoWorkflow = WorkflowMap(statusToStage: [
+    "To Do": .backlog,
+    "In Progress": .active,
+    "In Review": .review,
+    "Verifying": .verify,
+    "Done": .done,
+])
+
 /// 깨어날 시점을 테스트가 직접 정하는 sleep. `SyncScheduler`가 sleep을 주입받는 것과
 /// 같은 패턴이다 — 실제로 5초를 기다리면 테스트가 5초씩 늘어나고, 밀리초로 줄이면
 /// 취소 테스트가 타이밍에 따라 흔들린다.
@@ -356,4 +366,32 @@ private func transition(
     model.dismissTransitionFailure(issueKey: "DEMO-1")
 
     #expect(model.transitionFailures["DEMO-1"] == nil)
+}
+
+/// 대기 중인 전이는 카드를 새 레인으로 옮겨 그린다. 스토어는 건드리지 않으므로
+/// 취소하면 그냥 원래 자리로 돌아온다 — 되돌릴 것이 없다.
+@MainActor
+@Test func aPendingTransitionMovesTheCardOptimistically() async throws {
+    let sleeper = ManualSleep()
+    let model = try makeModel(
+        workflow: InMemoryWorkflowStore(seeded: demoWorkflow),
+        http: { ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))]) },
+        now: now,
+        transitionSleep: { try await sleeper.sleep($0) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try transition(id: "21", name: "리뷰로", to: "In Review"))
+    let moved = model.boardSnapshot(minimumSpacing: 0.1)
+
+    #expect(moved.lanes[1].slots.isEmpty, "ACTIVE에 남아 있다")
+    #expect(moved.lanes[2].slots.map(\.issue.key) == ["DEMO-1"], "REVIEW로 옮겨지지 않았다")
+
+    model.cancelPendingTransition(issueKey: "DEMO-1")
+    let restored = model.boardSnapshot(minimumSpacing: 0.1)
+
+    #expect(restored.lanes[1].slots.map(\.issue.key) == ["DEMO-1"])
+    #expect(restored.lanes[2].slots.isEmpty)
 }

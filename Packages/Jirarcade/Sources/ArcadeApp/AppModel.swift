@@ -443,7 +443,7 @@ public final class AppModel {
     /// - Parameter minimumSpacing: 뷰가 카드 폭과 창 폭으로 계산해 넘긴다.
     public func boardSnapshot(minimumSpacing: Double) -> BoardSnapshot {
         BoardLayout.snapshot(
-            issues: issues,
+            issues: optimisticIssues,
             statusEnteredAt: statusEnteredAt,
             workflow: boardWorkflow,
             rules: rules,
@@ -451,6 +451,28 @@ public final class AppModel {
             now: clock(),
             calendar: calendar
         )
+    }
+
+    /// 대기 중인 전이를 미러 위에 **겹친** 목록.
+    ///
+    /// 스토어를 건드리지 않는 것이 핵심이다 — 롤백은 `pendingTransitions`에서 지우는
+    /// 것이고, Jira에는 아직 아무것도 보내지 않았으므로 되돌릴 것도 없다.
+    private var optimisticIssues: [ObservedIssue] {
+        guard !pendingTransitions.isEmpty else { return issues }
+        return issues.map { issue in
+            guard let pending = pendingTransitions[issue.key] else { return issue }
+            // `ObservedIssue`는 전부 `let`이라 상태명만 바꾼 사본을 만든다.
+            // `jiraUpdatedAt`은 **건드리지 않는다** — 아직 Jira에서 아무 일도 일어나지
+            // 않았고, 여기서 지금 시각으로 밀면 정체일이 0으로 보였다가 실패 시
+            // 되돌아오는 깜빡임이 생긴다.
+            return ObservedIssue(
+                key: issue.key, summary: issue.summary,
+                statusName: pending.toStatusName, issueType: issue.issueType,
+                priority: issue.priority, assigneeAccountId: issue.assigneeAccountId,
+                assigneeName: issue.assigneeName, dueDate: issue.dueDate,
+                jiraUpdatedAt: issue.jiraUpdatedAt
+            )
+        }
     }
 
     /// WIP 한도. 보드의 `active` 레인 헤더가 읽는다.

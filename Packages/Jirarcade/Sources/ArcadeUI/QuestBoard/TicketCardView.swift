@@ -1,5 +1,7 @@
 import SwiftUI
 import ArcadeCore
+import ArcadeApp
+import JiraKit
 
 /// 축 위에 놓이는 티켓 한 장.
 ///
@@ -9,6 +11,9 @@ struct TicketCardView: View {
     @Environment(\.arcadeTheme) private var theme
     let slot: BoardSlot
     let metrics: BoardMetrics
+    let model: AppModel
+    let pending: PendingTransition?
+    let failure: String?
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -34,6 +39,35 @@ struct TicketCardView: View {
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(dueColor)
             }
+            if let pending {
+                HStack(spacing: 4) {
+                    Text("→ \(pending.toStatusName)")
+                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .foregroundStyle(theme.accent)
+                        .lineLimit(1)
+                    Spacer()
+                    Button("취소") { model.cancelPendingTransition(issueKey: slot.issue.key) }
+                        .font(.system(size: 9, design: .monospaced))
+                        .buttonStyle(.plain)
+                        .foregroundStyle(theme.danger)
+                }
+            } else if let failure {
+                // Jira가 준 사유는 담지 않는다(AppModel.transitionFailureMessage 참고).
+                // 대신 그 정보를 채울 수 있는 곳으로 보낸다.
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(failure)
+                        .font(.system(size: 9))
+                        .foregroundStyle(theme.danger)
+                        .lineLimit(2)
+                    if let url = jiraURL {
+                        Link("Jira에서 열기", destination: url)
+                            .font(.system(size: 9, design: .monospaced))
+                            .foregroundStyle(theme.accent)
+                    }
+                }
+            } else {
+                transitionMenu
+            }
             Spacer(minLength: 0)
         }
         .padding(8)
@@ -47,6 +81,60 @@ struct TicketCardView: View {
         .help(slot.isApproximate
               ? "관측 이력이 없어 마지막 갱신 시각으로 추정한 정체일입니다"
               : slot.issue.summary)
+    }
+
+    /// 전이 후보는 **메뉴를 열 때** 받아온다. 캐싱하지 않는 이유: 관리자가 워크플로를
+    /// 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 된다(v0.1 스펙 §8.5).
+    @State private var transitions: [JiraTransition] = []
+    @State private var isLoadingTransitions = false
+
+    /// `.onTapGesture`를 `Menu`의 라벨에 얹으면 그 탭이 메뉴를 여는 제스처를 가로챌 수
+    /// 있어(macOS·iOS 모두) 메뉴가 아예 열리지 않거나, 열리더라도 내용을 채우는 핸들러가
+    /// 불리지 않을 수 있다. 대신 `Menu`의 `content` 클로저는 열릴 때마다(정적 `List`와
+    /// 달리) 새로 평가된다는 성질을 쓴다 — 그 안에 있는 뷰의 `.onAppear`는 메뉴가 실제로
+    /// 열려 항목이 화면에 나타나는 시점에 불리므로, 카드가 처음 그려질 때가 아니라
+    /// **사용자가 메뉴를 열 때마다** 새로 받아온다.
+    private var transitionMenu: some View {
+        Menu {
+            Group {
+                if isLoadingTransitions {
+                    Text("불러오는 중…")
+                } else if transitions.isEmpty {
+                    Text("옮길 수 있는 상태가 없습니다")
+                } else {
+                    ForEach(transitions, id: \.id) { transition in
+                        Button(transition.name) {
+                            model.requestTransition(issueKey: slot.issue.key, transition: transition)
+                        }
+                    }
+                }
+            }
+            .onAppear { loadTransitions() }
+            if let url = jiraURL {
+                Divider()
+                Link("Jira에서 열기", destination: url)
+            }
+        } label: {
+            Text("상태 옮기기")
+                .font(.system(size: 9, design: .monospaced))
+                .foregroundStyle(theme.inkTertiary)
+        }
+        .menuStyle(.borderlessButton)
+        .fixedSize()
+    }
+
+    private var jiraURL: URL? {
+        guard let site = model.siteHost else { return nil }
+        return AtlassianLinks.issue(key: slot.issue.key, site: site)
+    }
+
+    private func loadTransitions() {
+        guard !isLoadingTransitions else { return }
+        isLoadingTransitions = true
+        Task {
+            transitions = (try? await model.availableTransitions(for: slot.issue.key)) ?? []
+            isLoadingTransitions = false
+        }
     }
 
     private var tierLabel: String {

@@ -8,7 +8,7 @@ struct BoardMetrics {
     let availableWidth: Double
 
     let cardWidth: Double = 132
-    let cardHeight: Double = 78
+    let cardHeight: Double = 96
     let rowGap: Double = 8
     /// 카드 사이에 최소로 남길 여백. 이보다 좁아지면 `LanePacker`가 다음 줄로 내린다.
     let cardGap: Double = 10
