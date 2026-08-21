@@ -145,8 +145,12 @@ private let searchBody = """
     """
     let (issues, _) = try JiraChangelogResponse.decodeSearch(Data(body.utf8))
     let issue = try #require(issues.first)
-    #expect(issue.createdAt != nil)
-    #expect(issue.changelog.histories[0].createdAt != nil)
+    let history = try #require(issue.changelog.histories.first)
+
+    // KST 09:00 = UTC 00:00. 절대 시각까지 확인해야 "파싱은 됐지만 오프셋을 무시해
+    // 9시간 틀린" 경우를 잡는다. 예외가 안 났다는 사실만으로는 값이 옳다고 말할 수 없다.
+    #expect(issue.createdAt == ISO8601DateFormatter().date(from: "2023-01-01T00:00:00Z"))
+    #expect(history.createdAt == ISO8601DateFormatter().date(from: "2023-01-02T00:00:00Z"))
 }
 
 /// 이슈의 created가 파싱 불가면 던진다.
