@@ -1102,9 +1102,14 @@ private let auth = try! APITokenAuth(site: "example.atlassian.net", email: "u@e.
 
     let page = try await client.issueChangelog(issueKey: "MPT-1", startAt: 10)
 
-    let url = try #require(stub.sentRequests.first?.url?.absoluteString)
-    #expect(url.contains("/issue/MPT-1/changelog"))
-    #expect(url.contains("startAt=10"))
+    // URLComponents로 파싱해 경로와 쿼리를 분리해서 본다. absoluteString.contains로
+    // 보면 안 된다 — `?`가 `%3F`로 이스케이프돼 쿼리가 경로에 처박힌 URL도
+    // contains("startAt=10")을 통과한다(실제로 그렇게 통과하는 걸 확인했다).
+    let sent = try #require(stub.sentRequests.first?.url)
+    let components = try #require(URLComponents(url: sent, resolvingAgainstBaseURL: false))
+    #expect(components.path.hasSuffix("/issue/MPT-1/changelog"))
+    #expect(components.queryItems?.first { $0.name == "startAt" }?.value == "10")
+    #expect(components.queryItems?.first { $0.name == "maxResults" }?.value == "100")
     #expect(page.startAt == 10)
 }
 
@@ -1121,11 +1126,18 @@ private let auth = try! APITokenAuth(site: "example.atlassian.net", email: "u@e.
 
     let catalog = try await client.statusCatalog()
 
+    // #expect는 실패해도 멈추지 않는다. count가 어긋난 상태에서 catalog[0]을 쓰면
+    // 테스트 실패가 아니라 인덱스 범위 초과로 프로세스가 죽는다 — try #require로 꺼낸다.
     #expect(catalog.count == 3)
-    #expect(catalog[0].id == "10009")
-    #expect(catalog[0].categoryKey == "new")
-    #expect(catalog[1].categoryKey == "indeterminate")
-    #expect(try #require(stub.sentRequests.first?.url?.absoluteString).hasSuffix("/status"))
+    let first = try #require(catalog.first)
+    #expect(first.id == "10009")
+    #expect(first.name == "To Do")
+    #expect(first.categoryKey == "new")
+    #expect(try #require(catalog.dropFirst().first).categoryKey == "indeterminate")
+
+    let path = try #require(URLComponents(
+        url: #require(stub.sentRequests.first?.url), resolvingAgainstBaseURL: false)).path
+    #expect(path.hasSuffix("/status"))
 }
 
 @Test func changelogSearchMapsUnauthorized() async {
@@ -1207,8 +1219,12 @@ public struct JiraStatusCatalogEntry: Sendable, Equatable, Decodable {
     ) async throws -> JiraChangelogPage {
         let data = try await perform(
             method: "GET",
-            path: "/issue/\(issueKey)/changelog?startAt=\(startAt)&maxResults=100",
-            body: nil, resource: issueKey
+            path: "/issue/\(issueKey)/changelog",
+            body: nil, resource: issueKey,
+            query: [
+                URLQueryItem(name: "startAt", value: String(startAt)),
+                URLQueryItem(name: "maxResults", value: "100"),
+            ]
         )
         do {
             return try JiraChangelogResponse.decodeIssueChangelog(data)
@@ -1229,7 +1245,59 @@ public struct JiraStatusCatalogEntry: Sendable, Equatable, Decodable {
     }
 ```
 
-> `perform`이 `path`에 쿼리스트링을 포함해도 동작하는지 확인한다. `URL.appendingPathComponent`는 `?`를 경로 문자로 이스케이프하므로, 그렇다면 `perform`에 쿼리 파라미터를 받는 오버로드를 추가하거나 `URLComponents`로 조립하도록 고친다. 어느 쪽을 택했는지 리포트에 적는다.
+- [ ] **Step 4b: `perform`에 쿼리 파라미터 지원 추가**
+
+`path`에 `?startAt=10`을 그냥 붙이면 **동작하지 않는다.** `URL.appendingPathComponent`는
+`?`를 경로 문자로 보고 `%3F`로 이스케이프한다. 실측:
+
+```
+https://x.atlassian.net/rest/api/3/issue/MPT-1/changelog%3FstartAt=10&maxResults=100
+```
+
+Jira는 이걸 경로로 해석해 404를 낸다. `JiraClient`가 쿼리스트링이 필요한 엔드포인트를
+만난 건 이번이 처음이라 지금까지 드러나지 않았다.
+
+`JiraClient.swift`의 `perform` **두 오버로드 모두**에 `query`를 추가한다:
+
+```swift
+    private func perform(
+        method: String, path: String, body: Data?, resource: String,
+        query: [URLQueryItem] = []
+    ) async throws -> Data {
+        try await perform(method: method, path: path, body: body,
+                          resource: resource, query: query, allowingRetry: true)
+    }
+
+    private func perform(
+        method: String, path: String, body: Data?, resource: String,
+        query: [URLQueryItem] = [], allowingRetry: Bool
+    ) async throws -> Data {
+        // 쿼리는 URLComponents로 붙인다. path에 "?..."를 이어 붙이면
+        // appendingPathComponent가 `?`를 %3F로 이스케이프해 경로의 일부가 된다.
+        var components = URLComponents(
+            url: auth.baseURL.appendingPathComponent(path.dropFirstSlash),
+            resolvingAgainstBaseURL: false
+        )
+        if !query.isEmpty { components?.queryItems = query }
+        guard let url = components?.url else { throw JiraError.invalidSite }
+
+        var request = URLRequest(url: url)
+        // ... 이하 기존 본문 그대로 ...
+```
+
+재시도 경로(401 복구)에서도 `query:`를 함께 넘겨야 한다 — 빠뜨리면 재시도가
+쿼리 없는 URL로 나간다:
+
+```swift
+                return try await perform(method: method, path: path, body: body,
+                                         resource: resource, query: query,
+                                         allowingRetry: false)
+```
+
+기존 호출부(`myself`/`searchIssues`/`transitions`/`performTransition`)는 기본값
+`query: []`가 적용되므로 **고칠 필요가 없다.** `components?.queryItems`를
+빈 배열이 아닐 때만 넣는 이유가 이것이다 — 빈 배열을 넣으면 URL 끝에 `?`가 붙어
+기존 요청의 URL이 바뀐다.
 
 - [ ] **Step 5: 테스트 통과 확인**
 
