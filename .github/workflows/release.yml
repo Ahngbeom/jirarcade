@@ -18,8 +18,17 @@ jobs:
       # 즉시 실패하는데, 조용히 다른 버전으로 빌드되는 것보다 낫다.
       - name: Xcode 고정
         run: |
+          if [ ! -d /Applications/Xcode_26.2.app ]; then
+            echo "✗ /Applications/Xcode_26.2.app이 이 러너에 없습니다" >&2
+            exit 1
+          fi
           sudo xcode-select -s /Applications/Xcode_26.2.app
           swift --version
+          ACTUAL_VERSION="$(xcodebuild -version | awk '/^Xcode/ {print $2}')"
+          if [ "$ACTUAL_VERSION" != "26.2" ]; then
+            echo "✗ 핀이 적용되지 않았습니다: xcodebuild가 ${ACTUAL_VERSION}을 보고했습니다 (기대값 26.2)" >&2
+            exit 1
+          fi
 
       # 형식이 어긋난 태그는 여기서 죽인다. v0.2 같은 값이 그대로
       # CFBundleShortVersionString에 들어가면 나중에 조용히 이상해진다.
@@ -76,21 +85,29 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
+          if ! grep -q '{{VERSION}}' .github/release-notes-header.md; then
+            echo "✗ release-notes-header.md에 {{VERSION}} 자리표시자가 없습니다 — 파일명과 본문이 어긋납니다" >&2
+            exit 1
+          fi
           sed "s/{{VERSION}}/${VERSION}/g" .github/release-notes-header.md > notes.md
           printf '\n---\n\n' >> notes.md
-          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
             -f tag_name="${GITHUB_REF_NAME}" \
             --jq '.body' >> notes.md
           echo "--- 생성된 릴리즈 본문 ---"
           cat notes.md
 
+      # 초안으로 만들고 자산 업로드가 끝난 뒤에 공개로 바꾼다. gh release create는
+      # 릴리즈를 먼저 게시하고 나서 자산을 올리므로, 50MB짜리 zip 업로드가
+      # 중간에 끊기면 다운로드할 게 없는 릴리즈가 이미 공개돼 있게 된다.
       - name: 릴리즈 생성
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           VERSION="${{ steps.version.outputs.version }}"
-          ARGS=(--title "Jirarcade ${VERSION}" --notes-file notes.md)
+          ARGS=(--draft --title "Jirarcade ${VERSION}" --notes-file notes.md)
           if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then
             ARGS+=(--prerelease)
           fi
           gh release create "${GITHUB_REF_NAME}" "${ARGS[@]}" "Jirarcade-${VERSION}.zip"
+          gh release edit "${GITHUB_REF_NAME}" --draft=false
