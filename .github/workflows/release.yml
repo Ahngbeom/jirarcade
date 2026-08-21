@@ -72,6 +72,10 @@ jobs:
 
       # zip이 아니라 ditto다. zip은 확장 속성과 심볼릭 링크를 잃어
       # 압축을 푼 .app의 서명이 깨진다.
+      #
+      # scripts/verify-bundle.sh의 압축 왕복 검사도 같은 ditto 플래그를 쓴다.
+      # 여기서 플래그를 바꾸면 그쪽도 맞춰 바꿔야 한다 — 안 그러면 검증이
+      # 통과해도 실제로 배포되는 zip은 다른 방식으로 만들어진 것이다.
       - name: 압축
         run: |
           ditto -c -k --sequesterRsrc --keepParent \

@@ -15,9 +15,13 @@ APP="${1:?사용법: verify-bundle.sh <app-경로> <기대-버전> [--universal]
 EXPECTED_VERSION="${2:?기대 버전을 지정하세요}"
 
 REQUIRE_UNIVERSAL=""
-if [[ "${3:-}" == "--universal" ]]; then
-    REQUIRE_UNIVERSAL=1
-fi
+case "${3:-}" in
+    "") ;;
+    --universal) REQUIRE_UNIVERSAL=1 ;;
+    # 조용히 무시하면 오타(--univeral 등)로 유니버설 검사가 그냥 생략되고,
+    # 성공 출력은 검사를 통과한 경우와 구별되지 않는다.
+    *) echo "✗ 알 수 없는 옵션: $3" >&2; exit 2 ;;
+esac
 
 FAILED=0
 fail() { echo "✗ $1" >&2; FAILED=1; }
@@ -35,19 +39,20 @@ fi
 ARCHS="$(lipo -archs "$BINARY")"
 if [[ -n "$REQUIRE_UNIVERSAL" ]]; then
     if [[ "$ARCHS" == *arm64* && "$ARCHS" == *x86_64* ]]; then
-        pass "아키텍처: $ARCHS"
+        pass "아키텍처(유니버설 확인): $ARCHS"
     else
         fail "유니버설이 아닙니다 — Intel 맥에서 실행되지 않습니다 (현재: $ARCHS)"
     fi
 else
-    pass "아키텍처: $ARCHS"
+    pass "아키텍처(확인 생략): $ARCHS"
 fi
 
 # 2. 서명 — 없으면 받는 사람 쪽에서 차단되고, Keychain도 매번 자격증명을 다시 묻는다.
-if codesign --verify --deep --strict "$APP" 2>/dev/null; then
+if CODESIGN_ERR="$(codesign --verify --deep --strict "$APP" 2>&1)"; then
     pass "서명 유효"
 else
     fail "codesign 검증 실패 — 받는 사람 쪽에서 '손상됨'으로 차단됩니다"
+    echo "$CODESIGN_ERR" >&2
 fi
 
 # 3. 버전 주입 — 태그는 v0.3.0인데 앱은 0.0.0이라고 주장하는 상황을 막는다.
@@ -60,14 +65,19 @@ fi
 
 # 4. 압축 왕복 — 사용자가 겪을 경로를 먼저 밟는다.
 #    zip이 확장 속성을 잃으면 서명이 깨지는데 그건 압축을 푼 뒤에만 드러난다.
+#
+#    여기서 만드는 zip은 실제로 배포되는 zip이 아니라 검증용으로 새로 만든
+#    것이다 (release.yml의 "압축" 스텝이 실제 zip을 만든다). 두 곳의
+#    ditto 플래그가 같아야 이 검사가 의미가 있다 — 한쪽을 고치면 다른 쪽도.
 ROUNDTRIP="$(mktemp -d)"
 trap 'rm -rf "$ROUNDTRIP"' EXIT
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$ROUNDTRIP/bundle.zip"
 ditto -x -k "$ROUNDTRIP/bundle.zip" "$ROUNDTRIP/unpacked"
-if codesign --verify --deep --strict "$ROUNDTRIP/unpacked/$(basename "$APP")" 2>/dev/null; then
+if ROUNDTRIP_ERR="$(codesign --verify --deep --strict "$ROUNDTRIP/unpacked/$(basename "$APP")" 2>&1)"; then
     pass "압축 왕복 후 서명 유지"
 else
     fail "압축이 서명을 깨뜨렸습니다"
+    echo "$ROUNDTRIP_ERR" >&2
 fi
 
 if [[ $FAILED -eq 1 ]]; then

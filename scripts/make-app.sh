@@ -17,7 +17,7 @@
 #   --build <n>         CFBundleVersion              (기본: 0)
 #   --config <구성>     debug | release              (기본: debug)
 #   --universal         arm64 + x86_64               (기본: 호스트 아키텍처)
-#   --output <dir>      번들을 놓을 디렉터리           (기본: .build)
+#   --output <dir>      번들을 놓을 디렉터리           (기본: .build, Packages/Jirarcade 기준 — 스크립트가 먼저 그 디렉터리로 cd한다)
 #   --open              생성 후 실행
 #
 # 버전과 빌드 번호가 둘 다 0이면 CI가 만들지 않았다는 뜻이다. 릴리즈는 태그에서
@@ -33,12 +33,21 @@ UNIVERSAL=""
 OUTPUT=".build"
 OPEN=""
 
+# 값이 필요한 옵션에 다른 옵션이 그대로 들어오면(예: --version --universal)
+# VERSION="--universal"처럼 조용히 잘못된 값이 박힌다. 값이 "--"로 시작하면 거부한다.
+reject_flag_as_value() {
+    local flag="$1" value="${2-}"
+    case "$value" in
+        --*) echo "✗ ${flag}에 값 대신 옵션이 왔습니다: $value" >&2; exit 2 ;;
+    esac
+}
+
 while [[ $# -gt 0 ]]; do
     case "$1" in
-        --version)   VERSION="${2:?--version 값이 필요합니다}"; shift 2 ;;
-        --build)     BUILD="${2:?--build 값이 필요합니다}"; shift 2 ;;
-        --config)    CONFIG="${2:?--config 값이 필요합니다}"; shift 2 ;;
-        --output)    OUTPUT="${2:?--output 값이 필요합니다}"; shift 2 ;;
+        --version)   reject_flag_as_value --version "${2:-}"; VERSION="${2:?--version 값이 필요합니다}"; shift 2 ;;
+        --build)     reject_flag_as_value --build "${2:-}"; BUILD="${2:?--build 값이 필요합니다}"; shift 2 ;;
+        --config)    reject_flag_as_value --config "${2:-}"; CONFIG="${2:?--config 값이 필요합니다}"; shift 2 ;;
+        --output)    reject_flag_as_value --output "${2:-}"; OUTPUT="${2:?--output 값이 필요합니다}"; shift 2 ;;
         --universal) UNIVERSAL=1; shift ;;
         --open)      OPEN=1; shift ;;
         # 조용히 무시하면 CI에서 --version 오타가 0.0.0짜리 릴리즈로 나간다.
