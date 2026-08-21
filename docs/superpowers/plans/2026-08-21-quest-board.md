@@ -2516,147 +2516,10 @@ struct BoardLaneView: View {
 }
 ```
 
-- [ ] **Step 5: 보드 본체를 조립한다**
+- [ ] **Step 5: `AppModel`이 스냅샷을 만들게 한다**
 
-`Sources/ArcadeUI/QuestBoard/QuestBoardView.swift`를 이것으로 교체한다:
-
-```swift
-import SwiftUI
-import ArcadeApp
-import ArcadeCore
-
-/// 퀘스트 보드 전체 화면.
-struct QuestBoardView: View {
-    @Environment(\.arcadeTheme) private var theme
-    let model: AppModel
-
-    var body: some View {
-        GeometryReader { geometry in
-            // 축이 쓸 수 있는 폭. 좌우 여백을 빼고 남는 만큼이다.
-            let metrics = BoardMetrics(availableWidth: max(geometry.size.width - 40, 200))
-            let snapshot = BoardLayout.snapshot(
-                issues: model.issues,
-                statusEnteredAt: model.statusEnteredAt,
-                workflow: model.boardWorkflow,
-                rules: .default,
-                minimumSpacing: metrics.minimumSpacing,
-                now: Date(),
-                calendar: .current
-            )
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 20) {
-                    ForEach(snapshot.lanes) { lane in
-                        BoardLaneView(
-                            lane: lane, axis: snapshot.axis, metrics: metrics,
-                            wipLimit: lane.stage == .active ? RuleSet.default.wipLimit : nil
-                        )
-                    }
-                }
-                .padding(20)
-            }
-        }
-        .background(theme.surfaceBase)
-    }
-}
-```
-
-> **주의:** `rules`와 `now`/`calendar`를 여기서 리터럴로 쓰는 것은 **Task 10에서 고친다.**
-> 뷰가 `Date()`와 `Calendar.current`를 직접 부르는 것은 Global Constraints 위반이다.
-> Task 10에서 `AppModel`이 스냅샷을 만들어 주도록 옮긴다.
-
-- [ ] **Step 6: 빌드하고 눈으로 확인한다**
-
-```bash
-cd Packages/Jirarcade && swift build && swift run JirarcadeApp
-```
-
-확인: 보드를 열면 레인 네 개가 뜨고, 각 레인에 `0d / 7d / 21d / 45d+` 눈금이 있으며,
-티켓이 정체일에 따라 좌우로 흩어진다. 창을 좁히면 카드가 겹치지 않고 아래로 쌓인다.
-시스템 외관을 라이트/다크로 바꿔도 전부 읽힌다.
-
-- [ ] **Step 7: 색 리터럴 검사가 통과하는지 확인한다**
-
-```bash
-cd Packages/Jirarcade && swift test --filter viewsUseThemeTokens
-```
-
-기대: PASS. 실패하면 새 뷰 어딘가에 `Color.…`나 `.secondary`가 남은 것이다.
-
-- [ ] **Step 8: 커밋**
-
-```bash
-git add Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/
-git commit -m "feat: 정체 시간축 위에 티켓 카드를 놓는다
-
-BoardLayout이 준 정규화 좌표를 pt로 옮기는 곱셈만 BoardMetrics에 모은다 —
-등급 판정도 정렬도 뷰에 없으므로 ArcadeUI에 테스트 타깃이 없어도 위험이 낮다.
-
-minimumSpacing을 뷰가 계산해 넘긴다. 창을 좁히면 값이 커져 자연히 더 쌓인다.
-
-raid는 boss와 색이 아니라 채움으로 가른다. 팔레트는 대비 테스트로 확정돼 있고
-raid 전용 토큰이 없다."
-```
-
----
-### Task 10: HUD와 스냅샷 소유권 정리
-
-Task 9의 뷰가 `Date()`와 `Calendar.current`를 직접 불렀다 — Global Constraints 위반이다.
-스냅샷 생성을 `AppModel`로 옮긴다. 모델은 이미 `rules`·`clock`·`calendar`를 전부 들고 있다.
-
-**Files:**
-- Modify: `Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift`
-- Create: `Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/BoardHUDView.swift`
-- Modify: `Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/QuestBoardView.swift`
-- Test: `Packages/Jirarcade/Tests/ArcadeAppTests/BoardStateTests.swift` (덧붙임)
-
-**Interfaces:**
-- Consumes: `BoardLayout.snapshot(...)` (Task 3–4), `AppModel.seasonSummary`·`hygiene` (기존 + Task 5)
-- Produces:
-  - `AppModel.boardSnapshot(minimumSpacing: Double) -> BoardSnapshot`
-  - `AppModel.wipLimit: Int`
-  - `BoardHUDView`
-
-- [ ] **Step 1: 실패하는 테스트를 덧붙인다**
-
-`BoardStateTests.swift` 끝에 추가한다:
-
-```swift
-/// 뷰가 시계와 달력을 직접 만들지 않도록 모델이 스냅샷을 준다.
-@MainActor
-@Test func buildsTheBoardSnapshotWithTheInjectedClock() async throws {
-    let model = try makeModel(workflow: InMemoryWorkflowStore(seeded: demoWorkflow),
-                              now: now)
-    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
-    model.seedIssuesForTesting([
-        issue(key: "DEMO-1", status: "In Progress",
-              updated: now.addingTimeInterval(-days(30))),
-    ])
-
-    let snapshot = model.boardSnapshot(minimumSpacing: 0.1)
-
-    #expect(snapshot.lanes.map(\.stage) == [.backlog, .active, .review, .verify])
-    #expect(snapshot.lanes[1].slots.first?.daysStagnant == 30)
-    #expect(snapshot.axis.map(\.days) == [0, 7, 21, 45])
-}
-
-@MainActor
-@Test func exposesTheWIPLimitFromTheRuleSet() throws {
-    let model = try makeModel(now: now)
-
-    #expect(model.wipLimit == RuleSet.default.wipLimit)
-}
-```
-
-- [ ] **Step 2: 테스트가 실패하는지 확인한다**
-
-```bash
-cd Packages/Jirarcade && swift test --filter BoardState
-```
-
-기대: 컴파일 실패 — `no member 'boardSnapshot'`
-
-- [ ] **Step 3: `AppModel`에 스냅샷과 WIP 한도를 더한다**
+뷰는 시계도 달력도 만들지 않는다(Global Constraints). 모델은 이미 `rules`·`clock`·`calendar`를
+전부 들고 있으므로 스냅샷 생성이 거기 있어야 한다.
 
 `AppModel`에 추가한다 (`recomputeFromLog()` 위쪽, 공개 API 구역):
 
@@ -2685,7 +2548,126 @@ cd Packages/Jirarcade && swift test --filter BoardState
     public var wipLimit: Int { rules.wipLimit }
 ```
 
-- [ ] **Step 4: HUD를 만든다**
+`Tests/ArcadeAppTests/BoardStateTests.swift` 끝에 테스트를 덧붙인다:
+
+```swift
+/// 뷰가 시계와 달력을 직접 만들지 않도록 모델이 스냅샷을 준다.
+@MainActor
+@Test func buildsTheBoardSnapshotWithTheInjectedClock() async throws {
+    let model = try makeModel(workflow: InMemoryWorkflowStore(seeded: demoWorkflow),
+                              now: now)
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    model.seedIssuesForTesting([
+        issue(key: "DEMO-1", status: "In Progress",
+              updated: now.addingTimeInterval(-days(30))),
+    ])
+
+    let snapshot = model.boardSnapshot(minimumSpacing: 0.1)
+
+    #expect(snapshot.lanes.map(\.stage) == [.backlog, .active, .review, .verify])
+    #expect(snapshot.lanes[1].slots.first?.daysStagnant == 30)
+    #expect(snapshot.axis.map(\.days) == [0, 7, 21, 45])
+}
+
+@MainActor
+@Test func exposesTheWIPLimitFromTheRuleSet() throws {
+    let model = try makeModel(now: now)
+
+    #expect(model.wipLimit == RuleSet.default.wipLimit)
+}
+```
+
+> `seedIssuesForTesting`과 `demoWorkflow` 픽스처는 Task 6이 이미 `ArcadeAppTests`에 두었다.
+> `days(_:)`가 그 타깃에 없으면 `now.addingTimeInterval(-30 * 86_400)`으로 적는다.
+
+- [ ] **Step 6: 보드 본체를 조립한다**
+
+`Sources/ArcadeUI/QuestBoard/QuestBoardView.swift`를 이것으로 교체한다:
+
+```swift
+import SwiftUI
+import ArcadeApp
+
+/// 퀘스트 보드 전체 화면.
+struct QuestBoardView: View {
+    @Environment(\.arcadeTheme) private var theme
+    let model: AppModel
+
+    var body: some View {
+        GeometryReader { geometry in
+            // 축이 쓸 수 있는 폭. 좌우 여백을 빼고 남는 만큼이다.
+            let metrics = BoardMetrics(availableWidth: max(geometry.size.width - 40, 200))
+            let snapshot = model.boardSnapshot(minimumSpacing: metrics.minimumSpacing)
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 20) {
+                    ForEach(snapshot.lanes) { lane in
+                        BoardLaneView(
+                            lane: lane, axis: snapshot.axis, metrics: metrics,
+                            wipLimit: lane.stage == .active ? model.wipLimit : nil
+                        )
+                    }
+                }
+                .padding(20)
+            }
+        }
+        .background(theme.surfaceBase)
+    }
+}
+```
+
+뷰에 `Date()`도 `Calendar.current`도 `RuleSet.default`도 없다 — 전부 모델을 거친다.
+
+- [ ] **Step 7: 빌드하고 눈으로 확인한다**
+
+```bash
+cd Packages/Jirarcade && swift build && swift run JirarcadeApp
+```
+
+확인: 보드를 열면 레인 네 개가 뜨고, 각 레인에 `0d / 7d / 21d / 45d+` 눈금이 있으며,
+티켓이 정체일에 따라 좌우로 흩어진다. 창을 좁히면 카드가 겹치지 않고 아래로 쌓인다.
+시스템 외관을 라이트/다크로 바꿔도 전부 읽힌다.
+
+- [ ] **Step 8: 색 리터럴 검사가 통과하는지 확인한다**
+
+```bash
+cd Packages/Jirarcade && swift test --filter viewsUseThemeTokens
+```
+
+기대: PASS. 실패하면 새 뷰 어딘가에 `Color.…`나 `.secondary`가 남은 것이다.
+
+- [ ] **Step 9: 커밋**
+
+```bash
+git add Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/ \
+        Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift \
+        Packages/Jirarcade/Tests/ArcadeAppTests/BoardStateTests.swift
+git commit -m "feat: 정체 시간축 위에 티켓 카드를 놓는다
+
+BoardLayout이 준 정규화 좌표를 pt로 옮기는 곱셈만 BoardMetrics에 모은다 —
+등급 판정도 정렬도 뷰에 없으므로 ArcadeUI에 테스트 타깃이 없어도 위험이 낮다.
+
+minimumSpacing을 뷰가 계산해 넘긴다. 창을 좁히면 값이 커져 자연히 더 쌓인다.
+
+raid는 boss와 색이 아니라 채움으로 가른다. 팔레트는 대비 테스트로 확정돼 있고
+raid 전용 토큰이 없다."
+```
+
+---
+### Task 10: HUD
+
+보드 상단 한 줄에 시즌 레벨·XP·연속·HP·위생과 다음 한 걸음을 얹는다.
+스냅샷 소유권은 Task 9가 이미 `AppModel`로 옮겼으므로 여기서는 화면만 붙인다.
+
+**Files:**
+- Create: `Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/BoardHUDView.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/QuestBoardView.swift`
+
+**Interfaces:**
+- Consumes: `AppModel.seasonSummary` (`PlayerSummary`: `level`, `xpIntoLevel`, `xpForNextLevel`, `streak`), `AppModel.hygiene` (`HygieneReport`: `score`, `hp`, `nextStep`), `HygieneNextStep`
+- Produces: `BoardHUDView`
+
+- [ ] **Step 1: HUD를 만든다**
 
 `Sources/ArcadeUI/QuestBoard/BoardHUDView.swift`:
 
@@ -2760,7 +2742,7 @@ struct BoardHUDView: View {
 }
 ```
 
-- [ ] **Step 5: 보드가 모델의 스냅샷을 쓰게 한다**
+- [ ] **Step 2: 보드가 HUD를 얹게 한다**
 
 `QuestBoardView`의 `body`를 이것으로 교체한다:
 
@@ -2792,7 +2774,7 @@ struct BoardHUDView: View {
 
 `import ArcadeCore`는 `RuleSet` 참조가 사라졌으므로 필요 없으면 지운다.
 
-- [ ] **Step 6: 뷰가 시계를 직접 만들지 않는지 확인한다**
+- [ ] **Step 3: 뷰가 시계를 직접 만들지 않는지 확인한다**
 
 ```bash
 rg 'Date\(\)|Calendar\.current' Packages/Jirarcade/Sources/ArcadeUI/
@@ -2800,7 +2782,7 @@ rg 'Date\(\)|Calendar\.current' Packages/Jirarcade/Sources/ArcadeUI/
 
 기대: 0건
 
-- [ ] **Step 7: 테스트를 돌리고 눈으로 확인한다**
+- [ ] **Step 4: 테스트를 돌리고 눈으로 확인한다**
 
 ```bash
 cd Packages/Jirarcade && swift test && swift run JirarcadeApp
@@ -2808,20 +2790,14 @@ cd Packages/Jirarcade && swift test && swift run JirarcadeApp
 
 기대: 전체 PASS. 보드 상단에 레벨·XP 바·연속·HP·위생과 다음 한 걸음이 한 줄로 뜬다.
 
-- [ ] **Step 8: 커밋**
+- [ ] **Step 5: 커밋**
 
 ```bash
-git add Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift \
-        Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/ \
-        Packages/Jirarcade/Tests/ArcadeAppTests/BoardStateTests.swift
-git commit -m "feat: 보드 HUD와 스냅샷 소유권을 모델로
+git add Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/
+git commit -m "feat: 보드 HUD
 
-뷰가 Date()와 Calendar.current를 직접 부르던 것을 AppModel.boardSnapshot으로
-옮긴다. 모델은 이미 rules·clock·calendar를 들고 있고, 뷰가 시계를 만들면
-테스트에서 시간을 고정할 수 없다.
-
-WIP 한도도 모델이 노출한다 — 뷰가 RuleSet.default를 직접 보면 사용자가 규칙을
-고쳐도 화면이 따라가지 않는다."
+시즌을 보여준다 — 오늘 하나 처리한 것이 움직여야 하기 때문이다(ArcadeFloorView와
+같은 이유). HygieneNextStep은 구조화된 값이므로 문장으로 만드는 일은 뷰가 한다."
 ```
 
 ---
