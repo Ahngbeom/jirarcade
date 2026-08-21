@@ -33,8 +33,7 @@ struct SignInView: View {
             field("이메일", text: $email, prompt: "you@example.com")
             secureField("API 토큰")
 
-            Link("API 토큰 발급받기",
-                 destination: URL(string: "https://id.atlassian.com/manage-profile/security/api-tokens")!)
+            Link("API 토큰 발급받기", destination: AtlassianLinks.apiTokens)
                 .foregroundStyle(theme.accent)
                 .font(.callout)
 
