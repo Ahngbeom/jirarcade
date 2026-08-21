@@ -113,9 +113,12 @@ public enum BoardLayout {
         }
 
         let lanes = visibleStages.map { stage in
-            let slots = byStage[stage] ?? []
-            return BoardLane(stage: stage, slots: slots,
-                             rowCount: slots.isEmpty ? 0 : 1)
+            let packed = LanePacker.pack(byStage[stage] ?? [],
+                                         minimumSpacing: minimumSpacing)
+            // rowCount는 "가장 큰 row + 1"이다. 빈 레인은 -1 + 1 = 0이 되어
+            // 뷰가 높이를 0으로 잡는다.
+            return BoardLane(stage: stage, slots: packed,
+                             rowCount: (packed.map(\.row).max() ?? -1) + 1)
         }
 
         // 미매핑 목록도 결정적이어야 한다 — 입력은 미러 딕셔너리 순회에서 오므로 불안정하다.

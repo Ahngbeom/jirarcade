@@ -140,3 +140,25 @@ private func snapshot(
 @Test func carriesTheAxisInTheSnapshot() {
     #expect(snapshot([]).axis.map(\.days) == [0, 7, 21, 45])
 }
+
+/// 레인이 packing 결과를 담고 rowCount가 실제 줄 수를 말한다.
+@Test func laneReportsItsRowCountAfterPacking() {
+    let result = snapshot(
+        [
+            issue(key: "DEMO-1", status: "In Progress"),
+            issue(key: "DEMO-2", status: "In Progress"),
+        ],
+        enteredAt: [
+            "DEMO-1": now.addingTimeInterval(-days(10)),
+            "DEMO-2": now.addingTimeInterval(-days(10)),
+        ],
+        spacing: 0.1
+    )
+
+    #expect(result.lanes[1].rowCount == 2)
+    #expect(result.lanes[1].slots.map(\.row) == [0, 1])
+}
+
+@Test func emptyLaneHasNoRows() {
+    #expect(snapshot([]).lanes.allSatisfy { $0.rowCount == 0 })
+}
