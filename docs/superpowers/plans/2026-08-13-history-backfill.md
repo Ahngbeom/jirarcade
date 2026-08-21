@@ -4234,3 +4234,219 @@ rg -n "flyingdoctor|atlassian\.net" Sources/ Tests/ | grep -v "example.atlassian
 **계획 2b-2** — 진행형 동기화를 changelog로 전환해 §2.1의 기준 불일치를 해소한다. `DiffEngine`에서 `statusChanged`를 떼어내고 증분 changelog 조회로 대체한다.
 
 **계획 2c** — 프로젝트 범위 확장과 팀 판.
+
+---
+
+### Task 16: 매핑 재진입과 백필 재시작 — 사용자가 고칠 수 있게
+
+**Files:**
+- Modify: `Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeUI/WorkflowMappingView.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeUI/SettingsView.swift`
+- Test: `Packages/Jirarcade/Tests/ArcadeAppTests/BackfillIntegrationTests.swift`
+
+**왜 필요한가 — 지금 기능이 도달 불가능하다**
+
+Task 14가 "백필이 발견한 과거 상태를 매핑 마법사 후보로 올리는" 일을 끝냈지만,
+**실사용자가 그 화면에 갈 방법이 앱에 없다.**
+
+`.mappingWorkflow`로 가는 유일한 경로는 `routeAfterAuthentication()`이고, 그것은
+`workflow.load()`가 nil이거나 읽기에 실패했을 때만 마법사로 보낸다. `confirmMapping` 후에는
+`.ready`로 가고 다시 돌아갈 길이 없다. 그런데 백필 버튼은 `.ready`에서만 닿는다 —
+즉 **매핑을 끝낸 사용자만 백필을 돌릴 수 있고, 백필이 무엇을 발견하든 고칠 수 없다.**
+
+실물로 확인된 결과가 이것을 급한 문제로 만든다. 실제 백필이 발견한 폴백 매핑 14건 중
+일부는 방향까지 틀렸다 — 보류 성격의 상태가 `statusCategory == done`이라 `done`으로 해석돼
+**보류시킨 티켓이 완료 전이로 채점되고 마감 보너스까지 받는다.** 사용자가 고치지 못하면
+그 점수가 그대로 남는다.
+
+또 하나: 폴백은 그 실행에서 **실제로 본 전이**에 대해서만 해석된다. 카탈로그를 못 받은 채
+1회차가 지나간 티켓은 이어받기로는 영원히 해석되지 않는다. 정확도를 회복하려면 **처음부터
+다시** 훑어야 하는데, 재개 가능한 run이 남아 있으면 설정 화면은 "이어서 불러오기"만 보여준다.
+
+- [ ] **Step 1: 실패하는 테스트 작성**
+
+`Tests/ArcadeAppTests/BackfillIntegrationTests.swift`에 추가:
+
+```swift
+/// 매핑을 끝낸 뒤에도 마법사로 돌아갈 수 있어야 한다. 그러지 못하면 백필이 발견한
+/// 과거 상태를 사용자가 영영 고칠 수 없다 — 폴백이 방향까지 틀린 경우가 실물에서 나왔다.
+@MainActor
+@Test func mappingCanBeReopenedAfterItIsConfirmed() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["Done": .done]))
+    let model = try makeModel(credentials: signedIn(), workflow: workflow)
+    await model.start()
+    #expect(model.phase == .ready)
+
+    await model.reopenMapping()
+
+    guard case .mappingWorkflow = model.phase else {
+        Issue.record("마법사로 돌아가야 한다: \(model.phase)")
+        return
+    }
+}
+
+/// 다시 연 마법사는 **기존 매핑을 초기값으로** 들고 있어야 한다.
+/// 빈 화면으로 시작하면 확정하는 순간 이미 설정한 매핑이 통째로 사라진다.
+@MainActor
+@Test func reopenedMappingCarriesTheExistingSelection() async throws {
+    let existing = WorkflowMap(statusToStage: ["Done": .done, "To Do": .backlog])
+    let workflow = InMemoryWorkflowStore(seeded: existing)
+    let model = try makeModel(credentials: signedIn(), workflow: workflow)
+    await model.start()
+
+    await model.reopenMapping()
+
+    #expect(model.currentMapping.statusToStage == existing.statusToStage)
+}
+
+/// 처음부터 다시 훑는 경로가 있어야 한다. 이어받기는 1회차에 놓친 티켓을 다시 보지 않으므로
+/// 카탈로그 실패로 떨어진 정확도를 회복할 방법이 그것뿐이다.
+@MainActor
+@Test func restartingBackfillIgnoresTheResumePoint() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "assignee = currentUser()",
+                                        at: iso("2026-08-13T00:00:00Z"), totalIssueCount: 200)
+    try store.advanceBackfill(runId, nextPageToken: "tok-9", processedIssueCount: 100,
+                              discovered: [], partiallyRestored: [])
+
+    let source = StubChangelogSource(pages: [([], nil)])
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+
+    await model.startBackfill()   // 재개가 아니라 처음부터
+
+    #expect(source.requestedTokens == [nil], "저장된 커서를 무시하고 처음부터 훑는다")
+}
+
+/// 로그아웃은 백필 관련 파생 상태를 남기지 않는다. 계정이 바뀌면 이전 조직의
+/// 상태명과 진행 상황이 새 계정 화면에 뜬다.
+@MainActor
+@Test func signOutClearsEveryBackfillDerivedValue() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T00:00:00Z"),
+                                        totalIssueCount: 10)
+    try store.advanceBackfill(runId, nextPageToken: "tok", processedIssueCount: 5,
+                              discovered: ["Merged to Staging"], partiallyRestored: [])
+    let model = try makeModel(store: store, credentials: signedIn())
+    await model.start()
+    #expect(model.hasResumableBackfill)
+
+    await model.signOut()
+
+    #expect(model.historyDiscoveredStatuses.isEmpty)
+    #expect(model.hasResumableBackfill == false)
+    #expect(model.lastBackfillFailure == nil)
+    #expect(model.backfillWasDegraded == false)
+}
+```
+
+- [ ] **Step 2: 테스트 실패 확인**
+
+Run: `cd Packages/Jirarcade && swift test --filter "Mapping|Backfill"`
+Expected: FAIL — `value of type 'AppModel' has no member 'reopenMapping'`
+
+- [ ] **Step 3: `AppModel`에 재진입과 현재 매핑 노출**
+
+```swift
+    /// 저장된 워크플로 매핑. 마법사를 다시 열 때 초기값으로 쓴다 —
+    /// 빈 화면으로 시작하면 확정하는 순간 이미 설정한 매핑이 통째로 사라진다.
+    public var currentMapping: WorkflowMap {
+        (try? workflow.load()) ?? WorkflowMap(statusToStage: [:])
+    }
+
+    /// 설정에서 매핑 마법사를 다시 연다.
+    ///
+    /// 첫 설정 이후에는 `routeAfterAuthentication()`이 마법사로 보내지 않으므로,
+    /// 이 경로가 없으면 백필이 발견한 과거 상태를 사용자가 영영 고칠 수 없다.
+    /// 폴백은 statusCategory에서 끌어낸 추정이라 방향까지 틀릴 수 있다.
+    public func reopenMapping() async {
+        phase = .mappingWorkflow(candidates: await mappingCandidates())
+    }
+```
+
+`mappingCandidates()`는 내 티켓 조회 한 번을 돈다. 조회가 실패해도 **마법사는 열려야 한다** —
+과거 이력에서 발견한 상태(`historyDiscoveredStatuses`)만으로도 고칠 것이 있기 때문이다.
+기존 구현이 실패 시 빈 배열을 주는지 확인하고, 아니면 그렇게 고친다.
+
+- [ ] **Step 4: 마법사가 기존 매핑을 초기값으로 받게**
+
+`WorkflowMappingView`의 `selection`이 빈 `@State`로 시작한다. 기존 매핑으로 채운다:
+
+```swift
+    @State private var selection: [String: Stage]
+
+    init(model: AppModel, candidates: [String]) {
+        self.model = model
+        self.candidates = candidates
+        // 다시 열었을 때 이미 설정한 매핑이 선택된 채로 보여야 한다.
+        // 빈 상태로 시작하면 확정하는 순간 기존 매핑이 통째로 덮어써진다.
+        _selection = State(initialValue: model.currentMapping.statusToStage)
+    }
+```
+
+> 후보 목록에 없는 기존 매핑(지금 티켓에도, 과거 이력에도 안 나온 상태)이 있을 수 있다.
+> `confirmMapping`이 **`selection` 전체**를 저장하므로 그런 항목도 보존된다.
+> 화면에 안 보이는 것을 저장하는 셈이지만, 지우는 것보다 낫다 — 사용자가 예전에
+> 의도적으로 매핑한 값이다. 이 판단을 리포트에 적는다.
+
+- [ ] **Step 5: 설정에 두 진입점 추가**
+
+`SettingsView`에 섹션을 더한다. 색은 `theme.*`를 쓴다.
+
+```swift
+            VStack(alignment: .leading, spacing: 8) {
+                Text("워크플로 매핑")
+                    .font(.headline)
+                    .foregroundStyle(theme.inkPrimary)
+                Text("상태 이름을 게임의 진행 단계에 연결합니다. 과거 기록을 불러온 뒤에는 그때 발견된 상태도 함께 뜹니다.")
+                    .font(.callout)
+                    .foregroundStyle(theme.inkSecondary)
+                if !model.historyDiscoveredStatuses.isEmpty {
+                    Text("과거 이력에서 찾은 상태 \(model.historyDiscoveredStatuses.count)개가 추정값으로 채점되고 있습니다.")
+                        .font(.caption)
+                        .foregroundStyle(theme.inkTertiary)
+                }
+                Button("매핑 수정하기") {
+                    Task { await model.reopenMapping() }
+                }
+            }
+```
+
+백필 섹션에는 **처음부터 다시 받는 경로**를 더한다. 지금은 재개 가능한 run이 있으면
+"이어서 불러오기"만 보이는데, 이어받기로는 1회차에 놓친 티켓을 다시 보지 않는다:
+
+```swift
+                } else if model.hasResumableBackfill {
+                    Button("이어서 불러오기") {
+                        Task { await model.resumeBackfillIfAvailable() }
+                    }
+                    Button("처음부터 다시 불러오기") {
+                        Task { await model.startBackfill() }
+                    }
+                    .buttonStyle(.plain)
+                    ...
+```
+
+> `startBackfill()`은 `resume: false`이므로 이미 처음부터 훑는다.
+> `beginBackfill`이 미완료 run을 지우므로 재개 지점도 함께 정리된다. 확인만 하면 된다.
+
+- [ ] **Step 6: `signOut()`이 백필 파생 상태를 전부 지우게**
+
+`historyDiscoveredStatuses`·`lastBackfillFailure`·`backfillWasDegraded`는 지워지는데
+`hasResumableBackfill`이 남아 있다. 같은 블록에서 하나만 빠진 상태다.
+
+- [ ] **Step 7: 테스트 통과 확인**
+
+Run: `cd Packages/Jirarcade && swift test`
+Expected: PASS, 경고 0
+
+- [ ] **Step 8: 커밋**
+
+```bash
+git add Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift \
+        Packages/Jirarcade/Sources/ArcadeUI/WorkflowMappingView.swift \
+        Packages/Jirarcade/Sources/ArcadeUI/SettingsView.swift \
+        Packages/Jirarcade/Tests/ArcadeAppTests/BackfillIntegrationTests.swift
+git commit -m "feat: 매핑 마법사 재진입과 백필 처음부터 다시 받기"
+```
