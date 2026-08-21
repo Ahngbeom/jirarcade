@@ -4729,3 +4729,103 @@ Expected: PASS, 경고 0
 ```bash
 git commit -m "fix: 백필이 라이브 관측을 대체하고, 시즌이 통산 연속을 공유한다"
 ```
+
+
+---
+
+### Task 19: 화면이 사실을 말하게 — 마지막 정정 고리
+
+**Files:**
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Domain/WorkflowMap.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Store/ArcadeStore.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeUI/WorkflowMappingView.swift`, `SettingsView.swift`
+- Test: 해당 모듈의 기존 테스트 파일들
+
+**왜 필요한가**
+
+최종 리뷰의 Important 셋(I1·I2·I3)은 전부 **화면이 사실과 다른 말을 하는** 문제이고,
+셋 다 "폴백 추정 → 마법사에서 확인 → 확정 → 재집계" 사슬을 끊는다. 실물에서 보류 성격의
+상태가 `done`으로 추정돼 마감 보너스까지 받고 있었으므로, 이 사슬이 닫히는 것이 중요하다.
+
+- [ ] **Step 1: 발견 목록을 run 전체의 합집합으로 (리뷰 I1)**
+
+`ArcadeStore.lastDiscoveredStatuses()`는 `startedAt` 내림차순 **1건**만 본다. 백필이 정상
+완료된 뒤(발견 12건) 사용자가 다시 눌렀는데 첫 페이지에서 실패하면, 새 run이 마지막 run이
+되고 그 run의 발견 목록은 비어 있다 — **마법사에서 과거 상태 행이 통째로 사라진다.**
+
+재현: run A 완료(발견 2건) → run B 시작 후 첫 페이지 실패 → `lastDiscoveredStatuses() == []`.
+
+데이터는 남아 있으므로(run A 행은 그대로) 모든 run의 합집합으로 바꾼다. 정렬해서 돌려준다.
+
+> 계정이 바뀌면 `reset()`이 `BackfillRun`을 전부 지우므로 이전 조직 상태가 섞이지 않는다.
+
+- [ ] **Step 2: "추정값으로 채점 중" 개수를 사실에 맞게 (리뷰 I2)**
+
+`SettingsView`가 `historyDiscoveredStatuses.count`를 그대로 쓴다. 두 가지로 거짓이다.
+
+1. **매핑한 뒤에도 줄지 않는다.** 백필 시점의 스냅샷이라 현재 매핑과 대조되지 않는다.
+   12개를 전부 지정해도 화면은 계속 "12개가 추정값으로 채점되고 있습니다"라고 말한다.
+2. **추정조차 아닌 것이 섞인다.** `StatusCatalog.collect`가 폴백(②)과 미매핑(③)을 같은
+   집합에 넣는데 ③은 XP 0이지 추정이 아니다. 카탈로그를 못 받은 run에서는 전부 ③이라,
+   같은 화면에 "상태 목록을 불러오지 못했습니다"(=전부 0점)와 "N개가 추정값으로 채점되고
+   있습니다"가 **나란히** 뜬다.
+
+**사용자 매핑에 없고 저장된 폴백에는 있는 것**만 센다. 그러면 두 문제가 함께 해결된다.
+
+- [ ] **Step 3: "이 상태는 채점하지 마라"를 표현할 수 있게 (리뷰 I3)**
+
+지금 마법사에서 "— 사용 안 함 —"을 고르면 `selection`에서 키가 빠지고, 저장된 사용자 매핑에도
+없다. 그런데 `effectiveWorkflow()`가 폴백을 **밑에 깔아** 병합하므로 그 상태는 **여전히
+추정값으로 채점된다.** 즉 잘못 추정된 상태를 끌 방법이 없다 — 다른 단계로 **바꾸는 것**만 된다.
+
+`WorkflowMap`에 제외 목록을 더한다:
+
+```swift
+public struct WorkflowMap: Codable, Sendable, Equatable {
+    public var statusToStage: [String: Stage]
+    /// 사용자가 명시적으로 "채점하지 않음"으로 지정한 상태.
+    ///
+    /// `statusToStage`에 **없는 것**과 다르다. 그건 "아직 정하지 않았다"이고 폴백 추정이
+    /// 적용된다. 여기 있는 것은 "추정도 하지 마라"는 뜻이다 — 실물에서 보류 성격의 상태가
+    /// statusCategory가 done이라 완료로 채점되던 사례가 이 구분을 요구했다.
+    public var excludedStatuses: Set<String>
+}
+```
+
+기존 `workflow.json`에는 이 키가 없으므로 **디코딩에서 기본값을 채워야 한다**
+(`decodeIfPresent ?? []`). 자동 합성 `Codable`은 누락 키에 기본값을 쓰지 않는다.
+
+`effectiveWorkflow()`가 제외 목록의 상태를 폴백에서 걷어낸다. 사용자 매핑에 명시된 것은
+그대로 둔다(제외와 매핑을 동시에 하는 것은 모순이므로 마법사가 애초에 못 하게 한다).
+
+마법사의 문구도 고친다. 지금 "상태 N개가 매핑되지 않았습니다. 해당 티켓의 전이는 점수에
+반영되지 않습니다"라고 하면서 같은 화면의 행에는 "지금은 '완료'로 추정해 채점 중입니다"가
+붙는다 — 정확히 반대되는 두 문장이다. `unmappedCount`가 폴백을 보지 않아서다.
+
+- [ ] **Step 4: 백필 중에는 동기화를 멈춘다**
+
+Task 18이 남긴 틈이다. 백필이 changelog를 받은 뒤 삽입에 도달하기까지의 창(보충 조회가 그
+사이에 있다)에 라이브 동기화가 그 티켓의 **새** 전이를 기록하면, 그 전이는 changelog에
+없으면서 대체 로직에 지워진다. 영구 손실은 아니지만(다음 백필이 복원한다) 그 사이 점수가 튄다.
+
+백필 동안 동기화를 멈추면 틈이 통째로 사라진다. 애초에 같은 데이터를 두 경로로 받을 이유가 없다.
+`launchBackfill`이 시작할 때 스케줄러를 멈추고 끝날 때(성공·실패·취소 모두) 되살린다.
+
+> `defer`로 되살리되, 백필 시작 전에 이미 멈춰 있던 경우를 되살리지 않도록 주의한다.
+
+- [ ] **Step 5: 테스트**
+
+각 Step마다 **구현을 틀리게 바꿔 해당 테스트가 죽는지** 확인하고 원복한다. 특히:
+- 합집합을 마지막 run 1건으로 되돌리면 I1 테스트가 죽어야 한다
+- 개수를 `historyDiscoveredStatuses.count`로 되돌리면 I2 테스트가 죽어야 한다
+- 제외 목록을 `effectiveWorkflow()`에서 무시하면 I3 테스트가 죽어야 한다
+
+Run: `cd Packages/Jirarcade && swift test`
+Expected: PASS, 경고 0
+
+- [ ] **Step 6: 커밋**
+
+```bash
+git commit -m "fix: 마법사가 사실을 말하고, 잘못 추정된 상태를 끌 수 있게"
+```
