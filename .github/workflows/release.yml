@@ -1,0 +1,117 @@
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+
+permissions:
+  # 릴리즈 생성에 필요한 최소 권한. 그 외는 부여하지 않는다.
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      # 릴리즈는 재현성이 우선이라 툴체인을 명시적으로 박는다. 경로가 사라지면
+      # 즉시 실패하는데, 조용히 다른 버전으로 빌드되는 것보다 낫다.
+      - name: Xcode 고정
+        run: |
+          if [ ! -d /Applications/Xcode_26.2.app ]; then
+            echo "✗ /Applications/Xcode_26.2.app이 이 러너에 없습니다" >&2
+            exit 1
+          fi
+          sudo xcode-select -s /Applications/Xcode_26.2.app
+          swift --version
+          ACTUAL_VERSION="$(xcodebuild -version | awk '/^Xcode/ {print $2}')"
+          if [ "$ACTUAL_VERSION" != "26.2" ]; then
+            echo "✗ 핀이 적용되지 않았습니다: xcodebuild가 ${ACTUAL_VERSION}을 보고했습니다 (기대값 26.2)" >&2
+            exit 1
+          fi
+
+      # 형식이 어긋난 태그는 여기서 죽인다. v0.2 같은 값이 그대로
+      # CFBundleShortVersionString에 들어가면 나중에 조용히 이상해진다.
+      - name: 태그 검증 및 버전 추출
+        id: version
+        run: |
+          TAG="${GITHUB_REF_NAME}"
+          if [[ ! "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]]; then
+            echo "✗ 태그 형식이 올바르지 않습니다: $TAG (예: v0.2.0, v0.2.0-rc.1)" >&2
+            exit 1
+          fi
+          VERSION="${TAG#v}"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+          # 프리릴리즈는 '최신 릴리즈' 자리를 차지하지 않는다.
+          if [[ "$VERSION" == *-* ]]; then
+            echo "prerelease=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "prerelease=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # 태그는 임의의 커밋에 붙을 수 있다 — CI를 통과한 적 없는 커밋에도.
+      # 게이트는 릴리즈되는 바로 그 트리에서 서야 의미가 있다.
+      - name: 테스트 게이트
+        working-directory: Packages/Jirarcade
+        run: swift test
+
+      - name: 번들 생성
+        run: |
+          ./scripts/make-app.sh \
+            --version "${{ steps.version.outputs.version }}" \
+            --build "${{ github.run_number }}" \
+            --config release \
+            --universal
+
+      - name: 출하 전 검증
+        run: |
+          ./scripts/verify-bundle.sh \
+            Packages/Jirarcade/.build/Jirarcade.app \
+            "${{ steps.version.outputs.version }}" \
+            --universal
+
+      # zip이 아니라 ditto다. zip은 확장 속성과 심볼릭 링크를 잃어
+      # 압축을 푼 .app의 서명이 깨진다.
+      #
+      # scripts/verify-bundle.sh의 압축 왕복 검사도 같은 ditto 플래그를 쓴다.
+      # 여기서 플래그를 바꾸면 그쪽도 맞춰 바꿔야 한다 — 안 그러면 검증이
+      # 통과해도 실제로 배포되는 zip은 다른 방식으로 만들어진 것이다.
+      - name: 압축
+        run: |
+          ditto -c -k --sequesterRsrc --keepParent \
+            Packages/Jirarcade/.build/Jirarcade.app \
+            "Jirarcade-${{ steps.version.outputs.version }}.zip"
+
+      # --notes-file과 --generate-notes를 함께 넘겼을 때 합쳐지는 방식이
+      # 문서화돼 있지 않아, 생성 노트를 API로 직접 받아 헤더 뒤에 붙인다.
+      - name: 릴리즈 노트 작성
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          if ! grep -q '{{VERSION}}' .github/release-notes-header.md; then
+            echo "✗ release-notes-header.md에 {{VERSION}} 자리표시자가 없습니다 — 파일명과 본문이 어긋납니다" >&2
+            exit 1
+          fi
+          sed "s/{{VERSION}}/${VERSION}/g" .github/release-notes-header.md > notes.md
+          printf '\n---\n\n' >> notes.md
+          gh api -X POST "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="${GITHUB_REF_NAME}" \
+            --jq '.body' >> notes.md
+          echo "--- 생성된 릴리즈 본문 ---"
+          cat notes.md
+
+      # 초안으로 만들고 자산 업로드가 끝난 뒤에 공개로 바꾼다. gh release create는
+      # 릴리즈를 먼저 게시하고 나서 자산을 올리므로, 50MB짜리 zip 업로드가
+      # 중간에 끊기면 다운로드할 게 없는 릴리즈가 이미 공개돼 있게 된다.
+      - name: 릴리즈 생성
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ARGS=(--draft --title "Jirarcade ${VERSION}" --notes-file notes.md)
+          if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then
+            ARGS+=(--prerelease)
+          fi
+          gh release create "${GITHUB_REF_NAME}" "${ARGS[@]}" "Jirarcade-${VERSION}.zip"
+          gh release edit "${GITHUB_REF_NAME}" --draft=false

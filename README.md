@@ -35,9 +35,24 @@ XP는 **상태를 보고 주지 않고 변화를 보고 줍니다.** 이미 완�
 
 ## 요구 사항
 
-- macOS 15 이상
-- Swift 6.2 이상 (Xcode 16.x 또는 [swift.org](https://swift.org/download/) 툴체인)
+- macOS 15 이상 (Apple Silicon · Intel 모두 — 릴리즈는 유니버설 바이너리로 나갑니다)
+- **소스에서 직접 빌드할 때만:** Swift 6.2 이상 (Xcode 26.2 이상 또는 [swift.org](https://swift.org/download/) 툴체인)
 - Jira Cloud 계정과 [API 토큰](https://id.atlassian.com/manage-profile/security/api-tokens)
+
+## 설치
+
+[릴리즈 페이지](https://github.com/Ahngbeom/jirarcade/releases)에서 최신 `Jirarcade-x.y.z.zip`을
+내려받아 압축을 풀고 `Jirarcade.app`을 `/Applications`로 옮긴 뒤, 터미널에서 한 번 실행합니다:
+
+```bash
+xattr -d com.apple.quarantine /Applications/Jirarcade.app
+```
+
+이 앱은 Apple 공증(notarization)을 받지 않았습니다. macOS는 인터넷에서 받은 미공증 앱에
+격리 표시를 붙이고 실행을 막으면서 "손상되었기 때문에 열 수 없습니다"라고 말합니다 —
+실제로 손상된 게 아니라 표시가 붙었을 뿐이고, 위 명령이 그 표시를 뗍니다.
+
+소스에서 직접 빌드하려면 아래를 따르세요.
 
 ## 실행
 
@@ -55,6 +70,7 @@ macOS는 `.app` 번들 없이 실행된 프로세스를 **백그라운드 전용
 바이너리는 실행마다 다른 identity로 취급돼 저장한 자격증명을 다시 물을 수 있습니다:
 
 ```bash
+cd -  # 저장소 루트로 돌아갑니다 — make-app.sh는 거기서 실행합니다
 ./scripts/make-app.sh --open
 ```
 
@@ -67,7 +83,7 @@ cd Packages/Jirarcade
 swift test
 ```
 
-221개 테스트가 약 0.2초에 끝납니다. 규칙이 순수 함수이고 네트워크·시계·달력이 전부 주입되기 때문입니다 — 5분 타이머와 30초 쿨다운을 검증하는 테스트도 실제로는 밀리초 안에 돕니다.
+441개 테스트가 2초 안에 끝납니다. 규칙이 순수 함수이고 네트워크·시계·달력이 전부 주입되기 때문입니다 — 5분 타이머와 30초 쿨다운을 검증하는 테스트도 실제로는 밀리초 안에 돕니다.
 
 ## 구조
 
@@ -84,7 +100,7 @@ Packages/Jirarcade/
 
 의존은 **한 방향으로만** 흐릅니다: `ArcadeUI → ArcadeApp → ArcadeCore → JiraKit`. 이 방향과 아래 두 규칙은 소스를 읽는 테스트가 강제합니다.
 
-- **`ArcadeApp`은 SwiftUI를 모릅니다.** 테스트하는 것과 눈으로 확인하는 것의 경계이고, 그래서 221개 테스트가 화면 없이 돕니다
+- **`ArcadeApp`은 SwiftUI를 모릅니다.** 테스트하는 것과 눈으로 확인하는 것의 경계이고, 그래서 441개 테스트가 화면 없이 돕니다
 - **뷰에 색 리터럴이 없습니다.** 모든 색이 테마 환경에서 오므로 라이트/다크 전환이 한 곳에서 결정됩니다
 
 `JiraKit`은 게임을 모르고 `ArcadeCore`는 화면을 모릅니다. 아케이드 플로어의 셸도 특정 캐비닛을 모르고 `Cabinet` 프로토콜만 알아서, 새 캐비닛을 더할 때 셸을 건드리지 않습니다.
