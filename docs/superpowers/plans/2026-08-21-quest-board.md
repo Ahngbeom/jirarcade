@@ -1250,9 +1250,12 @@ cd Packages/Jirarcade && swift test --filter BoardState
     }
 ```
 
-호출부 두 곳을 바꾼다:
-- `refreshDerivedState()` 끝의 `await refreshSummaries()` → `await recomputeFromLog()`
-- `performSync()` 끝의 `await refreshSummaries()` → `await recomputeFromLog()`
+호출부 **세 곳**을 바꾼다 — `refreshDerivedState()`, `performSync()`, 그리고
+`confirmMapping()`. 세지 말고 `rg`로 찾을 것:
+
+```bash
+rg -n 'refreshSummaries' Packages/Jirarcade/Sources/
+```
 
 ```bash
 # 남은 호출이 없는지 확인

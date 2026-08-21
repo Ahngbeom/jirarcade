@@ -384,7 +384,7 @@ public struct PendingTransition: Sendable, Equatable {
 만들지 않는다.
 
 다만 이 함수는 더 이상 요약만 갱신하지 않으므로 **`recomputeFromLog()`로 개명한다.**
-호출부는 두 곳뿐이다. 이름이 하는 일보다 좁으면 다음 사람이 보드 갱신을 여기 두지 않고
+호출부는 세 곳이다(`refreshDerivedState`·`performSync`·`confirmMapping`). 이름이 하는 일보다 좁으면 다음 사람이 보드 갱신을 여기 두지 않고
 새 경로를 만든다.
 
 `effectiveWorkflowMap`은 **매 접근마다 디스크를 치면 안 된다.** 후속 항목 §4.2가 지적한
