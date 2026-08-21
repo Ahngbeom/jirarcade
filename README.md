@@ -106,6 +106,7 @@ Packages/Jirarcade/
 - 아케이드 플로어와 관측 캐비닛 — 관측 일차, 레벨·XP, 마지막 동기화
 - 퀘스트 보드 — 내 티켓을 단계별 레인에 정체 시간축으로 배치
 - 카드에서 상태 전이 (5초 실행 취소, XP는 다음 동기화에서 붙음)
+- 워크플로 매핑 재설정 (설정 화면에서 언제든 다시 열기)
 - 라이트/다크 테마, 시스템 외관 연동
 
 **아직 없습니다**
@@ -113,7 +114,7 @@ Packages/Jirarcade/
 - 티켓 상세 — 제목·본문 수정과 댓글 (계획 2b-2)
 - 스프린트 보드 (계획 2b-3)
 - 팀원 티켓 현황 보기
-- 설정 화면 (매핑 재설정·규칙 조정 등)
+- 설정 화면 (규칙 조정 등)
 - CRT 연출·레벨업 애니메이션
 
 ## 문서
@@ -122,6 +123,8 @@ Packages/Jirarcade/
 |---|---|
 | [v0.1 설계](docs/superpowers/specs/2026-08-12-jirarcade-design.md) | 게임 규칙·데이터 모델·화면 구성·보안 |
 | [앱 셸 설계](docs/superpowers/specs/2026-08-14-app-shell-design.md) | 앱 상태 기계·온보딩·동기화 스케줄러 |
+| [퀘스트 보드 설계](docs/superpowers/specs/2026-08-21-quest-board-design.md) | 보드 배치 알고리즘·레인 렌더링·상태 전이 UI |
 | [실행 기록](docs/superpowers/records/2026-08-14-app-shell-execution.md) | 왜 코드가 지금 모양인지 — 판정과 리뷰가 잡은 결함 |
+| [시각 검증 체크리스트](docs/superpowers/records/2026-08-21-quest-board-visual-checklist.md) | 테스트로 검증할 수 없는 UI 동작 수동 확인 절차 |
 
 구현 계획은 [`docs/superpowers/plans/`](docs/superpowers/plans/)에 있습니다.
