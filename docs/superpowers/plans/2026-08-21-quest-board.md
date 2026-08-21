@@ -541,7 +541,9 @@ private func snapshot(
 @Test func dropsIssuesInTheDoneStage() {
     let result = snapshot([issue(key: "DEMO-1", status: "Done")])
 
-    #expect(result.lanes.allSatisfy(\.slots.isEmpty))
+    // 키패스 축약(`allSatisfy(\.slots.isEmpty)`)은 이 툴체인에서 throwing으로 취급돼
+    // 컴파일되지 않는다. 클로저로 쓴다.
+    #expect(result.lanes.allSatisfy { $0.slots.isEmpty })
     #expect(result.unmappedIssues.isEmpty)
 }
 
@@ -578,7 +580,8 @@ private func snapshot(
 
     let slot = result.lanes[1].slots[0]
     #expect(slot.daysStagnant == 30)
-    #expect(slot.tier == .raid)
+    // 30일은 bossDays(21) 이상 raidDays(45) 미만이다 — raid가 아니다.
+    #expect(slot.tier == .boss)
     #expect(slot.isApproximate == false)
 }
 
