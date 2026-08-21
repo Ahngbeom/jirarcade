@@ -326,6 +326,40 @@ public class ArcadeStore {
         try context.save()
     }
 
+    /// 이 run이 상태 카탈로그 없이 돌았다고 표시한다. **끄는 경로는 없다** —
+    /// 누적 플래그이므로 한 번 서면 그 run 동안 유지된다(BackfillRun.catalogUnavailable 참고).
+    public func markBackfillCatalogUnavailable(_ id: PersistentIdentifier) throws {
+        // 조용히 return하면 정확도 경고가 흔적 없이 사라지고, 사용자는 XP가 왜 적은지 모른다.
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.catalogUnavailable = true
+        try context.save()
+    }
+
+    /// 재개하면서 다시 물어본 총계를 적는다. 0으로 시작한 run(옛 run이거나 그때 조회에
+    /// 실패한 run)이 재개할 때마다 같은 것을 다시 묻지 않게 한다.
+    public func recordBackfillTotal(_ id: PersistentIdentifier, totalIssueCount: Int) throws {
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.totalIssueCount = totalIssueCount
+        try context.save()
+    }
+
+    /// 재시도를 시작할 때 옛 실패 사유를 지운다.
+    ///
+    /// 이어받기는 **같은 run 행을 재사용**하므로 지우지 않으면, 사용자가 이어받은 뒤 스스로
+    /// 중단해도(취소는 사유를 적지 않는다) 화면은 그 전 실패의 문구를 계속 보여준다.
+    /// 재시도가 시작된 시점에 옛 실패는 더 이상 최신 사실이 아니다.
+    public func clearBackfillFailure(_ id: PersistentIdentifier) throws {
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.failureMessage = nil
+        try context.save()
+    }
+
     /// 아직 끝나지 않은 백필. 있으면 "이어서 불러오기"를 제안한다.
     public func resumableBackfill() throws -> BackfillSnapshot? {
         var descriptor = FetchDescriptor<BackfillRun>(
@@ -354,6 +388,18 @@ public class ArcadeStore {
         )
         descriptor.fetchLimit = 1
         return try context.fetch(descriptor).first?.failureMessage
+    }
+
+    /// 가장 최근 백필이 상태 카탈로그 없이 돌았는지. 설정 화면의 정확도 경고가 이 값을 쓴다.
+    ///
+    /// 완료 여부를 가리지 않고 `startedAt` 내림차순으로 마지막 run을 보는 이유는
+    /// `lastBackfillFailure()`와 같다 — 실패한 run은 재개할 수 있도록 미완료로 남는다.
+    public func lastBackfillWasDegraded() throws -> Bool {
+        var descriptor = FetchDescriptor<BackfillRun>(
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first?.catalogUnavailable ?? false
     }
 
     /// 가장 최근 백필이 발견한 미매핑 상태명. **완료 여부와 무관하게** 마지막 run을 본다.

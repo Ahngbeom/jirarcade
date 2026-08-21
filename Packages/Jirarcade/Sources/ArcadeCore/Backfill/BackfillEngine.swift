@@ -8,6 +8,8 @@ public protocol ChangelogSource: Sendable {
         async throws -> (issues: [JiraIssueWithChangelog], nextPageToken: String?)
     func fetchIssueChangelog(key: String, startAt: Int) async throws -> JiraChangelogPage
     func fetchStatusCatalog() async throws -> [JiraStatusCatalogEntry]
+    /// 진행률 표시용 총계. 새 검색 API는 응답에 total을 주지 않으므로 따로 물어야 한다.
+    func approximateIssueCount(jql: String) async throws -> Int
 }
 
 /// 실제 Jira를 쓰는 구현.
@@ -33,6 +35,10 @@ public struct JiraChangelogSource: ChangelogSource {
 
     public func fetchStatusCatalog() async throws -> [JiraStatusCatalogEntry] {
         try await client.statusCatalog()
+    }
+
+    public func approximateIssueCount(jql: String) async throws -> Int {
+        try await client.approximateIssueCount(jql: jql)
     }
 }
 
@@ -73,16 +79,14 @@ public final class BackfillEngine {
     }
 
     /// - Parameters:
-    ///   - totalIssueCount: 진행률 표시용 총계. 새 검색 API는 total을 주지 않으므로
-    ///     호출부가 따로 세어 넘기거나, 모르면 nil을 넘긴다. 모를 때 처리한 수를
-    ///     총계로 삼으면 진행률이 늘 100%로 보인다.
     ///   - resume: true면 중단된 백필을 이어받는다. 범위(jql)가 달라졌으면 이어받지
     ///     않고 새로 시작한다 — 다른 범위의 진행 상황은 이어붙일 수 없다.
     ///   - progress: (처리한 티켓 수, 총계 또는 nil). 페이지마다 불린다.
+    ///     총계는 엔진이 직접 물어 채운다(`approximateIssueCount`) — 모를 때 처리한 수를
+    ///     총계로 삼으면 진행률이 늘 100%로 보이므로 그때는 nil로 둔다.
     public func run(
         jql: String,
         now: Date,
-        totalIssueCount: Int? = nil,
         resume: Bool = false,
         progress: @MainActor (Int, Int?) -> Void
     ) async throws -> BackfillOutcome {
@@ -106,16 +110,33 @@ public final class BackfillEngine {
         let runId: PersistentIdentifier
         var token: String?
         var processed: Int
+        let total: Int?
         if let existing, existing.jql == jql {
             runId = existing.id
             token = existing.nextPageToken
             processed = existing.processedIssueCount
+            // 저장된 총계를 쓰되 0이면 다시 묻는다 — 옛 run이거나 그때 조회에 실패한 run이다.
+            if existing.totalIssueCount > 0 {
+                total = existing.totalIssueCount
+            } else {
+                total = try await approximateTotal(jql: jql)
+                if let total { try store.recordBackfillTotal(runId, totalIssueCount: total) }
+            }
+            // 재시도가 시작된 이상 옛 실패는 더 이상 최신 사실이 아니다. 지우지 않으면
+            // 사용자가 이어받은 뒤 스스로 중단했을 때(취소는 사유를 적지 않는다)
+            // 화면이 지난 실패 문구를 그대로 보여준다.
+            try store.clearBackfillFailure(runId)
         } else {
-            runId = try store.beginBackfill(jql: jql, at: now,
-                                            totalIssueCount: totalIssueCount ?? 0)
+            total = try await approximateTotal(jql: jql)
+            runId = try store.beginBackfill(jql: jql, at: now, totalIssueCount: total ?? 0)
             token = nil
             processed = 0
         }
+
+        // 카탈로그를 못 받은 사실은 **run 행에** 적는다. 메모리에 두면 실패로 끝난 실행·
+        // 앱 재시작·이어받기에서 사라진다(BackfillRun.catalogUnavailable 참고).
+        // 누적이므로 이어받기가 카탈로그를 받아도 1회차의 표시는 남는다.
+        if catalogUnavailable { try store.markBackfillCatalogUnavailable(runId) }
 
         // 실패해도 여기까지 넣은 이벤트는 유효하고 진행 지점이 저장돼 있다.
         // run을 미완료로 남기면 다음 실행에서 "이어서 하시겠습니까"가 뜬다 —
@@ -125,7 +146,7 @@ public final class BackfillEngine {
                 jql: jql, runId: runId, catalog: catalog,
                 catalogUnavailable: catalogUnavailable,
                 token: token, processed: processed,
-                totalIssueCount: totalIssueCount, progress: progress
+                totalIssueCount: total, progress: progress
             )
             try store.finishBackfill(runId, at: now, failure: nil)
             return outcome
@@ -139,6 +160,21 @@ public final class BackfillEngine {
             // 기록 자체가 실패해도 원래 에러를 가리면 안 되므로 try?로 넘긴다.
             try? store.recordBackfillFailure(runId, message: Self.failureDescription(error))
             throw error
+        }
+    }
+
+    /// 진행률에 쓸 총계. **조회 실패는 백필을 막지 않는다** — 진행률이 불확정 바가 될 뿐이라
+    /// 카탈로그 조회와 같은 결로 다룬다(스펙 §8).
+    ///
+    /// 취소만은 다시 던진다. `try?`로 뭉뚱그리면 사용자가 중단을 눌러도 이 단계에서만
+    /// 조용히 넘어가고 백필이 계속 돈다 — 이 저장소에서 두 번 나온 결함이다.
+    private func approximateTotal(jql: String) async throws -> Int? {
+        do {
+            return try await source.approximateIssueCount(jql: jql)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            return nil
         }
     }
 

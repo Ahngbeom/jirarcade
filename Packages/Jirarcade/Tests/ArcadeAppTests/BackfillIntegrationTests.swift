@@ -27,6 +27,7 @@ private final class StubChangelogSource: ChangelogSource, @unchecked Sendable {
     func fetchPage(jql: String, pageToken: String?)
         async throws -> (issues: [JiraIssueWithChangelog], nextPageToken: String?) {
         requestedTokens.append(pageToken)
+        await onFetchPage?(pageToken)
         if let failOnToken, failOnToken == pageToken { throw StubError() }
         guard !pages.isEmpty else { return ([], nil) }
         return pages.removeFirst()
@@ -40,6 +41,19 @@ private final class StubChangelogSource: ChangelogSource, @unchecked Sendable {
         if let catalogError { throw catalogError }
         return catalog
     }
+
+    /// 진행률 총계. 기본값 nil은 "서버가 답하지 못했다"이며 던진다 —
+    /// 총계 조회 실패는 백필을 막지 않아야 하므로 이쪽이 더 엄한 기본값이다.
+    var approximateCount: Int?
+
+    func approximateIssueCount(jql: String) async throws -> Int {
+        guard let approximateCount else { throw StubError() }
+        return approximateCount
+    }
+
+    /// 페이지를 요청받는 순간 부른다. 백필이 도는 **도중의** 상태를 검사하거나
+    /// 그 시점에 중단을 거는 자리다.
+    var onFetchPage: (@Sendable (String?) async -> Void)?
 }
 
 /// 백필은 로그인해야 돌아간다(`client`가 있어야 소스를 만든다). 모든 테스트가
@@ -311,11 +325,31 @@ private func backfillIssue(
             "다시 켰을 때도 중단 사유가 보여야 한다")
 }
 
-/// 카탈로그를 못 받은 실행은 정확도가 낮다고 표시되고, 카탈로그를 받은 실행이 성공하면
-/// 표시가 걷힌다. 그 사이의 **실패한** 실행은 결론을 덮지 않는다 — 실패한 실행에는
-/// "카탈로그를 받았는가"에 대한 결론 자체가 없기 때문이다.
+/// 카탈로그를 못 받은 채 **실패로 끝난** 실행도 정확도 경고를 남긴다.
+///
+/// 예전에는 경고가 성공 경로에서만 대입되는 메모리 값이라 이 경우 통째로 사라졌다.
+/// 하필 카탈로그 조회가 실패하는 상황이면 네트워크가 불안정해 페이지 조회도 실패하기 쉽다 —
+/// degradation이 가장 잘 일어나는 조건에서 경고가 가장 잘 사라졌다는 뜻이다.
 @MainActor
-@Test func degradedFlagIsSetOnlyBySuccessfulRuns() async throws {
+@Test func degradedWarningSurvivesARunThatFailed() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [([], nil)])
+    source.catalogError = StubError()
+    source.failOnToken = .some(nil)   // 첫 페이지부터 실패한다
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+
+    await model.startBackfill()
+
+    #expect(model.lastBackfillFailure == "StubError", "실패로 끝난 실행이어야 이 테스트가 성립한다")
+    #expect(model.backfillWasDegraded,
+            "실패로 끝났어도 카탈로그를 못 받았다는 사실은 그대로다")
+}
+
+/// 정확도 경고는 앱을 다시 켜도 남는다. 메모리에만 있으면 사용자는 다음 실행에서
+/// 자기 XP가 왜 적은지 알 방법이 없다 — 설정 화면은 아무 말도 하지 않는다.
+@MainActor
+@Test func degradedWarningSurvivesRelaunch() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = StubChangelogSource(pages: [
         ([backfillIssue(key: "MPT-1", historyId: "1",
@@ -324,23 +358,73 @@ private func backfillIssue(
     source.catalogError = StubError()
     let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
     await model.start()
-
     await model.startBackfill()
-    #expect(model.backfillWasDegraded, "카탈로그를 못 받았으면 폴백 ②가 꺼진 채로 돈 것이다")
+    #expect(model.backfillWasDegraded)
 
-    // 실패한 실행이 경고를 걷어가면 안 된다.
-    source.pages = [([], nil)]
-    source.failOnToken = .some(nil)
+    let relaunched = try makeModel(store: store, credentials: signedIn())
+    await relaunched.start()
+
+    #expect(relaunched.backfillWasDegraded, "다시 켰을 때도 정확도 경고가 보여야 한다")
+}
+
+/// 카탈로그가 살아난 **이어받기**가 성공해도 경고는 남는다.
+///
+/// 폴백은 그 walk에서 실제로 본 전이만 해석한다 — 1회차에 카탈로그 없이 지나간 티켓은
+/// 이어받기로도 다시 해석되지 않는다. 2회차만 보고 경고를 걷으면 사용자는 정확도가
+/// 회복됐다고 믿는다. 회복하는 길은 처음부터 다시 훑는 것뿐이다.
+@MainActor
+@Test func resumeKeepsTheDegradedWarningFromTheFirstPass() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], "tok-2"),
+    ])
+    source.catalogError = StubError()
+    source.failOnToken = .some("tok-2")
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
     await model.startBackfill()
-    #expect(model.backfillWasDegraded, "실패한 실행의 값으로 이전 결론을 덮지 않는다")
+    #expect(model.backfillWasDegraded, "1회차가 카탈로그 없이 돌았다")
 
-    // 카탈로그를 받은 성공 실행만 경고를 걷는다.
+    // 2회차는 카탈로그를 받아 정상 종료한다.
+    source.catalogError = nil
     source.failOnToken = nil
+    source.pages = [([], nil)]
+    await model.resumeBackfillIfAvailable()
+
+    #expect(model.hasResumableBackfill == false, "이어받기가 정상 종료했다")
+    #expect(model.backfillWasDegraded,
+            "1회차에 지나간 티켓은 이어받기로 다시 해석되지 않는다")
+}
+
+/// **처음부터 다시** 훑은 실행이 카탈로그를 받았으면 경고가 걷힌다. 누적 플래그가
+/// run 단위라는 것을 고정한다 — 영원히 켜져 있으면 알림으로서 의미가 없다.
+///
+/// 두 run의 `startedAt`이 달라야 한다(스토어의 "마지막 run" 조회가 그 값으로 정렬한다).
+/// 실제로도 한 순간에 두 번 시작할 수는 없으므로, 앱을 다시 켠 상황으로 재현한다.
+@MainActor
+@Test func aFreshRunWithTheCatalogClearsTheDegradedWarning() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], nil)
+    ])
+    source.catalogError = StubError()
+    let degraded = try makeModel(store: store, changelogSource: source, credentials: signedIn(),
+                                 now: iso("2026-08-14T09:00:00Z"))
+    await degraded.start()
+    await degraded.startBackfill()
+    #expect(degraded.backfillWasDegraded)
+
     source.catalogError = nil
     source.pages = [([], nil)]
-    await model.startBackfill()
-    #expect(model.backfillWasDegraded == false, "카탈로그를 받은 성공 실행이면 경고가 걷힌다")
-    #expect(model.lastBackfillFailure == nil, "성공한 실행 뒤에는 실패 사유가 남지 않는다")
+    let later = try makeModel(store: store, changelogSource: source, credentials: signedIn(),
+                              now: iso("2026-08-14T10:00:00Z"))
+    await later.start()
+    await later.startBackfill()
+
+    #expect(later.backfillWasDegraded == false, "카탈로그를 받은 새 실행이면 경고가 걷힌다")
+    #expect(later.lastBackfillFailure == nil, "성공한 실행 뒤에는 실패 사유가 남지 않는다")
 }
 
 /// 백필이 발견한 과거 상태가 앱을 다시 켜도 남아 매핑 후보로 올라온다.
@@ -548,4 +632,175 @@ private func backfillIssue(
     #expect(model.hasResumableBackfill == false)
     #expect(model.lastBackfillFailure == nil)
     #expect(model.backfillWasDegraded == false)
+}
+
+/// 이어받은 뒤 스스로 중단하면 **옛 실패 사유가 남아 있으면 안 된다.**
+///
+/// 순서가 중요하다 — 실패 → 이어받기 → 중단이어야 한다. 첫 실행의 중단은 `beginBackfill`이
+/// 새 행을 만들어 정상 동작하므로 그 경로만 보면 이 결함을 놓친다. 이어받기는 **같은 run
+/// 행을 재사용**하는데 취소는 사유를 적지 않으므로(의도된 동작), 지우지 않으면 사용자가
+/// 방금 스스로 중단한 직후에 앱이 "지난 불러오기가 중단되었습니다 (StubError)"라고 말한다.
+@MainActor
+@Test func resumingThenCancellingDoesNotShowTheOldFailure() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], "tok-2"),
+    ])
+    source.failOnToken = .some("tok-2")
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+    await model.startBackfill()
+    #expect(model.lastBackfillFailure == "StubError",
+            "실패가 먼저 기록돼야 이 테스트가 무언가를 검증한다")
+
+    // 이어받기. 저장된 토큰을 받는 순간 사용자가 "중단"을 누른다 — 취소는 페이지 경계에서
+    // 걸리므로 이어받은 walk가 페이지를 하나 더 요청하려 할 때 빠져나온다.
+    source.failOnToken = nil
+    source.pages = [([], "tok-3"), ([], nil)]
+    source.onFetchPage = { token in
+        guard token == "tok-2" else { return }
+        await MainActor.run { model.cancelBackfill() }
+    }
+
+    await model.resumeBackfillIfAvailable()
+
+    #expect(source.requestedTokens.contains("tok-2"), "이어받기가 실제로 돌았는지 확인한다")
+    #expect(model.hasResumableBackfill, "중단은 재개 지점을 남긴다")
+    #expect(model.lastBackfillFailure == nil,
+            "스스로 중단한 사용자에게 지난 실패 문구를 보여주면 안 된다")
+}
+
+/// 버튼을 누른 즉시 "실행 중"이어야 한다. 진행률은 첫 페이지를 다 처리한 뒤에야 오는데,
+/// 그 전에 총계 조회 + 카탈로그 조회 + 첫 페이지 조회가 있어 실측에서 수십 초였다.
+/// 그동안 화면이 시작 버튼을 활성 상태로 두면 사용자에게는 버튼이 먹지 않은 것처럼 보인다.
+@MainActor
+@Test func backfillShowsAsRunningBeforeTheFirstPageArrives() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], nil)
+    ])
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+    #expect(model.isBackfilling == false, "시작 전에는 실행 중이 아니다")
+
+    source.onFetchPage = { _ in
+        await MainActor.run {
+            #expect(model.isBackfilling, "첫 페이지를 받기도 전에 이미 실행 중이어야 한다")
+            #expect(model.backfillProgress == nil,
+                    "진행률은 아직 없다 — 바로 이 구간이 검사 대상이다")
+        }
+    }
+
+    await model.startBackfill()
+
+    // 훅이 돌지 않으면 위 검사는 한 번도 실행되지 않고 조용히 통과한다.
+    #expect(source.requestedTokens.count == 1, "페이지 조회가 실제로 일어났다")
+    #expect(model.isBackfilling == false, "끝나면 실행 중 표시가 내려간다")
+}
+
+/// 마법사에서 확인만 눌러도 추정값이 사용자 매핑으로 **승격되면 안 된다.**
+/// 한 번 승격되면 사용자 매핑이 항상 위에 얹히므로(`effectiveWorkflow`),
+/// 이후 폴백이 더 정확해져도 영영 이기지 못한다.
+@MainActor
+@Test func confirmingMappingDoesNotPromoteFallbacksToUserMapping() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .done]))
+    let model = try makeModel(credentials: signedIn(), workflow: workflow)
+    await model.start()
+
+    #expect(model.currentFallbacks.stage(for: "Merged to Staging") == .done,
+            "마법사가 '지금은 완료로 추정해 채점 중'이라고 적을 근거가 모델에 있어야 한다")
+
+    // 사용자가 아무것도 고르지 않고 확인만 눌렀다.
+    await model.confirmMapping(model.currentMapping)
+
+    let saved = try #require(try workflow.load())
+    #expect(saved.stage(for: "Merged to Staging") == nil, "추정값은 사용자 매핑이 아니다")
+    #expect(model.currentFallbacks.stage(for: "Merged to Staging") == .done,
+            "폴백은 그대로 밑에 깔린 채 남는다")
+}
+
+/// 매핑을 고치면 **그 자리에서** 점수가 다시 계산된다. 재집계를 걸지 않으면
+/// 사용자가 잘못된 추정을 바로잡아도 XP·레벨이 그대로여서 아무 일도 일어나지 않은 것처럼
+/// 보인다. 동기화 완료를 기다리지 않고 저장된 이벤트로 바로 돌아야 즉시 반영된다.
+@MainActor
+@Test func fixingTheMappingRecomputesRightAway() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let event = DomainEvent(
+        issueKey: "MPT-1", kind: .statusChanged,
+        fromStatus: "In Progress", toStatus: "Merged to Staging",
+        observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
+        priorUpdatedAt: iso("2026-08-01T00:00:00Z")
+    )
+    _ = try store.appendBackfillEvents([event], historyIds: ["h-1"])
+    let workflow = InMemoryWorkflowStore(
+        seeded: WorkflowMap(statusToStage: ["In Progress": .active])
+    )
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+    let model = try makeModel(store: store, credentials: signedIn(), workflow: workflow)
+    await model.start()
+
+    let before = try #require(model.lifetimeSummary)
+    #expect(before.totalXP == 0, "폴백대로면 active -> active 수평 이동이라 0점이다")
+
+    await model.confirmMapping(WorkflowMap(statusToStage: [
+        "In Progress": .active, "Merged to Staging": .review,
+    ]))
+
+    let after = try #require(model.lifetimeSummary)
+    #expect(after.totalXP > 0, "전진으로 다시 채점돼 XP가 붙어야 한다")
+}
+
+// MARK: - 화면 배선
+
+/// 캐비닛과 HUD가 **같은** 통산 요약을 읽는지 소스로 확인한다. 예전에는 동기화 경로가
+/// 따로 담은 값을 캐비닛이 읽어, 백필 직후부터 다음 동기화까지 한 화면에
+/// "LV.1 · 2,340 XP"(캐비닛)와 "통산 LV.50"(HUD)이 나란히 떴다.
+///
+/// ArcadeUI에는 테스트 타깃이 없으므로 `ModuleBoundaryTests`가 색 리터럴을 잡는 것과
+/// 같은 방식으로 소스를 읽는다.
+@Test func theCabinetReadsTheSameLifetimeSummaryAsTheHud() throws {
+    let text = try uiSource("ObservationCabinet.swift")
+
+    let usesLifetime = text.contains("model.lifetimeSummary")
+    let usesSyncOnlySummary = text.contains("model.summary")
+    #expect(usesLifetime, "캐비닛은 HUD와 같은 통산 요약을 읽어야 한다")
+    #expect(!usesSyncOnlySummary, "동기화 경로가 따로 담은 값을 읽으면 두 값이 어긋난다")
+
+    // "아직 동기화 전"은 집계값이 아니라 lastSync로 판정해야 한다 — 집계값은 첫 동기화
+    // 전에도 백필이 넣은 이벤트로 채워지므로, 그것으로 판정하면 안내가 영영 안 뜬다.
+    let gatesOnLastSync = text.contains("model.lastSync == nil")
+    #expect(gatesOnLastSync, "'아직 동기화 전'은 lastSync로 판정해야 한다")
+}
+
+/// 설정 화면이 "실행 중"을 진행률이 아니라 실행 태스크로 판정하는지 확인한다.
+/// 진행률로 판정하면 시작 직후 수십 초 동안 버튼이 먹지 않은 것처럼 보인다.
+@Test func settingsDecidesRunningStateFromTheTask() throws {
+    let text = try uiSource("SettingsView.swift")
+    let gatesOnIsBackfilling = text.contains("if model.isBackfilling")
+    #expect(gatesOnIsBackfilling, "설정 화면은 isBackfilling으로 실행 중을 판정해야 한다")
+}
+
+/// 마법사가 행마다 현재 추정을 보여주는지 확인한다. 이 표시가 없으면 설정 화면의
+/// "상태 N개가 추정값으로 채점되고 있습니다"는 개수만 알려줄 뿐, 사용자는 무엇을
+/// 고쳐야 하는지 알 수 없다.
+@Test func theMappingWizardShowsTheCurrentGuessPerRow() throws {
+    let text = try uiSource("WorkflowMappingView.swift")
+    let readsFallbacks = text.contains("model.currentFallbacks.stage(for: entry.name)")
+    #expect(readsFallbacks, "행마다 지금 무엇으로 채점 중인지 보여줘야 한다")
+    // 폴백을 초기 선택으로 채우면 확인만 눌러도 추정값 전부가 사용자 매핑으로 승격된다.
+    let seedsOnlyFromUserMap =
+        text.contains("State(initialValue: model.currentMapping.statusToStage)")
+    #expect(seedsOnlyFromUserMap, "초기 선택은 사용자 매핑에서만 와야 한다")
+}
+
+private func uiSource(_ fileName: String) throws -> String {
+    let url = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // ArcadeAppTests
+        .deletingLastPathComponent()   // Tests
+        .deletingLastPathComponent()   // 패키지 루트
+        .appendingPathComponent("Sources/ArcadeUI/\(fileName)")
+    return try String(contentsOf: url, encoding: .utf8)
 }

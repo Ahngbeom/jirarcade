@@ -13,9 +13,14 @@ struct ObservationCabinet: Cabinet {
 
     var marqueeLines: [String] {
         var lines = ["관측 \(model.observationDays)일차"]
-        if let summary = model.summary {
+        // HUD와 **같은 값**을 읽는다. 예전에는 동기화 경로가 따로 담아 둔 요약을 읽어,
+        // 백필 직후부터 다음 동기화까지 이 줄과 HUD가 서로 다른 레벨을 보여줬다.
+        if let summary = model.lifetimeSummary {
             lines.append("LV.\(summary.level) · \(summary.totalXP) XP")
-        } else {
+        }
+        // "아직 동기화 전"은 `lastSync`로만 판정한다. 집계값은 첫 동기화 전에도 백필이
+        // 넣은 이벤트로 채워지므로, 그것으로 판정하면 이 안내가 영영 뜨지 않는다.
+        if model.lastSync == nil {
             lines.append("아직 동기화 전")
         }
         if let note = model.lastSync?.note {
@@ -40,12 +45,15 @@ private struct ObservationDetailView: View {
                 .foregroundStyle(theme.good)
 
             stat("관측", "\(model.observationDays)일차")
-            if let summary = model.summary {
+            if let summary = model.lifetimeSummary {
                 stat("레벨", "LV.\(summary.level)")
                 stat("경험치", "\(summary.totalXP) XP")
                 stat("다음 레벨까지", "\(summary.xpForNextLevel - summary.xpIntoLevel) XP")
-            } else {
-                Text("아직 동기화 전입니다. 첫 동기화가 끝나면 레벨과 경험치가 여기 나타납니다.")
+            }
+            // 백필만 돌린 사용자에게는 레벨과 이 안내가 함께 뜬다 — 그게 사실이다.
+            // 숫자는 이미 쌓인 이벤트에서 나왔고, 지금 티켓의 변화는 아직 안 봤다.
+            if model.lastSync == nil {
+                Text("아직 동기화 전입니다. 첫 동기화가 끝나면 지금 티켓의 변화도 반영됩니다.")
                     .font(.callout)
                     .foregroundStyle(theme.inkTertiary)
             }

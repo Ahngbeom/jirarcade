@@ -84,6 +84,19 @@ private final class ScriptedChangelogSource: ChangelogSource, @unchecked Sendabl
         if let catalogError { throw catalogError }
         return catalog
     }
+
+    /// 진행률 총계. nil이면 서버가 답을 주지 못한 상황을 흉내내려고 던진다 —
+    /// "0건"과 "모른다"는 진행률에서 다른 표시가 된다.
+    var approximateCount: Int?
+    var approximateCountError: (any Error)?
+    private(set) var approximateCountRequests = 0
+
+    func approximateIssueCount(jql: String) async throws -> Int {
+        approximateCountRequests += 1
+        if let approximateCountError { throw approximateCountError }
+        guard let approximateCount else { throw StubError() }
+        return approximateCount
+    }
 }
 
 private func statusHistory(
@@ -649,4 +662,203 @@ private func transitionIssue(
     #expect(outcome.insertedEvents == 1)
     let events = try store.loadEvents()
     #expect(events.count == 1)
+}
+
+// MARK: - 진행률 총계
+
+/// 총계를 물어 진행률에 실어 보낸다. 이게 없으면 화면의 확정 진행률(N/M) 분기는
+/// 구조적으로 도달할 수 없는 죽은 코드가 된다 — 1,200건 규모에서 "얼마나 남았는지"는
+/// 실질적 가치가 있다.
+@MainActor
+@Test func progressCarriesTheApproximateTotal() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedChangelogSource(pages: [
+        ([transitionIssue(key: "MPT-1", historyId: "1",
+                          at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], nil)
+    ])
+    source.approximateCount = 1263
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+
+    var reported: [(Int, Int?)] = []
+    _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z")) { processed, total in
+        reported.append((processed, total))
+    }
+
+    #expect(reported.map(\.1) == [1263], "진행률에 총계가 실려야 한다")
+}
+
+/// 물어본 총계는 run에 남는다 — 재개할 때마다 다시 묻지 않기 위해서다.
+@MainActor
+@Test func theFetchedTotalIsStoredOnTheRun() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedChangelogSource(pages: [([], "tok-2")])
+    source.approximateCount = 1263
+    source.pageErrors["tok-2"] = StubError()   // 미완료로 남겨야 스냅샷을 읽을 수 있다
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+
+    await #expect(throws: StubError.self) {
+        _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
+                                 progress: { _, _ in })
+    }
+
+    let snapshot = try #require(try store.resumableBackfill())
+    #expect(snapshot.totalIssueCount == 1263)
+}
+
+/// 총계 조회가 실패해도 백필은 진행된다 — 잃는 것은 확정 진행률뿐이고,
+/// 1,000여 건의 소급을 그것 때문에 포기할 이유가 없다(카탈로그 조회와 같은 결).
+@MainActor
+@Test func totalLookupFailureDoesNotStopTheBackfill() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedChangelogSource(pages: [
+        ([transitionIssue(key: "MPT-1", historyId: "1",
+                          at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], nil)
+    ])
+    source.approximateCountError = StubError()
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+
+    var reported: [(Int, Int?)] = []
+    let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z")) { p, t in
+        reported.append((p, t))
+    }
+
+    #expect(outcome.processedIssues == 1, "총계를 몰라도 훑는다")
+    #expect(reported.map(\.1) == [nil], "총계는 nil — 처리한 수를 총계로 삼으면 늘 100%다")
+}
+
+/// 총계 조회 중의 취소는 삼키지 않는다. 삼키면 사용자가 중단을 눌러도 이 단계만
+/// 조용히 넘어가고 백필이 끝까지 돈다 — 이 저장소에서 두 번 나온 결함이다.
+@MainActor
+@Test func cancellationDuringTotalLookupStopsTheRun() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedChangelogSource(pages: [
+        ([transitionIssue(key: "MPT-1", historyId: "1",
+                          at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], nil)
+    ])
+    source.approximateCountError = CancellationError()
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+
+    await #expect(throws: CancellationError.self) {
+        _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
+                                 progress: { _, _ in })
+    }
+    #expect(source.requestedTokens.isEmpty, "취소했으면 페이지를 요청하지 않는다")
+}
+
+/// 재개는 저장된 총계를 쓴다. 매번 다시 물으면 왕복이 늘고, 그 사이 티켓이 늘어나면
+/// 같은 run의 진행률 분모가 중간에 바뀐다.
+@MainActor
+@Test func resumeReusesTheStoredTotal() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-12T00:00:00Z"),
+                                        totalIssueCount: 1263)
+    try store.advanceBackfill(runId, nextPageToken: "tok-2", processedIssueCount: 100,
+                              discovered: [], partiallyRestored: [])
+
+    let source = ScriptedChangelogSource(pages: [([], nil)])
+    source.approximateCount = 9999   // 다시 물었다면 이 값이 실렸을 것이다
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+
+    var reported: [(Int, Int?)] = []
+    _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
+                             resume: true) { p, t in reported.append((p, t)) }
+
+    #expect(source.approximateCountRequests == 0, "저장된 총계가 있으면 다시 묻지 않는다")
+    #expect(reported.map(\.1) == [1263])
+}
+
+/// 저장된 총계가 0이면 다시 묻는다 — 옛 run이거나 그때 조회에 실패한 run이다.
+/// 그대로 두면 그 run은 끝날 때까지 진행률이 불확정 바로 남는다.
+@MainActor
+@Test func resumeAsksAgainWhenTheStoredTotalIsZero() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-12T00:00:00Z"),
+                                        totalIssueCount: 0)
+    try store.advanceBackfill(runId, nextPageToken: "tok-2", processedIssueCount: 100,
+                              discovered: [], partiallyRestored: [])
+
+    let source = ScriptedChangelogSource(pages: [([], nil)])
+    source.approximateCount = 1263
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+
+    var reported: [(Int, Int?)] = []
+    _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
+                             resume: true) { p, t in reported.append((p, t)) }
+
+    #expect(source.approximateCountRequests == 1)
+    #expect(reported.map(\.1) == [1263])
+}
+
+// MARK: - 정확도 경고와 실패 사유
+
+/// 카탈로그를 못 받은 사실은 실패로 끝난 실행에서도 run에 남는다. 메모리에만 두면
+/// 하필 degradation이 가장 잘 일어나는 조건(네트워크 불안정)에서 경고가 가장 잘 사라진다.
+@MainActor
+@Test func aFailedRunStillRecordsThatTheCatalogWasMissing() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedChangelogSource(pages: [])
+    source.catalogError = StubError()
+    source.pageErrors[nil] = StubError()
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+
+    await #expect(throws: StubError.self) {
+        _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
+                                 progress: { _, _ in })
+    }
+
+    let degraded = try store.lastBackfillWasDegraded()
+    #expect(degraded, "실패로 끝났어도 카탈로그를 못 받았다는 사실은 그대로다")
+}
+
+/// 카탈로그가 살아난 이어받기도 1회차의 표시를 걷지 않는다. 폴백은 그 walk에서 본
+/// 전이만 해석하므로, 1회차에 지나간 티켓은 이어받기로 다시 해석되지 않는다.
+@MainActor
+@Test func resumeDoesNotClearTheDegradedMarkOfItsRun() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedChangelogSource(pages: [([], "tok-2")])
+    source.catalogError = StubError()
+    source.pageErrors["tok-2"] = StubError()
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+    await #expect(throws: StubError.self) {
+        _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
+                                 progress: { _, _ in })
+    }
+
+    source.catalogError = nil
+    source.pageErrors = [:]
+    source.pages = [([], nil)]
+    _ = try await engine.run(jql: "q", now: iso("2026-08-13T01:00:00Z"),
+                             resume: true, progress: { _, _ in })
+
+    let degraded = try store.lastBackfillWasDegraded()
+    #expect(degraded, "누적 플래그이므로 그 run 동안은 유지된다")
+}
+
+/// 이어받기는 옛 실패 사유를 지운다. 같은 run 행을 재사용하므로, 지우지 않으면
+/// 이어받은 뒤 사용자가 중단했을 때 화면이 지난 실패 문구를 그대로 보여준다.
+@MainActor
+@Test func resumeClearsTheStoredFailureMessage() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedChangelogSource(pages: [([], "tok-2")])
+    source.pageErrors["tok-2"] = StubError()
+    let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
+    await #expect(throws: StubError.self) {
+        _ = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
+                                 progress: { _, _ in })
+    }
+    #expect(try store.lastBackfillFailure() == "StubError", "먼저 실패가 기록돼야 한다")
+
+    // 이어받기가 첫 페이지를 받는 데 성공한 시점에는 이미 지워져 있어야 한다.
+    source.pageErrors = [:]
+    source.pages = [([], "tok-3")]
+    let box = RunTaskBox()
+    box.task = Task {
+        try await engine.run(jql: "q", now: iso("2026-08-13T01:00:00Z"), resume: true) { _, _ in
+            box.task?.cancel()   // 페이지 하나를 처리한 뒤 사용자가 중단을 눌렀다
+        }
+    }
+    await #expect(throws: CancellationError.self) { try await box.task?.value }
+
+    #expect(try store.lastBackfillFailure() == nil,
+            "재시도가 시작된 시점에 옛 실패는 더 이상 최신 사실이 아니다")
 }

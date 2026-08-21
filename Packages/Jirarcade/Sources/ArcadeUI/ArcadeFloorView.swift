@@ -155,27 +155,35 @@ struct ArcadeFloorView: View {
     /// 백필은 몇 분씩 걸리고 그동안 사용자가 설정 화면에 붙들려 있을 이유가 없다.
     @ViewBuilder
     private var backfillProgressRow: some View {
-        if let progress = model.backfillProgress {
+        // 설정 화면과 같은 이유로 `isBackfilling`으로 판정한다 — 진행률은 첫 페이지를
+        // 다 처리한 뒤에야 오므로, 그때까지 아무것도 안 뜨면 시작한 티가 나지 않는다.
+        if model.isBackfilling {
             HStack(spacing: 8) {
-                // 총계를 모르면 불확정 바로 간다 — 설정 화면과 같은 이유다.
-                if let total = progress.total, total > 0 {
-                    ProgressView(value: Double(min(progress.processed, total)),
-                                 total: Double(total))
-                        .tint(theme.accent)
-                        .frame(width: 120)
-                    Text("과거 기록 \(progress.processed)/\(total)")
-                        .font(.caption)
-                        .foregroundStyle(theme.inkSecondary)
-                } else {
-                    ProgressView()
-                        .tint(theme.accent)
-                        .frame(width: 120)
-                    Text("과거 기록 \(progress.processed)건")
-                        .font(.caption)
-                        .foregroundStyle(theme.inkSecondary)
-                }
+                // nil을 넘기면 불확정 바가 된다 — 총계를 모르는 동안 쓰는 표시다.
+                ProgressView(value: backfillFraction)
+                    .tint(theme.accent)
+                    .frame(width: 120)
+                Text(backfillProgressText)
+                    .font(.caption)
+                    .foregroundStyle(theme.inkSecondary)
             }
         }
+    }
+
+    /// 총계를 알 때만 확정 비율이 된다. 모를 때 처리한 수를 총계로 삼으면 늘 100%로 보인다.
+    /// 근사 총계라 실제 처리 수가 총계를 넘을 수 있어 클램프한다.
+    private var backfillFraction: Double? {
+        guard let progress = model.backfillProgress,
+              let total = progress.total, total > 0 else { return nil }
+        return Double(min(progress.processed, total)) / Double(total)
+    }
+
+    private var backfillProgressText: String {
+        guard let progress = model.backfillProgress else { return "과거 기록 불러오는 중…" }
+        if let total = progress.total, total > 0 {
+            return "과거 기록 \(progress.processed)/\(total)"
+        }
+        return "과거 기록 \(progress.processed)건"
     }
 
     @ViewBuilder

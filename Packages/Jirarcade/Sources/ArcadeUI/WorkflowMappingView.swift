@@ -106,6 +106,18 @@ struct WorkflowMappingView: View {
                         .font(.caption2)
                         .foregroundStyle(theme.inkTertiary)
                 }
+                // 고르지 않은 상태도 실제로는 폴백이 추정한 단계로 채점되고 있다. 그 사실을
+                // 보여주지 않으면 사용자는 무엇을 고쳐야 하는지 알 수 없다 — 실물에서
+                // 보류 성격의 상태가 done으로 추정돼 마감 보너스까지 받고 있었다.
+                //
+                // 이 값을 초기 선택으로 채우지는 않는다. 그러면 확인만 눌러도 추정값 전부가
+                // 사용자 매핑으로 승격돼 이후 폴백 갱신이 영영 이기지 못한다.
+                if let guess = model.currentFallbacks.stage(for: entry.name),
+                   selection[entry.name] == nil {
+                    Text("지금은 '\(label(for: guess))'로 추정해 채점 중입니다")
+                        .font(.caption2)
+                        .foregroundStyle(theme.inkTertiary)
+                }
             }
             Spacer()
             Picker("", selection: binding(for: entry.name)) {

@@ -462,7 +462,7 @@ private func assertDoesNotLeak(
 
     await model.syncNow()
 
-    #expect(model.summary != nil)
+    #expect(model.lifetimeSummary != nil)
     #expect(model.lastSync != nil)
     #expect(model.observationDays == 1, "첫 성공 동기화가 관측 1일차를 만든다")
 }
@@ -488,11 +488,11 @@ private func assertDoesNotLeak(
     })
     await model.start()
     await model.syncNow()
-    let afterFirst = model.summary
+    let afterFirst = model.lifetimeSummary
 
     await model.syncNow()
 
-    #expect(model.summary == afterFirst, "실패해도 마지막 상태가 남는다")
+    #expect(model.lifetimeSummary == afterFirst, "실패해도 마지막 상태가 남는다")
     #expect(model.schedulerState.consecutiveFailures == 1)
 }
 
@@ -687,7 +687,7 @@ private func assertDoesNotLeak(
     await model.syncNow()
     await model.syncNow()
 
-    let summary = try #require(model.summary)
+    let summary = try #require(model.lifetimeSummary)
     // 위생 데일리 보너스는 이벤트와 무관하게 붙으므로 빼고 본다.
     #expect(summary.totalXP - summary.hygieneBonusXP == 0)
 }
@@ -714,17 +714,15 @@ private func assertDoesNotLeak(
     await model.syncNow()
     await model.syncNow()
 
-    let summary = try #require(model.summary)
+    let summary = try #require(model.lifetimeSummary)
     #expect(summary.totalXP - summary.hygieneBonusXP > 0)
 }
 
-/// 동기화 경로(`summary`)와 집계 경로(`lifetimeSummary`)는 같은 이벤트 로그에 대해 같은
-/// 값을 내야 한다. 한쪽에만 실행자 필터가 걸리는 회귀를 여기서 잡는다.
-///
-/// `lifetimeSummary`는 동기화 직후가 아니라 인증 직후에 갱신되므로(refreshDerivedState),
-/// 동기화 뒤 앱을 다시 시작한 상황 — 두 값이 실제로 나란히 뜨는 상황 — 을 재현한다.
+/// 동기화가 끝나면 통산 요약이 **그 자리에서** 갱신된다. 예전에는 동기화 경로가 자기
+/// 요약을 따로 담고 집계값은 다음 인증까지 옛 값에 머물러, 한 화면에 서로 다른 레벨이
+/// 나란히 떴다. 갱신을 빠뜨리면 여기서 값이 재시작 후의 값과 어긋난다.
 @MainActor
-@Test func syncSummaryAndLifetimeSummaryAgree() async throws {
+@Test func syncRefreshesTheLifetimeSummaryImmediately() async throws {
     let creds = InMemoryCredentialStore(
         seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
     )
@@ -747,9 +745,10 @@ private func assertDoesNotLeak(
     await model.start()
     await model.syncNow()
     await model.syncNow()
-    let synced = try #require(model.summary)
+    let synced = try #require(model.lifetimeSummary)
 
-    // 재시작: 같은 스토어를 다시 읽어 집계 경로가 lifetimeSummary를 채운다.
+    // 재시작: 같은 스토어를 다시 읽어 집계 경로가 처음부터 다시 계산한다.
+    // 동기화 직후의 값이 이것과 다르면 화면이 옛 숫자를 보여주고 있었다는 뜻이다.
     await model.start()
 
     #expect(model.lifetimeSummary == synced)

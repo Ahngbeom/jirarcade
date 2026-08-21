@@ -122,6 +122,20 @@ public final class BackfillRun {
     /// changelog 보충 조회에 실패해 일부만 복원한 티켓.
     public var partiallyRestoredKeys: [String]
     public var failureMessage: String?
+    /// 이 run이 상태 카탈로그를 못 받은 채로 돈 적이 있다 — 매핑에 없는 과거 상태가
+    /// 전부 0점 처리됐다는 뜻이다.
+    ///
+    /// **한 번 true면 그 run 동안 유지한다.** 폴백은 그 walk에서 실제로 본 전이만
+    /// 해석하므로, 1회차에 카탈로그 없이 지나간 티켓은 카탈로그가 살아난 이어받기로도
+    /// 다시 해석되지 않는다. 2회차만 보고 경고를 걷으면 사용자는 정확도가 회복됐다고 믿는다.
+    ///
+    /// 메모리가 아니라 여기 두는 이유: 카탈로그 조회가 실패하는 상황이면 네트워크가 불안정해
+    /// 페이지 조회도 실패할 확률이 높다. 성공 경로에서만 대입하면 degradation이 가장 잘
+    /// 일어나는 조건에서 경고가 가장 잘 사라진다.
+    ///
+    /// **기본값은 프로퍼티 선언에 붙어야 한다.** `IssueEventRecord.origin`과 같은 이유로,
+    /// SwiftData는 기존 로우를 복원할 때 커스텀 `init`을 부르지 않는다.
+    public var catalogUnavailable: Bool = false
 
     public init(startedAt: Date, jql: String, totalIssueCount: Int) {
         self.startedAt = startedAt

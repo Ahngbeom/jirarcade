@@ -139,3 +139,31 @@ private let auth = fixtureAuth()
         _ = try await client.searchIssuesWithChangelog(jql: "q", maxResults: 100, pageToken: nil)
     }
 }
+
+/// 진행률 총계는 별도 엔드포인트에 물어야 한다 — `POST /search/jql`은 응답에 total을
+/// 주지 않는다. 본문은 JQL 하나뿐이고, 응답의 `count`를 그대로 읽는다.
+@Test func approximateCountPostsTheJqlAndReadsCount() async throws {
+    let stub = StubHTTPClient(status: 200, body: #"{"count":1263}"#)
+    let client = JiraClient(auth: auth, http: stub)
+
+    let count = try await client.approximateIssueCount(jql: "assignee = currentUser()")
+
+    #expect(count == 1263)
+    let request = try #require(stub.sentRequests.first)
+    #expect(request.httpMethod == "POST")
+    #expect(request.url?.absoluteString.hasSuffix("/search/approximate-count") == true)
+    let payload = try JSONSerialization.jsonObject(
+        with: #require(request.httpBody)) as? [String: Any]
+    #expect(payload?["jql"] as? String == "assignee = currentUser()")
+}
+
+/// 응답 모양이 예상과 다르면 던진다. 조용히 0을 돌려주면 진행률이 "0/0"으로 굳어
+/// 사용자는 백필이 멈춘 것으로 읽는다.
+@Test func approximateCountRejectsAnUnexpectedShape() async throws {
+    let stub = StubHTTPClient(status: 200, body: #"{"total":1263}"#)
+    let client = JiraClient(auth: auth, http: stub)
+
+    await #expect(throws: (any Error).self) {
+        _ = try await client.approximateIssueCount(jql: "q")
+    }
+}

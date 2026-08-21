@@ -71,6 +71,23 @@ public struct JiraClient: Sendable {
         }
     }
 
+    /// JQL에 걸리는 티켓 수의 **근사값**. 백필 진행률 표시에만 쓴다.
+    ///
+    /// 새 검색 API(`/search/jql`)는 응답에 total을 주지 않으므로 따로 물어야 한다.
+    /// "approximate"인 이유는 서버가 인덱스 통계로 답하기 때문이다 — 진행률이 100%를
+    /// 넘거나 못 미칠 수 있으므로 표시할 때 클램프한다.
+    public func approximateIssueCount(jql: String) async throws -> Int {
+        let body = try JSONSerialization.data(withJSONObject: ["jql": jql])
+        let data = try await perform(method: "POST", path: "/search/approximate-count",
+                                     body: body, resource: "approximate-count")
+        struct Envelope: Decodable { let count: Int }
+        do {
+            return try JSONDecoder().decode(Envelope.self, from: data).count
+        } catch {
+            throw JiraError.decoding(context: "approximateIssueCount: \(error)")
+        }
+    }
+
     /// 사이트의 모든 상태와 그 statusCategory. 백필 시작 시 한 번 받아 캐시한다.
     public func statusCatalog() async throws -> [JiraStatusCatalogEntry] {
         let data = try await perform(method: "GET", path: "/status",

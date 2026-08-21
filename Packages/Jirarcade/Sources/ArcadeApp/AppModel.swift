@@ -6,7 +6,6 @@ import JiraKit
 @Observable @MainActor
 public final class AppModel {
     public private(set) var phase: Phase = .launching
-    public private(set) var summary: PlayerSummary?
     public private(set) var lastSync: SyncRunSummary?
     public private(set) var observationDays: Int = 0
     public private(set) var unmappedStatuses: [String] = []
@@ -27,7 +26,15 @@ public final class AppModel {
         public let total: Int?
     }
     public private(set) var backfillProgress: BackfillProgress?
-    /// 전체 이력 기준 요약. 프로필에 표시한다.
+    /// 백필 실행 태스크가 살아 있는가. **"실행 중"의 판정은 이 값이고 `backfillProgress`가
+    /// 아니다** — 진행률은 첫 페이지를 다 처리한 뒤에야 채워지는데, 그 전에 총계 조회 1회 +
+    /// 카탈로그 조회 1회 + 첫 페이지 조회 + 티켓별 보충 조회가 일어나고 실측에서 이 구간이
+    /// 수십 초였다. 그동안 화면이 "과거 기록 불러오기"를 활성 상태로 두면 사용자에게는
+    /// 버튼이 먹지 않은 것처럼 보인다.
+    public private(set) var isBackfilling: Bool = false
+    /// 전체 이력 기준 요약. 통산 XP를 계산하는 자리는 여기 하나뿐이다 —
+    /// 동기화 경로와 집계 경로가 각자 계산하면 갱신 시점이 달라, 백필 직후부터 다음
+    /// 동기화까지 한 화면에 "LV.1"과 "통산 LV.50"이 나란히 뜬다.
     public private(set) var lifetimeSummary: PlayerSummary?
     /// 최근 `RuleSet.seasonDays`일 기준 요약. HUD의 XP 바가 이 값을 쓴다.
     public private(set) var seasonSummary: PlayerSummary?
@@ -42,6 +49,10 @@ public final class AppModel {
     public private(set) var lastBackfillFailure: String?
     /// 마지막 백필이 상태 카탈로그를 못 받아 폴백 ②가 비활성인 채로 돌았다.
     /// 매핑에 없는 과거 상태가 전부 0점 처리됐다는 뜻이라 사용자에게 알려야 한다.
+    ///
+    /// 스토어가 원본이다(`BackfillRun.catalogUnavailable`). 메모리에만 두고 성공 경로에서만
+    /// 대입하면, 카탈로그를 못 받은 채 **실패로 끝난 실행**·앱 재시작·이어받기 성공에서
+    /// 경고가 사라진다 — 하필 degradation이 가장 잘 일어나는 조건들이다.
     public private(set) var backfillWasDegraded: Bool = false
     /// 백필이 과거 이력에서 발견한, 현재 매핑에 없는 상태명.
     /// 매핑 마법사가 이 목록을 후보에 더해 보여준다 — 폴백이 추정한 단계를 사용자가
@@ -161,7 +172,6 @@ public final class AppModel {
         syncGeneration += 1
         try? credentials.clear()
         client = nil
-        summary = nil
         // 집계값도 함께 버린다 — 이 계정의 이벤트에서 나온 숫자이므로, 남겨두면
         // 다음 로그인이 끝나기 전까지 남의 XP·레벨이 화면에 떠 있다.
         lifetimeSummary = nil
@@ -198,7 +208,24 @@ public final class AppModel {
             workflowSaveWarning = "워크플로 매핑을 저장하지 못했습니다. 앱을 다시 시작하면 다시 설정해야 할 수 있습니다."
         }
         refreshUnmapped(against: map)
+        // 매핑은 채점의 **입력**이다. 다시 계산하지 않으면 사용자가 잘못된 폴백을 고쳐도
+        // XP·레벨이 그대로여서 아무 일도 일어나지 않은 것처럼 보인다. 동기화 완료를
+        // 기다리지 않고 저장된 이벤트로 바로 도는 이유가 그것이다 — 즉시 반영돼야 한다.
+        await refreshSummaries()
         phase = .ready
+    }
+
+    /// 백필이 statusCategory로 추정해 저장한 폴백. 마법사가 행마다 "지금은 이 단계로
+    /// 채점 중"을 보여줄 근거다.
+    ///
+    /// **초기 선택으로 채우면 안 된다.** 그러면 사용자가 확인만 눌러도 추정값 전부가
+    /// 사용자 매핑으로 승격되고, 그 뒤로는 폴백 갱신이 영영 이기지 못한다
+    /// (`effectiveWorkflow()`에서 사용자 매핑이 항상 위에 얹히기 때문이다).
+    ///
+    /// 읽기 실패를 빈 맵으로 접는 것은 `currentMapping`과 같은 이유다 — 추정값이므로
+    /// 못 읽었다고 화면을 막을 일이 아니고, 표시가 빠질 뿐이다.
+    public var currentFallbacks: WorkflowMap {
+        (try? workflow.loadFallbacks()) ?? WorkflowMap(statusToStage: [:])
     }
 
     /// 저장된 워크플로 매핑. 마법사를 다시 열 때 초기값으로 쓴다 —
@@ -302,12 +329,14 @@ public final class AppModel {
         // 결과를 새 계정의 스토어에 쓰지 않는다(I4).
         let generation = syncGeneration
         do {
-            let outcome = try await engine.sync(
+            // 반환된 요약은 쓰지 않는다. 통산 XP를 만드는 자리는 `refreshSummaries()`
+            // 하나뿐이어야 한다 — 여기서도 따로 담아 두면 갱신 시점이 갈려, 백필 직후부터
+            // 다음 동기화까지 캐비닛과 HUD가 서로 다른 레벨을 나란히 보여준다.
+            _ = try await engine.sync(
                 jql: "assignee = currentUser() AND statusCategory != Done",
                 now: clock(),
                 isStillCurrent: { [weak self] in self?.syncGeneration == generation }
             )
-            summary = outcome.summary
             if phase == .expired { phase = .ready }   // 재인증 없이 회복된 경우
         } catch JiraError.unauthorized {
             phase = .expired
@@ -326,6 +355,9 @@ public final class AppModel {
         lastSync = try? store.loadSyncRuns().last
         observationDays = (try? store.observationDayCount(now: clock(), calendar: calendar)) ?? 0
         refreshUnmapped()
+        // 방금 들어온 이벤트를 곧바로 집계에 반영한다. 여기서 갱신하지 않으면 화면의
+        // 레벨은 다음 인증이나 백필 종료까지 옛 값에 머문다.
+        await refreshSummaries()
     }
 
     private func refreshUnmapped(against map: WorkflowMap) {
@@ -365,8 +397,11 @@ public final class AppModel {
         guard backfillTask == nil else { return }
         let task = Task { await runBackfill(resume: resume) }
         backfillTask = task
+        // 첫 await 이전에 세운다 — 버튼을 누른 순간 화면이 반응해야 한다.
+        isBackfilling = true
         await task.value
         backfillTask = nil
+        isBackfilling = false
     }
 
     private func runBackfill(resume: Bool) async {
@@ -390,9 +425,9 @@ public final class AppModel {
                 self?.backfillProgress = BackfillProgress(processed: processed, total: total)
             }
             persistFallbacks(outcome.resolvedFallbacks)
-            // 성공 경로에서만 갱신한다 — 실패로 끝난 실행에는 카탈로그를 받았는지에 대한
-            // 결론 자체가 없다. 그 값으로 덮으면 직전 성공이 남긴 경고가 사라진다.
-            backfillWasDegraded = outcome.catalogUnavailable
+            // 정확도 경고는 여기서 대입하지 않는다 — 엔진이 run 행에 적어 두었고
+            // `refreshDerivedState()`가 스토어에서 읽는다. 성공 경로에서만 대입하던 예전
+            // 방식은 실패로 끝난 실행의 사실을 통째로 잃었다.
         } catch {
             // 실패·중단해도 여기까지 넣은 이벤트는 유효하고 진행 지점이 저장돼 있다.
             // run을 미완료로 남겨 "이어서 불러오기"가 뜨게 하는 것이 의도된 동작이다.
@@ -431,6 +466,9 @@ public final class AppModel {
         // 실패 사유는 스토어가 원본이다 — 앱을 다시 켜도 남아야 "이어서 불러오기"가
         // 왜 떠 있는지 설명할 수 있다. 읽지 못하면 nil, 즉 "알리지 않음"으로 둔다.
         lastBackfillFailure = try? store.lastBackfillFailure()
+        // 정확도 경고도 스토어가 원본이다. 읽지 못하면 "알리지 않음"(false)으로 둔다 —
+        // 읽기 실패를 경고로 바꾸면 멀쩡한 백필에 정확도 문제가 있다고 말하게 된다.
+        backfillWasDegraded = (try? store.lastBackfillWasDegraded()) ?? false
         // 발견 목록도 스토어가 원본이다. `BackfillOutcome`에서 받으면 안 되는 이유가 둘 있다:
         // 재개한 실행의 outcome에는 **이번 실행분만** 담기지만 스토어는 run 전체를 누적하고,
         // 실패로 끝난 실행에는 outcome 자체가 없다(중단 지점까지의 발견은 스토어에 남아 있다).

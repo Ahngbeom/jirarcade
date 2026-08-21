@@ -43,25 +43,11 @@ struct SettingsView: View {
                 .foregroundStyle(theme.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
-            if let progress = model.backfillProgress {
-                // 총계를 모를 수 있다 — 새 검색 API는 total을 주지 않는다.
-                // 그때는 불확정 바를 쓴다. 처리한 수를 총계로 삼으면 늘 100%로 보인다.
-                if let total = progress.total, total > 0 {
-                    ProgressView(value: Double(min(progress.processed, total)),
-                                 total: Double(total)) {
-                        Text("불러오는 중 \(progress.processed)/\(total)")
-                            .font(.caption)
-                            .foregroundStyle(theme.inkSecondary)
-                    }
-                    .tint(theme.accent)
-                } else {
-                    ProgressView {
-                        Text("불러오는 중 \(progress.processed)건")
-                            .font(.caption)
-                            .foregroundStyle(theme.inkSecondary)
-                    }
-                    .tint(theme.accent)
-                }
+            // "돌고 있는가"는 `isBackfilling`으로 판정한다. `backfillProgress != nil`로 보면
+            // 첫 페이지를 다 처리할 때까지(실측 수십 초) 아래의 "과거 기록 불러오기" 버튼이
+            // 활성 상태로 남아, 사용자에게는 버튼이 먹지 않은 것처럼 보인다.
+            if model.isBackfilling {
+                backfillProgressView
                 Button("중단") { model.cancelBackfill() }
                 Text("중단해도 지금까지 불러온 기록은 남고, 나중에 이어서 받을 수 있습니다.")
                     .font(.caption2)
@@ -103,6 +89,39 @@ struct SettingsView: View {
                     .foregroundStyle(theme.inkTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// 진행률은 첫 페이지를 다 처리한 뒤에야 온다. 그 전에도 "지금 돌고 있다"는 사실은
+    /// 보여줘야 하므로 세 갈래로 나뉜다: 총계를 아는 확정 바, 처리한 수만 아는 불확정 바,
+    /// 아직 아무것도 모르는 시작 직후. 총계를 모를 때 처리한 수를 총계로 삼으면
+    /// 진행률이 늘 100%로 보인다.
+    @ViewBuilder
+    private var backfillProgressView: some View {
+        if let progress = model.backfillProgress {
+            if let total = progress.total, total > 0 {
+                ProgressView(value: Double(min(progress.processed, total)),
+                             total: Double(total)) {
+                    Text("불러오는 중 \(progress.processed)/\(total)")
+                        .font(.caption)
+                        .foregroundStyle(theme.inkSecondary)
+                }
+                .tint(theme.accent)
+            } else {
+                ProgressView {
+                    Text("불러오는 중 \(progress.processed)건")
+                        .font(.caption)
+                        .foregroundStyle(theme.inkSecondary)
+                }
+                .tint(theme.accent)
+            }
+        } else {
+            ProgressView {
+                Text("불러오는 중…")
+                    .font(.caption)
+                    .foregroundStyle(theme.inkSecondary)
+            }
+            .tint(theme.accent)
         }
     }
 
