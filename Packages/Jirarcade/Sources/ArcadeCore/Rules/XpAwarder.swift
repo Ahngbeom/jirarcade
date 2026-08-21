@@ -6,10 +6,12 @@ public struct XpAwarder: Sendable {
     private let workflow: WorkflowMap
     private let calendar: Calendar
     private let classifier: StagnationClassifier
+    private let myAccountId: String?
 
-    public init(rules: RuleSet, workflow: WorkflowMap, calendar: Calendar) {
+    public init(rules: RuleSet, workflow: WorkflowMap, myAccountId: String? = nil, calendar: Calendar) {
         self.rules = rules
         self.workflow = workflow
+        self.myAccountId = myAccountId
         self.calendar = calendar
         self.classifier = StagnationClassifier(rules: rules)
     }
@@ -22,6 +24,17 @@ public struct XpAwarder: Sendable {
         statusEnteredAt: Date?,
         now: Date
     ) -> Int {
+        // 실행자 필터. 남이 옮긴 전이는 0점이다(스펙 §4.2).
+        //
+        // myAccountId가 nil이면 필터를 건너뛴다 — "내가 누군지 모른다"를 "전부 남이 했다"로
+        // 해석하면 로그인 전 재집계에서 과거 점수가 통째로 사라진다. 모를 때는 관대한 쪽이 맞다.
+        if rules.awardsOnlyOwnTransitions,
+           let myAccountId,
+           let actor = event.actorAccountId,
+           actor != myAccountId {
+            return 0
+        }
+
         switch event.kind {
         case .appeared, .vanished, .dueDateChanged:
             return 0

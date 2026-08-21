@@ -28,6 +28,11 @@ public final class SyncScheduler {
     private var isSyncing = false
     private var loopTask: Task<Void, Never>?
 
+    /// 주기 동기화 루프가 살아 있는가. 백필처럼 동기화를 잠시 멈추는 쪽이,
+    /// 끝난 뒤 **원래 돌고 있었을 때만** 되살리려면 이 값을 먼저 봐야 한다 —
+    /// 무조건 `start()`하면 사용자가 꺼둔 동기화가 백필 때문에 켜진다.
+    public var isRunning: Bool { loopTask != nil }
+
     public init(
         settings: AppSettings = .default,
         clock: @escaping () -> Date,

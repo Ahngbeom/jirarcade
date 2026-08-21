@@ -61,3 +61,86 @@ private func withTempDirectory<T>(_ body: (URL) throws -> T) rethrows -> T {
         #expect(try store.load() == map)
     }
 }
+
+/// 폴백은 사용자 매핑과 따로 저장된다 — 마법사가 "내가 정한 것"과
+/// "앱이 추정한 것"을 구분해 보여줘야 한다.
+@Test func fallbacksRoundTripSeparatelyFromUserMapping() throws {
+    let store = InMemoryWorkflowStore()
+    try store.save(WorkflowMap(statusToStage: ["Done": .done]))
+    try store.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+    let user = try store.load()
+    let fallbacks = try store.loadFallbacks()
+    #expect(user?.statusToStage == ["Done": .done])
+    #expect(fallbacks?.statusToStage == ["Merged to Staging": .active])
+}
+
+@Test func missingFallbackFileLoadsAsNil() throws {
+    let loaded = try InMemoryWorkflowStore().loadFallbacks()
+    #expect(loaded == nil)
+}
+
+/// 파일 저장소도 별도 파일을 쓴다. 같은 파일에 쓰면 한쪽이 다른 쪽을 덮는다.
+@Test func fileStoreKeepsFallbacksInASeparateFile() throws {
+    try withTempDirectory { dir in
+        let store = FileWorkflowStore(directory: dir)
+        try store.save(WorkflowMap(statusToStage: ["Done": .done]))
+        try store.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+        let user = try store.load()
+        let fallbacks = try store.loadFallbacks()
+        #expect(user?.statusToStage == ["Done": .done])
+        #expect(fallbacks?.statusToStage == ["Merged to Staging": .active])
+    }
+}
+
+/// 계정 전환에서 두 파일을 **둘 다** 지운다. 폴백만 지우면 이전 조직의 사용자 매핑이
+/// 남아 마법사가 뜨지 않고, 사용자 매핑만 지우면 추정 폴백이 계속 채점에 병합된다.
+@Test func clearRemovesBothTheUserMappingAndTheFallbacks() throws {
+    try withTempDirectory { dir in
+        let store = FileWorkflowStore(directory: dir)
+        try store.save(WorkflowMap(statusToStage: ["Done": .done]))
+        try store.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+        try store.clear()
+
+        let user = try store.load()
+        let fallbacks = try store.loadFallbacks()
+        #expect(user == nil)
+        #expect(fallbacks == nil)
+    }
+}
+
+/// 매핑을 한 번도 저장하지 않은 계정에서도 전환이 실패로 보이면 안 된다 —
+/// 없는 파일을 지우는 것은 오류가 아니다.
+@Test func clearOnAnEmptyDirectoryDoesNotThrow() throws {
+    try withTempDirectory { dir in
+        try FileWorkflowStore(directory: dir).clear()
+    }
+}
+
+/// 제외 목록이 생기기 전에 저장된 `workflow.json`을 그대로 읽는다.
+///
+/// 이게 깨지면 기존 사용자는 앱을 켤 때마다 매핑을 통째로 잃고 마법사부터 다시 한다 —
+/// 자동 합성 `Codable`이 누락 키를 에러로 만들기 때문이다. 실제 파일을 손으로 써서
+/// 확인한다(`WorkflowMap`을 인코딩해 만들면 새 키가 들어가 아무것도 검증하지 못한다).
+@Test func mappingFileWrittenBeforeExclusionsExistedStillLoads() throws {
+    try withTempDirectory { dir in
+        let legacy = #"{"statusToStage":{"To Do":"backlog","Done":"done"}}"#
+        try Data(legacy.utf8).write(to: dir.appendingPathComponent("workflow.json"))
+
+        let loaded = try FileWorkflowStore(directory: dir).load()
+        let map = try #require(loaded)
+        #expect(map.statusToStage == ["To Do": .backlog, "Done": .done])
+        #expect(map.excludedStatuses.isEmpty)
+    }
+}
+
+@Test func exclusionsRoundTripThroughTheFile() throws {
+    try withTempDirectory { dir in
+        let store = FileWorkflowStore(directory: dir)
+        let map = WorkflowMap(statusToStage: ["Done": .done], excludedStatuses: ["On Hold"])
+        try store.save(map)
+        #expect(try store.load() == map)
+    }
+}

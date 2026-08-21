@@ -16,12 +16,20 @@ public enum ArcadeStoreError: Error, Equatable {
     /// `beginSyncRun`이 돌려준 식별자로 레코드를 되찾지 못했다.
     /// 정상 흐름에서는 발생하지 않지만, 조용히 넘기면 동기화 이력이 영구히 미완료로 남는다.
     case syncRunNotFound
+    /// `beginBackfill`이 돌려준 식별자로 레코드를 되찾지 못했다.
+    /// 조용히 넘기면 진행 상황이 저장되지 않은 채 호출자는 성공으로 안다.
+    case backfillRunNotFound
 }
 
 /// SwiftData 모델과 순수 값 타입 사이의 유일한 경계.
 /// 규칙 엔진은 이 타입 너머의 @Model을 절대 보지 않는다.
+///
+/// `final`이 아닌 이유: 백필 엔진이 이벤트를 티켓마다가 아니라 페이지마다 넣는지를
+/// 테스트가 호출 횟수로 확인한다(`@testable` 서브클래스). 이 규모가 2차식이 되면
+/// 1,200건 백필 동안 UI가 100초 넘게 멈춘다. `open`이 아니므로 모듈 밖에서는
+/// 여전히 상속할 수 없다.
 @MainActor
-public final class ArcadeStore {
+public class ArcadeStore {
     private let container: ModelContainer
     private var context: ModelContext { container.mainContext }
 
@@ -32,12 +40,16 @@ public final class ArcadeStore {
     public static func makeInMemoryContainer() throws -> ModelContainer {
         try ModelContainer(
             for: IssueSnapshot.self, IssueEventRecord.self, SyncRunRecord.self,
+            BackfillRun.self,
             configurations: ModelConfiguration(isStoredInMemoryOnly: true)
         )
     }
 
     public static func makePersistentContainer() throws -> ModelContainer {
-        try ModelContainer(for: IssueSnapshot.self, IssueEventRecord.self, SyncRunRecord.self)
+        try ModelContainer(
+            for: IssueSnapshot.self, IssueEventRecord.self, SyncRunRecord.self,
+            BackfillRun.self
+        )
     }
 
     // MARK: - 미러
@@ -83,13 +95,18 @@ public final class ArcadeStore {
         try context.save()
     }
 
-    /// 미러·이벤트 로그·동기화 이력을 전부 버린다.
+    /// 미러·이벤트 로그·동기화 이력·백필 진행을 전부 버린다.
     /// 다른 계정으로 로그인할 때만 쓴다 — append-only 원칙의 유일한 예외이며,
     /// 남의 데이터와 섞이는 것보다 버리는 편이 안전하기 때문이다.
+    ///
+    /// `BackfillRun`이 남으면 새 계정에서 `resumableBackfill()`이 옛 계정의 스냅샷을 돌려준다.
+    /// jql과 nextPageToken은 옛 계정의 조회 범위·페이지 커서라, 그대로 이어받으면
+    /// 남의 커서로 이 계정의 백필을 진행한다.
     public func reset() throws {
         for row in try context.fetch(FetchDescriptor<IssueSnapshot>()) { context.delete(row) }
         for row in try context.fetch(FetchDescriptor<IssueEventRecord>()) { context.delete(row) }
         for row in try context.fetch(FetchDescriptor<SyncRunRecord>()) { context.delete(row) }
+        for row in try context.fetch(FetchDescriptor<BackfillRun>()) { context.delete(row) }
         try context.save()
     }
 
@@ -108,6 +125,91 @@ public final class ArcadeStore {
                 priorUpdatedAt: record.priorUpdatedAt,
                 dueDateAtObservation: record.dueDateAtObservation
             )
+        }
+    }
+
+    /// 테스트와 진단용. 값 타입으로 변환하기 전의 레코드를 그대로 준다.
+    /// 프로덕션 코드는 `loadEvents()`를 쓴다.
+    public func rawEventRecords() throws -> [IssueEventRecord] {
+        try context.fetch(FetchDescriptor<IssueEventRecord>(
+            sortBy: [SortDescriptor(\.observedAt, order: .forward)]
+        ))
+    }
+
+    /// 백필 이벤트를 append하면서, 같은 티켓의 라이브 관측 전이를 대체한다.
+    /// 이미 같은 `historyId`로 기록된 것은 건너뛰고, 새로 넣은 개수를 돌려준다.
+    ///
+    /// `events`와 `historyIds`는 같은 길이여야 하며 인덱스로 짝지어진다.
+    /// 중복 판정을 시각·상태명이 아니라 Jira가 준 id로 하는 이유: 같은 초에 두 전이가
+    /// 일어날 수 있고, 왕복 전이(A→B, B→A)는 되돌아왔을 때 값이 겹친다.
+    ///
+    /// **대체가 필요한 이유:** historyId 검사는 백필끼리만 막는다. 라이브 동기화가 넣은
+    /// 이벤트는 `sourceHistoryId`가 nil이라 이 검사에 걸리지 않으므로, 같은 실제 전이가
+    /// 두 행으로 남고 둘 다 채점된다. `AbuseGuard`의 중복 창도 못 막는다 — 전이와 관측
+    /// 사이가 24시간을 넘거나(밤·주말), 동기화 간격 사이에 두 칸을 옮겨 라이브가 한 건으로
+    /// 뭉치면 중복 시그니처(`issueKey|from|to`)가 아예 겹치지 않는다.
+    ///
+    /// changelog는 그 티켓의 완전한 이력이므로 라이브 diff보다 정확하다 — 실제 전이 시각과
+    /// 행위자를 담고, 뭉친 두 칸 이동도 두 건으로 남긴다. 그래서 라이브 쪽을 지운다.
+    ///
+    /// - Parameter fullyRestoredKeys: changelog를 온전히 받은 티켓. 부분 복원된 티켓은
+    ///   대체하지 않는다 — 불완전한 이력으로 관측 기록을 지우면 있었던 전이가 사라진다.
+    ///
+    /// **남은 틈:** 이 티켓의 changelog를 받은 뒤 여기까지 오는 사이(페이지 하나 분량의
+    /// 보충 조회가 그 사이에 있다)에 라이브 동기화가 **새** 전이를 기록하면, 그 전이는
+    /// changelog에 없으면서 여기서 지워진다. 백필 중에도 동기화 스케줄러는 계속 돌기 때문에
+    /// 일어날 수 있다. 다음 백필이 다시 넣어 주므로 영구 손실은 아니다.
+    public func appendBackfillEvents(
+        _ events: [DomainEvent], historyIds: [String], fullyRestoredKeys: Set<String>
+    ) throws -> Int {
+        precondition(events.count == historyIds.count,
+                     "events와 historyIds는 인덱스로 짝지어진다")
+        // 온전히 받은 티켓이 전이를 하나도 만들지 않았어도 대체는 해야 한다 —
+        // "changelog에 상태 변경이 없다"도 그 티켓에 대한 완전한 사실이다.
+        guard !events.isEmpty || !fullyRestoredKeys.isEmpty else { return 0 }
+
+        try replaceObservedTransitions(forFullyRestored: fullyRestoredKeys)
+
+        let existing = try context.fetch(FetchDescriptor<IssueEventRecord>(
+            predicate: #Predicate { $0.sourceHistoryId != nil }
+        ))
+        var seen = Set(existing.compactMap(\.sourceHistoryId))
+
+        var inserted = 0
+        for (event, historyId) in zip(events, historyIds) {
+            guard seen.insert(historyId).inserted else { continue }
+            context.insert(IssueEventRecord(
+                issueKey: event.issueKey, kindRaw: event.kind.rawValue,
+                fromStatus: event.fromStatus, toStatus: event.toStatus,
+                observedAt: event.observedAt, actorAccountId: event.actorAccountId,
+                priorUpdatedAt: event.priorUpdatedAt,
+                dueDateAtObservation: event.dueDateAtObservation,
+                sourceHistoryId: historyId, origin: EventOrigin.backfill
+            ))
+            inserted += 1
+        }
+        try context.save()
+        return inserted
+    }
+
+    /// changelog를 온전히 받은 티켓의 라이브 관측 **상태 전이**를 지운다.
+    ///
+    /// `.statusChanged`만 지우는 이유: `.appeared`/`.vanished`/`.touched`는 관측 자체의
+    /// 기록이라 changelog에 대응물이 없다. 함께 지우면 대체가 아니라 소실이 된다.
+    ///
+    /// 이미 지워졌으면 아무것도 하지 않으므로 백필을 두 번 돌려도 결과가 같다.
+    private func replaceObservedTransitions(forFullyRestored keys: Set<String>) throws {
+        guard !keys.isEmpty else { return }
+
+        // `#Predicate` 안에서 Set 멤버십을 물을 수 없어 origin/kind로만 좁히고 키는
+        // 밖에서 거른다. 조회 범위는 라이브 관측 전이뿐이라 백필 이벤트 수와 무관하다.
+        let observed = EventOrigin.observed
+        let transition = EventKind.statusChanged.rawValue
+        let candidates = try context.fetch(FetchDescriptor<IssueEventRecord>(
+            predicate: #Predicate { $0.origin == observed && $0.kindRaw == transition }
+        ))
+        for row in candidates where keys.contains(row.issueKey) {
+            context.delete(row)
         }
     }
 
@@ -170,6 +272,193 @@ public final class ArcadeStore {
         let today = calendar.startOfDay(for: now)
         let elapsed = calendar.dateComponents([.day], from: start, to: today).day ?? 0
         return max(1, elapsed + 1)
+    }
+
+    // MARK: - 백필 이력
+
+    /// 재개에 필요한 정보만 담은 값 타입. `@Model` 인스턴스를 밖으로 내보내지 않는다.
+    public struct BackfillSnapshot: Sendable {
+        public let id: PersistentIdentifier
+        public let jql: String
+        public let nextPageToken: String?
+        public let processedIssueCount: Int
+        public let totalIssueCount: Int
+        public let discovered: [String]
+        public let partiallyRestored: [String]
+    }
+
+    /// 식별자로 run을 되찾는다. 없으면 nil.
+    ///
+    /// `context.model(for:)`를 쓰지 않는다 — 다른 스토어에서 온 식별자를 주면 nil을
+    /// 돌려주는 대신 클래스가 맞는 껍데기를 만들어 주고, 프로퍼티에 손대는 순간
+    /// "backing data could no longer be found"로 크래시한다. 존재 여부를 물어야 하는
+    /// 자리라서 fetch로 확인한다.
+    ///
+    /// `#Predicate`로 좁히지 못하는 것은 `PersistentIdentifier` 비교가 술어에서 안 되기 때문이다.
+    /// 완료된 run은 이력으로 남으므로 행 수는 누적 백필 시도 횟수만큼 늘지만, 그 규모에서는
+    /// 페이지마다 전량 조회해도 여전히 싸다.
+    private func backfillRun(for id: PersistentIdentifier) throws -> BackfillRun? {
+        try context.fetch(FetchDescriptor<BackfillRun>())
+            .first { $0.persistentModelID == id }
+    }
+
+    public func beginBackfill(
+        jql: String, at start: Date, totalIssueCount: Int
+    ) throws -> PersistentIdentifier {
+        // 새로 시작한다는 건 이전 미완료 run을 이어받지 않겠다는 뜻이다. 그대로 두면
+        // resumableBackfill()이 계속 그걸 집어 "이어서 하시겠습니까"가 영원히 뜬다.
+        // 버려진 진행 상태는 보존 가치가 없으므로 지운다 — 완료된 run은 이력으로 남는다.
+        for abandoned in try context.fetch(
+            FetchDescriptor<BackfillRun>(predicate: #Predicate { $0.finishedAt == nil })
+        ) {
+            context.delete(abandoned)
+        }
+
+        let run = BackfillRun(startedAt: start, jql: jql, totalIssueCount: totalIssueCount)
+        context.insert(run)
+        try context.save()
+        return run.persistentModelID
+    }
+
+    public func advanceBackfill(
+        _ id: PersistentIdentifier, nextPageToken: String?, processedIssueCount: Int,
+        discovered: [String], partiallyRestored: [String]
+    ) throws {
+        // 조용히 return하면 진행 상황이 저장되지 않은 채 호출자는 성공으로 안다.
+        // 재개할 때 nextPageToken이 없어 1,000여 건을 처음부터 다시 훑게 된다.
+        // finishSyncRun이 syncRunNotFound를 던지는 것과 같은 이유다.
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.nextPageToken = nextPageToken
+        run.processedIssueCount = processedIssueCount
+        // 정렬해서 저장한다. Set을 그대로 Array로 만들면 순서가 비결정적이라
+        // 매핑 마법사의 후보 목록이 열 때마다 뒤바뀐다.
+        run.discoveredUnmappedStatuses =
+            Set(run.discoveredUnmappedStatuses).union(discovered).sorted()
+        run.partiallyRestoredKeys =
+            Set(run.partiallyRestoredKeys).union(partiallyRestored).sorted()
+        try context.save()
+    }
+
+    public func finishBackfill(
+        _ id: PersistentIdentifier, at end: Date, failure: String?
+    ) throws {
+        // 조용히 return하면 이 run이 finishedAt == nil로 영원히 남아
+        // resumableBackfill()이 매번 "이어서 하시겠습니까"를 띄운다.
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.finishedAt = end
+        run.failureMessage = failure
+        try context.save()
+    }
+
+    /// 실패 사유만 적고 run은 미완료로 남긴다.
+    ///
+    /// `finishBackfill(..., failure:)`을 쓰지 않는 이유: `finishedAt`을 채우면 그 run이
+    /// `resumableBackfill()`에서 빠져 여기까지 받은 1,000여 건의 진행 지점을 버리게 된다.
+    /// 실패는 알리되 재개 가능성은 지킨다.
+    public func recordBackfillFailure(_ id: PersistentIdentifier, message: String) throws {
+        // 조용히 return하면 실패가 흔적 없이 사라지고 설정 화면은 아무 말도 하지 않는다.
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.failureMessage = message
+        try context.save()
+    }
+
+    /// 이 run이 상태 카탈로그 없이 돌았다고 표시한다. **끄는 경로는 없다** —
+    /// 누적 플래그이므로 한 번 서면 그 run 동안 유지된다(BackfillRun.catalogUnavailable 참고).
+    public func markBackfillCatalogUnavailable(_ id: PersistentIdentifier) throws {
+        // 조용히 return하면 정확도 경고가 흔적 없이 사라지고, 사용자는 XP가 왜 적은지 모른다.
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.catalogUnavailable = true
+        try context.save()
+    }
+
+    /// 재개하면서 다시 물어본 총계를 적는다. 0으로 시작한 run(옛 run이거나 그때 조회에
+    /// 실패한 run)이 재개할 때마다 같은 것을 다시 묻지 않게 한다.
+    public func recordBackfillTotal(_ id: PersistentIdentifier, totalIssueCount: Int) throws {
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.totalIssueCount = totalIssueCount
+        try context.save()
+    }
+
+    /// 재시도를 시작할 때 옛 실패 사유를 지운다.
+    ///
+    /// 이어받기는 **같은 run 행을 재사용**하므로 지우지 않으면, 사용자가 이어받은 뒤 스스로
+    /// 중단해도(취소는 사유를 적지 않는다) 화면은 그 전 실패의 문구를 계속 보여준다.
+    /// 재시도가 시작된 시점에 옛 실패는 더 이상 최신 사실이 아니다.
+    public func clearBackfillFailure(_ id: PersistentIdentifier) throws {
+        guard let run = try backfillRun(for: id) else {
+            throw ArcadeStoreError.backfillRunNotFound
+        }
+        run.failureMessage = nil
+        try context.save()
+    }
+
+    /// 아직 끝나지 않은 백필. 있으면 "이어서 불러오기"를 제안한다.
+    public func resumableBackfill() throws -> BackfillSnapshot? {
+        var descriptor = FetchDescriptor<BackfillRun>(
+            predicate: #Predicate { $0.finishedAt == nil },
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        guard let run = try context.fetch(descriptor).first else { return nil }
+        return BackfillSnapshot(
+            id: run.persistentModelID, jql: run.jql, nextPageToken: run.nextPageToken,
+            processedIssueCount: run.processedIssueCount,
+            totalIssueCount: run.totalIssueCount,
+            discovered: run.discoveredUnmappedStatuses,
+            partiallyRestored: run.partiallyRestoredKeys
+        )
+    }
+
+    /// 가장 최근에 시작한 백필의 실패 사유. 성공했거나 아직 실패하지 않았으면 nil이다.
+    ///
+    /// 완료 여부를 가리지 않는 이유: 실패한 run은 재개할 수 있도록 일부러 미완료로 남기므로
+    /// (`recordBackfillFailure`), 끝난 run만 보면 엔진이 적은 사유가 영원히 보이지 않는다.
+    /// 정렬 키가 `startedAt`인 것도 같은 이유다 — `finishedAt`은 실패한 run에서 nil이다.
+    public func lastBackfillFailure() throws -> String? {
+        var descriptor = FetchDescriptor<BackfillRun>(
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first?.failureMessage
+    }
+
+    /// 가장 최근 백필이 상태 카탈로그 없이 돌았는지. 설정 화면의 정확도 경고가 이 값을 쓴다.
+    ///
+    /// 완료 여부를 가리지 않고 `startedAt` 내림차순으로 마지막 run을 보는 이유는
+    /// `lastBackfillFailure()`와 같다 — 실패한 run은 재개할 수 있도록 미완료로 남는다.
+    public func lastBackfillWasDegraded() throws -> Bool {
+        var descriptor = FetchDescriptor<BackfillRun>(
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first?.catalogUnavailable ?? false
+    }
+
+    /// 백필이 발견한 미매핑 상태명을 **모든 run의 합집합**으로 돌려준다.
+    ///
+    /// 마지막 run 하나만 보면 안 된다: 정상 완료된 백필이 12건을 발견한 뒤 사용자가 다시
+    /// 눌렀는데 첫 페이지에서 실패하면, 발견이 0건인 그 run이 마지막이 되어 마법사에서
+    /// 과거 상태 행이 통째로 사라진다 — 고쳐야 할 추정은 그대로 채점되는 채로.
+    /// 이전 run의 행은 남아 있으므로 데이터가 아니라 조회가 문제였다.
+    ///
+    /// `resumableBackfill()`을 대신 쓰면 백필이 정상 종료되는 순간 후보가 사라진다 —
+    /// 정작 매핑이 필요한 시점은 백필이 끝난 뒤다.
+    ///
+    /// 계정이 바뀌면 `reset()`이 `BackfillRun`을 전부 지우므로 이전 조직의 상태명은
+    /// 새 계정의 후보에 섞이지 않는다.
+    public func discoveredStatuses() throws -> [String] {
+        let runs = try context.fetch(FetchDescriptor<BackfillRun>())
+        return Set(runs.flatMap(\.discoveredUnmappedStatuses)).sorted()
     }
 }
 

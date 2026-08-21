@@ -462,7 +462,7 @@ private func assertDoesNotLeak(
 
     await model.syncNow()
 
-    #expect(model.summary != nil)
+    #expect(model.lifetimeSummary != nil)
     #expect(model.lastSync != nil)
     #expect(model.observationDays == 1, "첫 성공 동기화가 관측 1일차를 만든다")
 }
@@ -488,11 +488,11 @@ private func assertDoesNotLeak(
     })
     await model.start()
     await model.syncNow()
-    let afterFirst = model.summary
+    let afterFirst = model.lifetimeSummary
 
     await model.syncNow()
 
-    #expect(model.summary == afterFirst, "실패해도 마지막 상태가 남는다")
+    #expect(model.lifetimeSummary == afterFirst, "실패해도 마지막 상태가 남는다")
     #expect(model.schedulerState.consecutiveFailures == 1)
 }
 
@@ -622,4 +622,284 @@ private func assertDoesNotLeak(
 
     #expect(model.workflowSaveWarning != nil,
             "매핑을 읽지 못해 다시 묻는다는 사실을 화면이 알려야 한다")
+}
+
+/// Atlassian의 **스코프 있는 API 토큰**은 사이트 직접 경로를 거부한다 — 엣지가 인증 단계
+/// 이전에 401 + HTML 차단 페이지를 돌려준다. 토큰이 정상이고 이메일이 맞아도 마찬가지다.
+/// 사용자에게 "어떤 종류의 토큰을 발급했나"는 답할 수 없는 질문이므로, 앱이 cloudId를
+/// 조회해 `api.atlassian.com` 경로로 재시도한다.
+@MainActor
+@Test func scopedTokenFallsBackToTheCloudIdPath() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    // 같은 인스턴스를 공유해야 큐가 이어진다 — clientFactory는 폴백에서 두 번 호출된다.
+    let scripted = ScriptedHTTP([
+        .init(status: 401, body: Data()),                               // 사이트 직접 → 엣지 거부
+        .init(status: 200, body: Data(#"{"cloudId":"cid-1"}"#.utf8)),   // tenant_info
+        .init(status: 200, body: Data(myselfBody.utf8)),                // cloudId 경로 → 성공
+    ])
+    let model = try makeModel(credentials: creds, workflow: workflow, http: { scripted })
+
+    await model.start()
+
+    #expect(model.phase == .ready,
+            "스코프 토큰이 cloudId 경로로 폴백해 로그인에 성공해야 한다")
+}
+
+/// 폴백이 자격증명 오류를 감춰서는 안 된다. 두 경로 모두 401이면 진짜 인증 실패다.
+@MainActor
+@Test func bothPathsFailingStillReportsBadCredentials() async throws {
+    let scripted = ScriptedHTTP([
+        .init(status: 401, body: Data()),                               // 사이트 직접
+        .init(status: 200, body: Data(#"{"cloudId":"cid-1"}"#.utf8)),   // tenant_info
+        .init(status: 401, body: Data()),                               // cloudId 경로도 거부
+    ])
+    let model = try makeModel(http: { scripted })
+
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "wrong")
+
+    #expect(model.phase == .signedOut(message: "이메일 또는 토큰이 올바르지 않습니다."))
+}
+
+/// 남이 옮긴 전이는 동기화 경로에서도 0점이어야 한다(스펙 §4.2).
+///
+/// `AppModel`이 `SyncEngine`에 `myAccountId`를 넘기지 않던 시절, 이 경로만 실행자 필터를
+/// 건너뛰어 `summary`가 `lifetimeSummary`보다 큰 XP를 보여줬다.
+@MainActor
+@Test func syncPathAppliesTheExecutorFilter() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(
+        seeded: WorkflowMap(statusToStage: ["To Do": .backlog, "In Progress": .active])
+    )
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(issuesBody(status: "To Do", assignee: "acc-other").utf8)),
+            .init(status: 200,
+                  body: Data(issuesBody(status: "In Progress", assignee: "acc-other").utf8)),
+        ])
+    })
+    await model.start()
+    await model.syncNow()
+    await model.syncNow()
+
+    let summary = try #require(model.lifetimeSummary)
+    // 위생 데일리 보너스는 이벤트와 무관하게 붙으므로 빼고 본다.
+    #expect(summary.totalXP - summary.hygieneBonusXP == 0)
+}
+
+/// 같은 전이라도 내 계정이 담당이면 준다 — 위 테스트가 "전이 자체가 0점"이라는
+/// 다른 이유로 통과하고 있지 않다는 것을 고정한다.
+@MainActor
+@Test func syncPathStillRewardsMyOwnTransitions() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(
+        seeded: WorkflowMap(statusToStage: ["To Do": .backlog, "In Progress": .active])
+    )
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(issuesBody(status: "To Do", assignee: "acc-me").utf8)),
+            .init(status: 200,
+                  body: Data(issuesBody(status: "In Progress", assignee: "acc-me").utf8)),
+        ])
+    })
+    await model.start()
+    await model.syncNow()
+    await model.syncNow()
+
+    let summary = try #require(model.lifetimeSummary)
+    #expect(summary.totalXP - summary.hygieneBonusXP > 0)
+}
+
+/// 동기화가 끝나면 통산 요약이 **그 자리에서** 갱신된다. 예전에는 동기화 경로가 자기
+/// 요약을 따로 담고 집계값은 다음 인증까지 옛 값에 머물러, 한 화면에 서로 다른 레벨이
+/// 나란히 떴다. 갱신을 빠뜨리면 여기서 값이 재시작 후의 값과 어긋난다.
+@MainActor
+@Test func syncRefreshesTheLifetimeSummaryImmediately() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(
+        seeded: WorkflowMap(statusToStage: ["To Do": .backlog, "In Progress": .active])
+    )
+    let store = try ArcadeStore(container: ArcadeStore.makeInMemoryContainer())
+    // 내 티켓과 남의 티켓을 섞는다 — 전부 0점이면 이 비교가 아무것도 보장하지 못한다.
+    let before = issuesBody(pairs: [("DEMO-1", "To Do", "acc-me"),
+                                    ("DEMO-2", "To Do", "acc-other")])
+    let after = issuesBody(pairs: [("DEMO-1", "In Progress", "acc-me"),
+                                   ("DEMO-2", "In Progress", "acc-other")])
+    let model = try makeModel(store: store, credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(before.utf8)),
+            .init(status: 200, body: Data(after.utf8)),
+        ])
+    })
+    await model.start()
+    await model.syncNow()
+    await model.syncNow()
+    let synced = try #require(model.lifetimeSummary)
+
+    // 재시작: 같은 스토어를 다시 읽어 집계 경로가 처음부터 다시 계산한다.
+    // 동기화 직후의 값이 이것과 다르면 화면이 옛 숫자를 보여주고 있었다는 뜻이다.
+    await model.start()
+
+    #expect(model.lifetimeSummary == synced)
+    #expect(synced.totalXP - synced.hygieneBonusXP > 0, "내 전이의 XP는 남아 있어야 한다")
+}
+
+/// 계정이 바뀌면 채점 **입력**도 버린다.
+///
+/// `store.reset()`이 미러·이벤트·백필 run을 버리고 `signOut()`이 발견 목록을 비우는데
+/// 워크플로 매핑만 남으면, 이전 조직에서 `statusCategory`로 추정한 (상태명 → 단계) 맵이
+/// `effectiveWorkflow()`에 계속 병합된다. `Done`·`In Progress` 같은 흔한 이름이 겹치면
+/// 새 계정의 전이가 남의 조직 추정으로 채점된다(리뷰 B2).
+///
+/// 사용자 매핑까지 버리는 이유: 남겨두면 `load() != nil`이라 다음 로그인에서 마법사가
+/// 뜨지 않아 새 조직 상태를 설정할 기회가 사라진다.
+@MainActor
+@Test func signingInAsADifferentAccountClearsTheWorkflowMapping() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "first@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["Done": .done]))
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["In Progress": .active]))
+    // myselfBody가 "acc-me"를 돌려주므로 다른 값으로 묶어 둬야 "계정이 바뀌었다"가 된다.
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-first")
+    let model = try makeModel(credentials: creds, workflow: workflow,
+                              accountBinding: accountBinding)
+
+    await model.signIn(site: "example.atlassian.net", email: "second@e.com", token: "t2")
+
+    let mapping = try workflow.load()
+    let fallbacks = try workflow.loadFallbacks()
+    #expect(mapping == nil, "남의 조직 상태 이름 체계를 새 계정에 물려주면 안 된다")
+    #expect(fallbacks == nil, "폴백은 이전 조직 워크플로에 대한 추정이다")
+}
+
+/// 비교가 통째로 사라져 "무조건 삭제"가 되는 뮤테이션은 위 테스트로 잡히지 않는다 —
+/// 그 테스트는 어차피 매핑이 비어 있길 기대하기 때문이다. 같은 계정으로 다시 로그인하면
+/// 매핑이 살아남아야 한다(그 경로에서는 `store.reset()`도 불리지 않는다).
+@MainActor
+@Test func signingInAsTheSameAccountAgainKeepsTheWorkflowMapping() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "same@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["Done": .done]))
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["In Progress": .active]))
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-me")
+    let model = try makeModel(credentials: creds, workflow: workflow,
+                              accountBinding: accountBinding)
+
+    await model.signIn(site: "example.atlassian.net", email: "same@e.com", token: "t")
+
+    let mapping = try workflow.load()
+    let fallbacks = try workflow.loadFallbacks()
+    #expect(mapping?.statusToStage == ["Done": .done])
+    #expect(fallbacks?.statusToStage == ["In Progress": .active])
+}
+
+/// N2. Atlassian Cloud의 accountId는 **사이트가 아니라 Atlassian 계정**에 붙는다 —
+/// 회사 Jira에서 다른 조직의 Jira로 옮기면 같은 accountId가 돌아온다. accountId만
+/// 비교하면 그 이동이 전환으로 잡히지 않아, 이전 조직의 미러·이벤트·워크플로 매핑이
+/// 그대로 남고 새 조직의 전이가 남의 조직 기준으로 채점된다.
+@MainActor
+@Test func sameAccountOnADifferentSiteClearsTheMirrorAndMapping() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    // myselfBody가 돌려주는 accountId("acc-me")와 **같은** 값으로 묶어 둔다 — 사이트만
+    // 다르다. accountId만 보는 구현은 이 테스트를 통과하지 못한다.
+    let accountBinding = InMemoryAccountBindingStore(
+        seeded: AccountBinding(site: "example.atlassian.net", accountId: "acc-me").rawValue
+    )
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try store.applySync(
+        issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
+                               issueType: "Task", priority: nil, assigneeAccountId: nil,
+                               assigneeName: nil, dueDate: nil,
+                               jiraUpdatedAt: iso("2026-08-14T09:00:00Z"))],
+        events: [DomainEvent(issueKey: "DEMO-1", kind: .appeared, fromStatus: nil,
+                             toStatus: "To Do", observedAt: iso("2026-08-14T09:00:00Z"),
+                             actorAccountId: "acc-me")],
+        observedAt: iso("2026-08-14T09:00:00Z")
+    )
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    let model = AppModel(
+        store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        clientFactory: { auth in
+            JiraClient(auth: auth, http: ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
+            ]))
+        },
+        clock: { iso("2026-08-14T09:00:00Z") }, calendar: utc
+    )
+
+    // 두 번째 사이트를 atlassian.net 밖의 호스트로 둔 이유: ModuleBoundaryTests가
+    // 리포지토리 전체에서 예시 사이트 하나만 허용한다(실제 조직명 유출 방지).
+    await model.signIn(site: "jira.example.com", email: "u@e.com", token: "t")
+
+    #expect(try store.loadMirror().isEmpty, "다른 조직의 티켓이 남으면 안 된다")
+    #expect(try store.loadEvents().isEmpty, "이전 조직의 이벤트가 새 조직의 XP에 합산된다")
+    #expect(try workflow.load() == nil,
+            "이전 조직의 상태 매핑이 남으면 새 조직의 전이가 남의 기준으로 채점된다")
+    #expect(try accountBinding.load()
+            == AccountBinding(site: "jira.example.com", accountId: "acc-me").rawValue)
+}
+
+/// 업데이트 경로. 앱을 업데이트하기 전에 저장된 바인딩에는 accountId만 들어 있다.
+/// 그 값을 "사이트가 다르다"로 읽으면 같은 사이트·같은 계정을 쓰던 사용자가 업데이트
+/// 한 번에 이벤트 로그를 잃는다 — 이벤트 로그는 다시 동기화해도 복구되지 않는다.
+@MainActor
+@Test func legacyBindingFromAnOlderBuildDoesNotLookLikeAnAccountSwitch() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    // 옛 형식: 사이트 없이 accountId만.
+    let accountBinding = InMemoryAccountBindingStore(seeded: "acc-me")
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    try store.applySync(
+        issues: [ObservedIssue(key: "DEMO-1", summary: "s", statusName: "To Do",
+                               issueType: "Task", priority: nil, assigneeAccountId: nil,
+                               assigneeName: nil, dueDate: nil,
+                               jiraUpdatedAt: iso("2026-08-14T09:00:00Z"))],
+        events: [DomainEvent(issueKey: "DEMO-1", kind: .appeared, fromStatus: nil,
+                             toStatus: "To Do", observedAt: iso("2026-08-14T09:00:00Z"),
+                             actorAccountId: "acc-me")],
+        observedAt: iso("2026-08-14T09:00:00Z")
+    )
+
+    var utc = Calendar(identifier: .gregorian)
+    utc.timeZone = TimeZone(identifier: "UTC")!
+    let model = AppModel(
+        store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        clientFactory: { auth in
+            JiraClient(auth: auth, http: ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+            ]))
+        },
+        clock: { iso("2026-08-14T09:00:00Z") }, calendar: utc
+    )
+
+    await model.start()
+
+    #expect(model.phase == .ready)
+    #expect(try store.loadMirror().count == 1, "업데이트만으로 미러를 지우면 안 된다")
+    #expect(try store.loadEvents().count == 1, "업데이트만으로 이벤트 로그를 잃으면 안 된다")
+    #expect(try workflow.load() != nil, "업데이트만으로 매핑을 다시 묻게 하면 안 된다")
+    // 옛 값은 여기서 새 형식으로 승격된다 — 다음 로그인부터는 사이트까지 비교된다.
+    #expect(try accountBinding.load()
+            == AccountBinding(site: "example.atlassian.net", accountId: "acc-me").rawValue)
 }

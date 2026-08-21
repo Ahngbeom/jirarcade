@@ -4,6 +4,21 @@ import ArcadeCore
 public protocol WorkflowStore: Sendable {
     func load() throws -> WorkflowMap?
     func save(_ map: WorkflowMap) throws
+    /// 백필이 statusCategory로 추정한 매핑. 사용자 매핑과 **분리해서** 저장한다 —
+    /// 마법사가 "내가 정한 것"과 "앱이 추정한 것"을 구분해 보여줘야 하고,
+    /// 사용자가 지정하면 폴백은 덮이는 게 아니라 밑에 깔린 채 남아야 한다.
+    func loadFallbacks() throws -> WorkflowMap?
+    func saveFallbacks(_ map: WorkflowMap) throws
+    /// 사용자 매핑과 폴백을 **둘 다** 버린다. 계정이 바뀔 때만 쓴다.
+    ///
+    /// 폴백을 버리는 이유: 백필이 `statusCategory`로 추정한 (상태명 → 단계) 맵은 그 조직의
+    /// 워크플로에 대한 추정이다. 남겨두면 `Done`·`In Progress` 같은 흔한 이름이 겹칠 때
+    /// 새 계정의 전이가 남의 조직 추정으로 채점된다.
+    ///
+    /// 사용자 매핑도 함께 버리는 이유: 조직이 다르면 상태 이름 체계가 다르고, 남겨두면
+    /// `load() != nil`이라 다음 로그인에서 마법사가 뜨지 않아 새 조직 상태를 설정할 기회가
+    /// 사라진다. 같은 계정으로 다시 로그인하는 경로에서는 불리지 않으므로 영향이 없다.
+    func clear() throws
 }
 
 /// 앱 지원 디렉터리의 JSON 파일. 사용자가 직접 열어 고칠 수 있어야 하므로
@@ -11,6 +26,7 @@ public protocol WorkflowStore: Sendable {
 public struct FileWorkflowStore: WorkflowStore {
     private let directory: URL
     private var fileURL: URL { directory.appendingPathComponent("workflow.json") }
+    private var fallbackURL: URL { directory.appendingPathComponent("workflow-fallbacks.json") }
 
     public init(directory: URL) { self.directory = directory }
 
@@ -25,20 +41,49 @@ public struct FileWorkflowStore: WorkflowStore {
     }
 
     public func load() throws -> WorkflowMap? {
-        guard FileManager.default.fileExists(atPath: fileURL.path) else { return nil }
-        let data = try Data(contentsOf: fileURL)
-        return try JSONDecoder().decode(WorkflowMap.self, from: data)
+        try read(from: fileURL)
     }
 
     public func save(_ map: WorkflowMap) throws {
+        try write(map, to: fileURL)
+    }
+
+    public func loadFallbacks() throws -> WorkflowMap? {
+        try read(from: fallbackURL)
+    }
+
+    public func saveFallbacks(_ map: WorkflowMap) throws {
+        try write(map, to: fallbackURL)
+    }
+
+    public func clear() throws {
+        try remove(fileURL)
+        try remove(fallbackURL)
+    }
+
+    /// 없는 파일을 지우는 것은 실패가 아니다 — 매핑을 한 번도 저장하지 않은 계정에서
+    /// 계정 전환이 에러로 보이면 안 된다. 다른 실패(권한 등)는 그대로 던진다.
+    private func remove(_ url: URL) throws {
+        guard FileManager.default.fileExists(atPath: url.path) else { return }
+        try FileManager.default.removeItem(at: url)
+    }
+
+    private func read(from url: URL) throws -> WorkflowMap? {
+        guard FileManager.default.fileExists(atPath: url.path) else { return nil }
+        let data = try Data(contentsOf: url)
+        return try JSONDecoder().decode(WorkflowMap.self, from: data)
+    }
+
+    private func write(_ map: WorkflowMap, to url: URL) throws {
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let data = try JSONEncoder().encode(map)
-        try data.write(to: fileURL, options: .atomic)
+        try data.write(to: url, options: .atomic)
     }
 }
 
 public final class InMemoryWorkflowStore: WorkflowStore, @unchecked Sendable {
     private var stored: WorkflowMap?
+    private var storedFallbacks: WorkflowMap?
     private let lock = NSLock()
 
     /// 설정하면 `load()`가 저장된 값 대신 이 에러를 던진다.
@@ -58,5 +103,22 @@ public final class InMemoryWorkflowStore: WorkflowStore, @unchecked Sendable {
     public func save(_ map: WorkflowMap) throws {
         if let saveError { throw saveError }
         lock.withLock { stored = map }
+    }
+
+    /// `loadError`/`saveError` 훅은 사용자 매핑 경로에만 적용한다 — 폴백 저장 실패를
+    /// 따로 시험할 필요가 아직 없고, 공유하면 기존 테스트의 의미가 바뀐다.
+    public func loadFallbacks() throws -> WorkflowMap? {
+        lock.withLock { storedFallbacks }
+    }
+
+    public func saveFallbacks(_ map: WorkflowMap) throws {
+        lock.withLock { storedFallbacks = map }
+    }
+
+    public func clear() throws {
+        lock.withLock {
+            stored = nil
+            storedFallbacks = nil
+        }
     }
 }

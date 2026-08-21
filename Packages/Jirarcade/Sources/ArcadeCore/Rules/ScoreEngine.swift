@@ -23,11 +23,13 @@ public struct ScoreEngine: Sendable {
     private let streaks: StreakCalculator
     private let hygiene: HygieneCalculator
 
-    public init(rules: RuleSet, workflow: WorkflowMap, calendar: Calendar) {
+    public init(rules: RuleSet, workflow: WorkflowMap, calendar: Calendar,
+                myAccountId: String? = nil) {
         self.rules = rules
         self.workflow = workflow
         self.calendar = calendar
-        self.awarder = XpAwarder(rules: rules, workflow: workflow, calendar: calendar)
+        self.awarder = XpAwarder(rules: rules, workflow: workflow, myAccountId: myAccountId,
+                                 calendar: calendar)
         self.abuseGuard = AbuseGuard(rules: rules, calendar: calendar)
         self.curve = LevelCurve(rules: rules)
         self.streaks = StreakCalculator(rules: rules, calendar: calendar)
@@ -40,10 +42,21 @@ public struct ScoreEngine: Sendable {
     /// - Parameter now: **오늘**의 기준. 이벤트 채점은 각 이벤트의 `observedAt`으로 하지만,
     ///   위생 데일리 보너스(스펙 §5.3)는 미러의 현재 상태를 이 시각 기준으로 판정한다.
     ///   미러에는 과거 상태가 없으므로 위생 보너스는 오늘 하루분만 계산할 수 있다.
+    /// - Parameter since: 이 시각 이후의 이벤트만 집계한다. nil이면 전체(통산).
+    ///   시즌 XP 바가 이 파라미터로 계산된다(스펙 §6).
+    ///
+    ///   **시즌은 범위만 자르고 채점 규칙은 바꾸지 않는다.** 그래서 파이프라인 전체를
+    ///   통산 로그로 끝낸 **뒤에** 잘라낸다. 어느 단계든 잘라낸 뒤에 계산하면 같은 이벤트가
+    ///   통산과 시즌에서 다른 XP를 받는다 — 사용자는 HUD의 시즌 레벨과 프로필의 통산 레벨을
+    ///   나란히 보므로 어긋나면 즉시 드러난다.
+    ///   · statusEnteredAt: 잘라내면 시즌 첫 전이의 정체 기준선이 사라진다.
+    ///   · 연속 배수: 잘라내면 시즌 시작 직후 이벤트가 연속 1일부터 다시 센 배수를 받는다.
+    ///   · 무효화·일일 상한: 잘라내면 시즌 밖 짝을 못 봐서 왕복·중복이 그대로 지급된다.
     public func recompute(
         events: [DomainEvent],
         issues: [String: ObservedIssue],
-        now: Date
+        now: Date,
+        since: Date? = nil
     ) -> (scored: [ScoredEvent], summary: PlayerSummary) {
         let ordered = events.sorted { $0.observedAt < $1.observedAt }
 
@@ -83,7 +96,13 @@ public struct ScoreEngine: Sendable {
             boosted[index].xp = Int((Double(boosted[index].xp) * multiplier).rounded())
         }
 
-        let adjusted = abuseGuard.applyDailyCap(to: boosted)
+        let capped = abuseGuard.applyDailyCap(to: boosted)
+
+        // 마지막에 한 번만 자른다. 여기까지의 XP는 통산과 시즌에서 같은 값이다.
+        let adjusted = since.map { start in
+            capped.filter { $0.event.observedAt >= start }
+        } ?? capped
+
         let bonus = hygieneDailyBonus(issues: issues, scored: adjusted, now: now)
         let totalXP = adjusted.reduce(0) { $0 + $1.xp } + bonus
 
