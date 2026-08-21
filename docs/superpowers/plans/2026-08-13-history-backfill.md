@@ -4450,3 +4450,139 @@ git add Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift \
         Packages/Jirarcade/Tests/ArcadeAppTests/BackfillIntegrationTests.swift
 git commit -m "feat: 매핑 마법사 재진입과 백필 처음부터 다시 받기"
 ```
+
+
+---
+
+### Task 17: 백필 상태 표시의 정확성
+
+**Files:**
+- Modify: `Packages/Jirarcade/Sources/JiraKit/JiraClient.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Store/StoreModels.swift`, `ArcadeStore.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Backfill/BackfillEngine.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeUI/SettingsView.swift`, `ObservationCabinet.swift`
+- Test: 해당 모듈의 기존 테스트 파일들
+
+**왜 필요한가**
+
+Task 13 리뷰가 화면에 뜨는 값들이 사실과 어긋나는 네 경로를 프로브로 재현했다.
+사용자가 잘못된 정보를 보거나, 아무 일도 일어나지 않은 것처럼 보인다.
+
+- [ ] **Step 1: 정확도 경고를 저장소에 누적한다 (리뷰 C1)**
+
+`backfillWasDegraded`는 지금 메모리 전용 `Bool`이고 성공 경로에서만 대입된다. 그 결과
+**경고가 떠야 하는 세 상황에서 뜨지 않는다**(전부 프로브로 재현됨):
+
+| 경로 | 기대 | 실제 |
+|---|---|---|
+| 카탈로그를 못 받은 채 **실패로 끝난** 실행 | true | **false** |
+| 앱 재시작 | true | **false** |
+| 카탈로그가 살아난 **이어받기 성공** | true | **false** |
+
+첫 번째가 가장 나쁘다 — `catalogUnavailable` 대입이 `do` 블록 안이라 실패하면 실행되지
+않는데, **카탈로그 조회가 실패하는 상황이면 네트워크가 불안정해 페이지 조회도 실패할 확률이
+높다.** degradation이 가장 잘 일어나는 조건에서 경고가 가장 잘 사라진다.
+
+세 번째는 미묘하다: 폴백은 그 walk에서 **실제로 본 전이**만 해석하므로, 1회차에 카탈로그
+없이 지나간 티켓은 이어받기로도 해석되지 않는다. 그런데 플래그는 2회차만 보고 false가 된다.
+
+`BackfillRun`에 **누적 플래그**로 저장한다(한 번 true면 그 run 동안 유지). `refreshDerivedState()`가
+스토어에서 읽는다. 그러면 "성공 경로에서만"이라는 특례가 필요 없어진다 — 실패한 실행도
+자기가 본 사실만 기록하면 된다.
+
+`@Model`에 프로퍼티를 더할 때 **선언에 기본값**을 준다. SwiftData는 디스크의 기존 로우를
+복원할 때 커스텀 `init`을 부르지 않으므로 이니셜라이저 기본값만으로는 부족하다.
+
+- [ ] **Step 2: 이어받기가 옛 실패 사유를 지운다 (리뷰 I1)**
+
+이어받기는 **같은 run 행을 재사용**하면서 `failureMessage`를 지우지 않는다. 그래서:
+
+1. 백필이 네트워크 오류로 실패 → `failureMessage` 기록, run은 미완료
+2. 사용자가 "이어서 불러오기" → 같은 행 재사용
+3. 사용자가 "중단" → 취소는 사유를 적지 않는다(의도된 동작)
+4. 화면은 **1단계의 옛 메시지**를 보여준다
+
+사용자가 방금 스스로 중단했는데 앱이 "지난 불러오기가 중단되었습니다 (URLError)"라고 말한다.
+재시도가 시작된 시점에 옛 실패는 더 이상 최신 사실이 아니므로, 이어받기 시작 시 지운다.
+
+(첫 실행 중단은 `beginBackfill`이 새 행을 만들어 정상 동작한다 — 그래서 기존 테스트가
+이 경로를 놓쳤다. 테스트는 반드시 **실패 → 이어받기 → 중단** 순서를 밟아야 한다.)
+
+- [ ] **Step 3: 버튼을 누른 즉시 반응한다 (리뷰 I3)**
+
+`backfillProgress`는 `walk`가 **한 페이지를 다 처리한 뒤** 콜백에서 세팅된다. 그 전에
+카탈로그 조회 1회 + 첫 페이지 조회 + 티켓별 보충 조회가 일어나고, 실측에서 이 구간이
+수십 초였다. 그동안 설정 화면은 "과거 기록 불러오기" 버튼을 **활성 상태 그대로** 보여준다 —
+사용자에게는 버튼이 먹지 않은 것처럼 보인다.
+
+"실행 중인가"를 `backfillProgress != nil`이 아니라 **실행 태스크의 존재**로 판정한다.
+`AppModel`에 `isBackfilling` 같은 값을 노출하고 UI가 그것을 쓴다.
+
+- [ ] **Step 4: 통산 요약을 한 곳으로 통일한다 (리뷰 I4)**
+
+캐비닛이 쓰는 `summary`와 HUD가 쓰는 `lifetimeSummary`는 **정의가 같다** — 같은 `rules`·
+`effectiveWorkflow()`·`calendar`·`myAccountId`, 둘 다 `since` 없음, 입력도 전량. 다른 것은
+갱신 시점뿐이다. `summary`는 `performSync()`에서만, `lifetimeSummary`는 `refreshDerivedState()`
+에서만 갱신되므로, 백필이 끝난 직후부터 다음 동기화까지 사용자는 한 화면에서
+"LV.1 · 2,340 XP"(캐비닛)와 "통산 LV.50"(HUD)을 나란히 본다.
+
+`summary`를 없애고 `lifetimeSummary`로 통일한다. 통산 XP를 계산하는 자리가 두 곳일 이유가 없고,
+하나만 남기면 이 어긋남은 구조적으로 재발할 수 없다.
+
+> **주의**: "아직 동기화 전" 판정을 `summary == nil`로 하고 있다면 `lastSync == nil`로 옮겨야
+> 한다. `lifetimeSummary`는 첫 동기화 전에도 저장된 이벤트로 채워지므로(실물에서 앱을 껐다
+> 켜면 곧바로 LV.50이 떴다), 그대로 두면 "아직 동기화 전" 안내가 영영 안 뜬다.
+
+- [ ] **Step 5: 진행률 총계를 실제로 채운다 (리뷰 I2)**
+
+확정 진행률(`N/M`) 분기는 지금 **구조적으로 도달 불가능한 죽은 코드**다. `AppModel`이
+`engine.run`에 `totalIssueCount`를 넘기지 않고(기본값 nil), 엔진은 응답에서 total을 읽는
+코드가 없다. 두 화면의 확정 분기와 클램프는 실행될 수 없다.
+
+지우는 대신 **채운다.** 1,200건 규모에서 "얼마나 남았는지"는 실질적 가치가 있고, 파라미터와
+UI 분기가 이미 갖춰져 있다.
+
+`JiraClient`에 근사 개수 조회를 더한다:
+
+```swift
+    /// JQL에 걸리는 티켓 수의 **근사값**. 백필 진행률 표시에만 쓴다.
+    ///
+    /// 새 검색 API(`/search/jql`)는 응답에 total을 주지 않으므로 따로 물어야 한다.
+    /// "approximate"인 이유는 서버가 인덱스 통계로 답하기 때문이다 — 진행률이 100%를
+    /// 넘거나 못 미칠 수 있으므로 표시할 때 클램프한다.
+    public func approximateIssueCount(jql: String) async throws -> Int {
+        let body = try JSONSerialization.data(withJSONObject: ["jql": jql])
+        let data = try await perform(method: "POST", path: "/search/approximate-count",
+                                     body: body, resource: "approximate-count")
+        struct Envelope: Decodable { let count: Int }
+        do {
+            return try JSONDecoder().decode(Envelope.self, from: data).count
+        } catch {
+            throw JiraError.decoding(context: "approximateIssueCount: \(error)")
+        }
+    }
+```
+
+`ChangelogSource` 프로토콜에도 더해 엔진 테스트가 스텁으로 다룰 수 있게 한다.
+
+**총계 조회 실패는 백필을 막지 않는다.** 진행률 표시가 덜 친절해질 뿐이므로 nil로 두고 진행한다
+(카탈로그 조회 실패와 같은 결). 단 `CancellationError`는 다시 던진다.
+
+재개할 때는 저장된 run의 총계를 쓰되, 0이면(옛 run이거나 조회에 실패했던 경우) 다시 묻는다.
+
+- [ ] **Step 6: 테스트**
+
+각 Step마다 **구현을 틀리게 바꿔 해당 테스트가 죽는지** 확인한다. 특히:
+- 정확도 플래그를 저장소가 아닌 메모리에 되돌리면 재시작 테스트가 죽어야 한다
+- 이어받기의 `failureMessage` 초기화를 빼면 "실패 → 이어받기 → 중단" 테스트가 죽어야 한다
+- `summary` 통일을 되돌리면 "백필 직후 두 값이 같다" 테스트가 죽어야 한다
+
+Run: `cd Packages/Jirarcade && swift test`
+Expected: PASS, 경고 0
+
+- [ ] **Step 7: 커밋**
+
+```bash
+git commit -m "fix: 백필 상태 표시가 사실과 어긋나던 네 경로"
+```
