@@ -3200,33 +3200,60 @@ git commit -m "feat: 백필 엔진 (페이지네이션·보충 조회·부분 �
 
 ---
 
-### Task 12: AppModel에 백필 연결
+### Task 12: AppModel 배선 — 백필 실행·재개·시즌 집계
 
 **Files:**
 - Modify: `Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift`
+- Modify: `Packages/Jirarcade/Tests/ArcadeAppTests/TestSupport.swift`
 - Test: `Packages/Jirarcade/Tests/ArcadeAppTests/BackfillIntegrationTests.swift`
 
 **Interfaces:**
-- Consumes: `BackfillEngine`·`JiraChangelogSource` (Task 11), `ArcadeStore` 백필 API (Task 10), `ScoreEngine.recompute(since:)` (Task 3)
-- Produces: `AppModel.backfillProgress: BackfillProgress?` (`processed`, `total`), `AppModel.startBackfill() async`, `AppModel.resumeBackfillIfAvailable() async`, `AppModel.cancelBackfill()`, `AppModel.hasResumableBackfill: Bool`, `AppModel.seasonSummary: PlayerSummary?`, `AppModel.lifetimeSummary: PlayerSummary?`
+- Consumes: `BackfillEngine`·`ChangelogSource`·`JiraChangelogSource` (Task 11), `WorkflowStore.loadFallbacks`·`saveFallbacks`·`WorkflowMap.merging` (Task 10b), `ScoreEngine.recompute(since:)` (Task 3)
+- Produces: `AppModel.backfillProgress: BackfillProgress?` (`processed`, `total: Int?`), `startBackfill()`, `resumeBackfillIfAvailable()`, `cancelBackfill()`, `hasResumableBackfill`, `seasonSummary`, `lifetimeSummary`, `AppModel.myAccountId`
 
-- [ ] **Step 0: `makeModel`에 store 주입 파라미터 추가**
+**여기서 폴백이 채점에 연결된다**
 
-`Tests/ArcadeAppTests/TestSupport.swift`의 `makeModel`은 store를 내부에서 만들어 테스트가 미리 상태를 심을 수 없다. 백필 테스트는 "이미 이벤트가 있는 스토어"를 필요로 하므로 주입 가능하게 한다. **기본값을 주어 기존 호출부는 그대로 컴파일된다.**
+Task 10b가 배관(`merging` / `resolvedFallbacks` / `saveFallbacks`)을 깔았지만
+아직 아무도 부르지 않는다. 이 태스크가 두 지점을 잇는다:
 
-시그니처 첫 줄에 파라미터를 더한다:
+1. 백필이 끝나면 `outcome.resolvedFallbacks`를 기존 폴백과 **병합해** 저장한다.
+   덮어쓰면 이전 실행이 해석한 폴백이 사라진다.
+2. 채점기를 만들 때마다 `실효 맵 = 사용자 매핑.merging(저장된 폴백)`을 넘긴다.
+   **동기화 경로와 백필 경로 모두**에서 같은 맵을 써야 한다 — 같은 이벤트가
+   경로에 따라 다르게 채점되면 안 된다.
+
+- [ ] **Step 0: 테스트 헬퍼에 store·changelogSource 주입 추가**
+
+`Tests/ArcadeAppTests/TestSupport.swift`의 `makeModel`은 store를 내부에서 만들어
+테스트가 미리 상태를 심을 수 없고, 백필 소스를 바꿔 끼울 수도 없다. 둘 다
+주입 가능하게 한다. **기본값을 주어 기존 호출부는 그대로 컴파일된다.**
 
 ```swift
 func makeModel(
     store: ArcadeStore? = nil,
+    changelogSource: (any ChangelogSource)? = nil,
     credentials: InMemoryCredentialStore = InMemoryCredentialStore(),
-```
-
-본문의 `store:` 인자를 바꾼다:
-
-```swift
+    ...
+) throws -> AppModel {
+    ...
     return AppModel(
         store: try store ?? ArcadeStore(container: ArcadeStore.makeInMemoryContainer()),
+        ...
+        changelogSourceFactory: changelogSource.map { source in { _ in source } },
+```
+
+`AppModel`에도 대응 파라미터를 넣는다. `clientFactory`와 같은 패턴이다 —
+프로덕션은 기본값으로 실제 구현을 쓰고, 테스트만 갈아 끼운다:
+
+```swift
+    private let changelogSourceFactory: (JiraClient) -> any ChangelogSource
+
+    public init(
+        ...,
+        changelogSourceFactory: ((JiraClient) -> any ChangelogSource)? = nil
+    ) {
+        self.changelogSourceFactory =
+            changelogSourceFactory ?? { JiraChangelogSource(client: $0) }
 ```
 
 Run: `cd Packages/Jirarcade && swift test`
@@ -3243,13 +3270,234 @@ import ArcadeCore
 import JiraKit
 @testable import ArcadeApp
 
+/// 스크립트대로 응답하는 백필 소스. 어떤 토큰으로 요청받았는지 기록한다.
+@MainActor
+private final class StubChangelogSource: ChangelogSource {
+    var pages: [(issues: [JiraIssueWithChangelog], nextPageToken: String?)]
+    var catalog: [JiraStatusCatalogEntry]
+    private(set) var requestedTokens: [String?] = []
+    /// 이 토큰을 요청받으면 던진다. 중단·실패 시나리오에 쓴다.
+    var failOnToken: String??
+
+    init(pages: [(issues: [JiraIssueWithChangelog], nextPageToken: String?)],
+         catalog: [JiraStatusCatalogEntry] = []) {
+        self.pages = pages
+        self.catalog = catalog
+    }
+
+    func fetchPage(jql: String, pageToken: String?)
+        async throws -> (issues: [JiraIssueWithChangelog], nextPageToken: String?) {
+        requestedTokens.append(pageToken)
+        if let failOnToken, failOnToken == pageToken { throw StubError() }
+        guard !pages.isEmpty else { return ([], nil) }
+        return pages.removeFirst()
+    }
+
+    func fetchIssueChangelog(key: String, startAt: Int) async throws -> JiraChangelogPage {
+        JiraChangelogPage(startAt: 0, maxResults: 100, total: 0, histories: [])
+    }
+
+    func fetchStatusCatalog() async throws -> [JiraStatusCatalogEntry] { catalog }
+}
+
+private func backfillIssue(
+    key: String, historyId: String, at: Date, author: String,
+    fromId: String = "10009", from: String = "To Do",
+    toId: String = "10016", to: String = "In Progress"
+) -> JiraIssueWithChangelog {
+    JiraIssueWithChangelog(
+        key: key, createdAt: at.addingTimeInterval(-days(30)), dueDate: nil,
+        changelog: JiraChangelogPage(startAt: 0, maxResults: 10, total: 1, histories: [
+            JiraChangelogHistory(
+                id: historyId, createdAt: at, authorAccountId: author,
+                items: [JiraChangelogItem(field: "status", fromId: fromId, fromString: from,
+                                          toId: toId, toString: to)]
+            )
+        ])
+    )
+}
+
+/// 백필이 이벤트를 실제로 저장하고 진행률을 보고한 뒤 지운다.
+@MainActor
+@Test func backfillStoresEventsAndClearsProgress() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], nil)
+    ])
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
+        "To Do": .backlog, "In Progress": .active,
+    ]))
+    let model = try makeModel(store: store, changelogSource: source, workflow: workflow)
+    await model.start()
+
+    await model.startBackfill()
+
+    #expect(try store.loadEvents().count == 1, "백필이 이벤트를 넣어야 한다")
+    #expect(model.backfillProgress == nil, "끝나면 진행 바가 사라진다")
+    #expect(model.hasResumableBackfill == false, "정상 종료된 백필은 재개 대상이 아니다")
+}
+
+/// **이 배선의 존재 이유.** 매핑에 없는 상태가 폴백으로 해석돼 저장되고,
+/// 그 덕에 XP가 0이 아니게 된다.
+@MainActor
+@Test func fallbackMappingIsStoredAndReachesScoring() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    // "Merged to Staging"은 사용자 매핑에 없다. 카탈로그의 statusCategory로만 해석된다.
+    let source = StubChangelogSource(
+        pages: [([backfillIssue(key: "MPT-1", historyId: "1",
+                                at: iso("2026-08-01T00:00:00Z"), author: "acc-me",
+                                fromId: "10009", from: "To Do",
+                                toId: "10071", to: "Merged to Staging")], nil)],
+        catalog: [
+            JiraStatusCatalogEntry(id: "10009", name: "To Do", categoryKey: "new"),
+            JiraStatusCatalogEntry(id: "10071", name: "Merged to Staging",
+                                   categoryKey: "indeterminate"),
+        ]
+    )
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(store: store, changelogSource: source, workflow: workflow)
+    await model.start()
+
+    await model.startBackfill()
+
+    #expect(try workflow.loadFallbacks()?.statusToStage == ["Merged to Staging": .active],
+            "폴백 매핑이 저장돼야 다음 재집계에서도 쓸 수 있다")
+    let lifetime = try #require(model.lifetimeSummary)
+    #expect(lifetime.totalXP > 0,
+            "backlog -> active 전진이므로 폴백이 채점에 닿았다면 XP가 붙는다")
+}
+
+/// 저장된 폴백은 덮이지 않고 쌓인다. 덮어쓰면 이전 실행이 해석한 매핑이 사라진다.
+@MainActor
+@Test func newFallbacksMergeWithStoredOnes() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["QA Passed": .verify]))
+
+    let source = StubChangelogSource(
+        pages: [([backfillIssue(key: "MPT-1", historyId: "1",
+                                at: iso("2026-08-01T00:00:00Z"), author: "acc-me",
+                                toId: "10071", to: "Merged to Staging")], nil)],
+        catalog: [JiraStatusCatalogEntry(id: "10071", name: "Merged to Staging",
+                                         categoryKey: "indeterminate")]
+    )
+    let model = try makeModel(store: store, changelogSource: source, workflow: workflow)
+    await model.start()
+
+    await model.startBackfill()
+
+    let stored = try #require(try workflow.loadFallbacks()).statusToStage
+    #expect(stored["QA Passed"] == .verify, "이전 폴백이 살아 있어야 한다")
+    #expect(stored["Merged to Staging"] == .active)
+}
+
+/// 사용자 매핑이 폴백을 이긴다 — 마법사에서 지정한 값이 추정값에 덮이면 안 된다.
+@MainActor
+@Test func userMappingWinsOverStoredFallbackWhenScoring() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let event = DomainEvent(
+        issueKey: "MPT-1", kind: .statusChanged,
+        fromStatus: "In Progress", toStatus: "Merged to Staging",
+        observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
+        priorUpdatedAt: iso("2026-08-01T00:00:00Z")
+    )
+    _ = try store.appendBackfillEvents([event], historyIds: ["h-1"])
+
+    // 사용자는 review로 지정했는데 폴백은 active로 추정했다.
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
+        "In Progress": .active, "Merged to Staging": .review,
+    ]))
+    try workflow.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+    let model = try makeModel(store: store, workflow: workflow)
+    await model.start()
+
+    // 사용자 매핑(review, order 2)이 이기면 active(order 1)에서의 전진이라 XP가 붙는다.
+    // 폴백이 이기면 active -> active 수평 이동이라 0점이다.
+    let lifetime = try #require(model.lifetimeSummary)
+    #expect(lifetime.totalXP > 0, "사용자 매핑이 이겨야 전진으로 채점된다")
+}
+
+/// 중단해도 이미 넣은 이벤트는 남고, 재개 지점이 저장돼 "이어서"가 뜬다.
+/// 롤백하지 않는 것이 설계다 — 이벤트 로그는 append-only다(스펙 §7.2).
+@MainActor
+@Test func failureKeepsStoredEventsAndLeavesAResumePoint() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], "tok-2"),
+    ])
+    source.failOnToken = .some("tok-2")   // 두 번째 페이지에서 실패
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
+        "To Do": .backlog, "In Progress": .active,
+    ]))
+    let model = try makeModel(store: store, changelogSource: source, workflow: workflow)
+    await model.start()
+
+    await model.startBackfill()
+
+    #expect(try store.loadEvents().count == 1, "실패해도 첫 페이지 결과는 남는다")
+    #expect(model.hasResumableBackfill, "중단 지점이 남아 이어받을 수 있어야 한다")
+    let snapshot = try #require(try store.resumableBackfill())
+    #expect(snapshot.nextPageToken == "tok-2")
+}
+
+/// 재개는 저장된 토큰부터 요청한다. 처음부터 다시 훑으면 왕복 시간이 통째로 낭비된다.
+@MainActor
+@Test func resumeRequestsTheStoredToken() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "assignee = currentUser()",
+                                        at: iso("2026-08-13T00:00:00Z"), totalIssueCount: 200)
+    try store.advanceBackfill(runId, nextPageToken: "tok-9", processedIssueCount: 100,
+                              discovered: [], partiallyRestored: [])
+
+    let source = StubChangelogSource(pages: [([], nil)])
+    let model = try makeModel(store: store, changelogSource: source)
+    await model.start()
+
+    await model.resumeBackfillIfAvailable()
+
+    #expect(source.requestedTokens == ["tok-9"])
+}
+
+/// 재개할 것이 없으면 아무 일도 하지 않는다 — 요청조차 나가지 않아야 한다.
+@MainActor
+@Test func resumeWithNothingStoredDoesNothing() async throws {
+    let source = StubChangelogSource(pages: [([], nil)])
+    let model = try makeModel(changelogSource: source)
+    await model.start()
+
+    await model.resumeBackfillIfAvailable()
+
+    #expect(source.requestedTokens.isEmpty)
+}
+
+/// 백필이 돌고 있으면 두 번째 시작은 무시된다 — 같은 페이지를 두 곳에서 훑으면
+/// 진행률 카운터가 뒤엉킨다(이벤트 중복은 historyId가 막지만 카운터는 못 막는다).
+@MainActor
+@Test func startingTwiceRunsOnlyOnce() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], nil)
+    ])
+    let model = try makeModel(store: store, changelogSource: source)
+    await model.start()
+
+    async let first: Void = model.startBackfill()
+    async let second: Void = model.startBackfill()
+    _ = await (first, second)
+
+    #expect(source.requestedTokens.count == 1, "페이지 요청이 한 번만 나가야 한다")
+}
+
 /// 시즌은 통산의 부분집합이다. 시즌 밖 이벤트가 있으면 시즌 XP는 통산보다 **엄격히** 작아야
 /// 한다 — `<=`로 검사하면 둘 다 0일 때도 통과해 아무것도 검증하지 못한다(스펙 §6).
 @MainActor
 @Test func seasonSummaryIsStrictlySmallerWhenOldEventsExist() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let now = iso("2026-08-14T09:00:00Z")
-    // 시즌(30일) 밖 하나, 안 하나. 둘 다 내가 옮긴 전진 전이라 XP가 붙는다.
     let old = DomainEvent(
         issueKey: "MPT-1", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-01-05T00:00:00Z"), actorAccountId: "acc-me",
@@ -3262,13 +3510,10 @@ import JiraKit
     )
     _ = try store.appendBackfillEvents([old, recent], historyIds: ["h-old", "h-recent"])
 
-    let creds = InMemoryCredentialStore(
-        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
-    )
     let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
         "To Do": .backlog, "In Progress": .active,
     ]))
-    let model = try makeModel(store: store, credentials: creds, workflow: workflow, now: now)
+    let model = try makeModel(store: store, workflow: workflow, now: now)
 
     await model.start()
 
@@ -3277,51 +3522,6 @@ import JiraKit
     #expect(lifetime.totalXP > 0, "이벤트가 있으므로 통산 XP가 0이면 집계가 안 된 것이다")
     #expect(season.totalXP > 0, "시즌 안 이벤트가 있으므로 시즌 XP도 0이 아니다")
     #expect(season.totalXP < lifetime.totalXP, "시즌 밖 이벤트가 통산에만 잡혀야 한다")
-}
-
-/// 진행률이 백필 중에는 값이 있고 끝나면 nil로 돌아간다 — UI가 진행 바를 감출 근거다.
-@MainActor
-@Test func progressClearsWhenFinished() async throws {
-    let model = try makeModel()
-    await model.start()
-    await model.startBackfill()
-    #expect(model.backfillProgress == nil)
-}
-
-/// 중단된 백필이 있으면 재개할 수 있다.
-@MainActor
-@Test func resumePicksUpTheStoredToken() async throws {
-    let model = try makeModel()
-    await model.start()
-    await model.resumeBackfillIfAvailable()   // 중단된 것이 없으면 아무 일도 없어야 한다
-    #expect(model.backfillProgress == nil)
-}
-
-/// 중단해도 이미 넣은 이벤트는 남는다. 롤백하지 않는 것이 설계다 — 이벤트 로그는
-/// append-only이고 중단 지점의 토큰이 저장돼 나중에 이어받는다(스펙 §7.2).
-@MainActor
-@Test func cancellingKeepsWhatWasAlreadyStored() async throws {
-    let model = try makeModel()
-    await model.start()
-
-    let task = Task { await model.startBackfill() }
-    model.cancelBackfill()
-    await task.value
-
-    #expect(model.backfillProgress == nil, "중단 후 진행 바가 사라져야 한다")
-}
-
-/// 백필이 이미 돌고 있으면 두 번 시작하지 않는다 — 진행률 카운터가 뒤엉킨다.
-@MainActor
-@Test func startingTwiceIsIgnored() async throws {
-    let model = try makeModel()
-    await model.start()
-
-    async let first: Void = model.startBackfill()
-    async let second: Void = model.startBackfill()
-    _ = await (first, second)
-
-    #expect(model.backfillProgress == nil)
 }
 ```
 
@@ -3335,10 +3535,12 @@ Expected: FAIL — `value of type 'AppModel' has no member 'startBackfill'`
 프로퍼티 선언부에:
 
 ```swift
-    /// 백필 진행률. In Progress일 때만 값이 있다.
+    /// 백필 진행률. 실행 중일 때만 값이 있다.
     public struct BackfillProgress: Sendable, Equatable {
         public let processed: Int
-        public let total: Int
+        /// 총계를 모르면 nil이다. 새 검색 API는 total을 주지 않으므로
+        /// 처리한 수를 총계로 삼으면 진행률이 늘 100%로 보인다.
+        public let total: Int?
     }
     public private(set) var backfillProgress: BackfillProgress?
     /// 전체 이력 기준 요약. 프로필에 표시한다.
@@ -3347,12 +3549,28 @@ Expected: FAIL — `value of type 'AppModel' has no member 'startBackfill'`
     public private(set) var seasonSummary: PlayerSummary?
     /// 중단된 백필이 남아 있는지. 설정 화면이 "이어서 불러오기"를 보여줄 근거다.
     public private(set) var hasResumableBackfill: Bool = false
+    /// 로그인한 계정. "내가 직접 옮긴 것만 XP" 판정에 쓴다.
+    public private(set) var myAccountId: String?
 ```
 
-`start()`와 백필 종료 시점에 `hasResumableBackfill`을 갱신한다:
+`validate()`가 `me`를 얻는 지점에서 `myAccountId = me.accountId`를 저장한다.
+`start()`와 백필 종료 시점에 `hasResumableBackfill`을 갱신한다.
+
+**실효 맵 헬퍼**를 추가하고, `ScoreEngine`/`SyncEngine`을 만드는 **모든 지점**에서 쓴다:
 
 ```swift
-        hasResumableBackfill = (try? store.resumableBackfill()) != nil
+    /// 사용자 매핑에 백필이 추정한 폴백을 밑에 깔아 만든 채점용 맵.
+    ///
+    /// 동기화 경로와 백필 경로가 **같은 맵**을 써야 한다 — 다르면 같은 이벤트가
+    /// 어느 경로로 집계됐는지에 따라 다른 XP를 받는다.
+    ///
+    /// 폴백 로드가 실패하면 빈 폴백으로 진행한다. 추정값이므로 앱을 막을 이유가 없다
+    /// (사용자 매핑의 로드 실패는 지금처럼 별도로 다룬다).
+    private func effectiveWorkflow() -> WorkflowMap {
+        let base = (try? workflow.load()) ?? WorkflowMap(statusToStage: [:])
+        let fallbacks = (try? workflow.loadFallbacks())?.statusToStage ?? [:]
+        return base.merging(fallbacks)
+    }
 ```
 
 메서드를 추가한다:
@@ -3363,74 +3581,68 @@ Expected: FAIL — `value of type 'AppModel' has no member 'startBackfill'`
 
     /// 과거 기록을 불러온다. 사용자가 설정에서 눌러 시작한다 — 자동 실행하지 않는다.
     public func startBackfill() async {
-        await launchBackfill(startingToken: nil, existing: nil)
+        await launchBackfill(resume: false)
     }
 
-    /// 중단된 백필이 있으면 이어서 진행한다.
+    /// 중단된 백필이 있으면 이어서 진행한다. 없으면 아무 일도 하지 않는다 —
+    /// 요청조차 나가지 않아야 한다.
     public func resumeBackfillIfAvailable() async {
-        guard let snapshot = try? store.resumableBackfill() else { return }
-        await launchBackfill(startingToken: snapshot.nextPageToken, existing: snapshot.id)
+        guard (try? store.resumableBackfill()) != nil else { return }
+        await launchBackfill(resume: true)
     }
 
-    /// In Progress인 백필을 중단한다. 이미 넣은 이벤트는 그대로 유효하고, 중단 지점의
+    /// 실행 중인 백필을 중단한다. 이미 넣은 이벤트는 그대로 유효하고, 중단 지점의
     /// `nextPageToken`이 저장돼 있어 나중에 "이어서 불러오기"로 재개된다.
     public func cancelBackfill() {
         backfillTask?.cancel()
     }
 
-    private func launchBackfill(
-        startingToken: String?, existing: PersistentIdentifier?
-    ) async {
+    private func launchBackfill(resume: Bool) async {
         // 이미 돌고 있으면 두 번 시작하지 않는다 — 같은 페이지를 두 곳에서 훑으면
         // 진행률이 뒤엉킨다(이벤트 중복은 historyId가 막지만 카운터는 못 막는다).
         guard backfillTask == nil else { return }
-        let task = Task { await runBackfill(startingToken: startingToken, existing: existing) }
+        let task = Task { await runBackfill(resume: resume) }
         backfillTask = task
         await task.value
         backfillTask = nil
     }
 
-    private func runBackfill(
-        startingToken: String?, existing: PersistentIdentifier? = nil
-    ) async {
+    private func runBackfill(resume: Bool) async {
         guard let client else { return }
         let jql = "assignee = currentUser()"
-        let now = clock()
 
-        let runId: PersistentIdentifier
-        if let existing {
-            runId = existing
-        } else {
-            guard let created = try? store.beginBackfill(jql: jql, at: now, totalIssueCount: 0)
-            else { return }
-            runId = created
-        }
-
+        // 진행 상태 저장(begin/advance/finish)은 엔진이 직접 한다 — 페이지 경계마다
+        // 저장해야 하는데 여기서는 루프 안을 볼 수 없다. 여기서 또 부르면 이중 기록이 된다.
         let engine = BackfillEngine(
-            source: JiraChangelogSource(client: client),
+            source: changelogSourceFactory(client),
             store: store,
-            workflow: (try? workflow.load()) ?? WorkflowMap(statusToStage: [:])
+            workflow: effectiveWorkflow()
         )
 
         do {
             let outcome = try await engine.run(
-                jql: jql, now: now, startingToken: startingToken
+                jql: jql, now: clock(), resume: resume
             ) { [weak self] processed, total in
                 self?.backfillProgress = BackfillProgress(processed: processed, total: total)
             }
-            try? store.advanceBackfill(
-                runId, nextPageToken: nil, processedIssueCount: outcome.processedIssues,
-                discovered: outcome.discoveredStatuses,
-                partiallyRestored: outcome.partiallyRestored
-            )
-            try? store.finishBackfill(runId, at: clock(), failure: nil)
+            persistFallbacks(outcome.resolvedFallbacks)
         } catch {
-            try? store.finishBackfill(runId, at: clock(),
-                                      failure: redactedErrorDescription(error))
+            // 실패·중단해도 여기까지 넣은 이벤트는 유효하고 진행 지점이 저장돼 있다.
+            // run을 미완료로 남겨 "이어서 불러오기"가 뜨게 하는 것이 의도된 동작이다.
         }
 
         backfillProgress = nil
+        hasResumableBackfill = (try? store.resumableBackfill()) != nil
         await refreshSummaries()
+    }
+
+    /// 새로 해석한 폴백을 기존 것과 **병합해** 저장한다. 덮어쓰면 이전 실행이
+    /// 해석한 매핑이 사라진다 — 범위를 좁혀 다시 돌리면 폴백이 줄어드는 셈이다.
+    private func persistFallbacks(_ discovered: [String: Stage]) {
+        guard !discovered.isEmpty else { return }
+        var merged = (try? workflow.loadFallbacks())?.statusToStage ?? [:]
+        for (name, stage) in discovered { merged[name] = stage }
+        try? workflow.saveFallbacks(WorkflowMap(statusToStage: merged))
     }
 
     /// 통산과 시즌을 각각 집계한다. 같은 이벤트 로그를 두 범위로 읽을 뿐이다.
@@ -3439,7 +3651,7 @@ Expected: FAIL — `value of type 'AppModel' has no member 'startBackfill'`
               let mirror = try? store.loadMirror() else { return }
         let now = clock()
         let engine = ScoreEngine(
-            rules: rules, workflow: (try? workflow.load()) ?? WorkflowMap(statusToStage: [:]),
+            rules: rules, workflow: effectiveWorkflow(),
             calendar: calendar, myAccountId: myAccountId
         )
         lifetimeSummary = engine.recompute(events: events, issues: mirror, now: now).summary
@@ -3449,7 +3661,11 @@ Expected: FAIL — `value of type 'AppModel' has no member 'startBackfill'`
     }
 ```
 
-> `myAccountId`·`rules`·`calendar`·`clock`이 `AppModel`에 이미 있는지 확인하고, 없으면 `validate()`가 얻는 `me.accountId`를 저장하는 프로퍼티를 추가한다. 무엇을 추가했는지 리포트에 적는다.
+> 기존에 `SyncEngine`을 만드는 지점(`workflow: map`을 넘기는 곳)도 `effectiveWorkflow()`를
+> 쓰도록 바꾼다. 무엇을 바꿨는지 리포트에 적는다.
+>
+> `start()` 끝에서 `refreshSummaries()`를 불러 로그인 직후에도 요약이 채워지게 한다 —
+> 백필을 돌리지 않은 사용자도 기존 이벤트로 집계된 값을 봐야 한다.
 
 - [ ] **Step 4: 테스트 통과 확인**
 
@@ -3460,8 +3676,9 @@ Expected: PASS
 
 ```bash
 git add Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift \
+        Packages/Jirarcade/Tests/ArcadeAppTests/TestSupport.swift \
         Packages/Jirarcade/Tests/ArcadeAppTests/BackfillIntegrationTests.swift
-git commit -m "feat: AppModel에 백필 실행과 통산·시즌 요약 연결"
+git commit -m "feat: 백필 실행·재개 배선과 폴백을 반영한 시즌·통산 집계"
 ```
 
 ---
