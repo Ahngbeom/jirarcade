@@ -432,6 +432,31 @@ public final class AppModel {
         }
     }
 
+    // MARK: - 보드
+
+    /// 보드가 그릴 좌표. 뷰가 시계와 달력을 직접 만들지 않도록 모델이 만든다.
+    ///
+    /// 매 렌더마다 불린다. `BoardLayout.snapshot`은 순수 함수이고 티켓 수만큼만 도는
+    /// 계산이라 미러 규모(수십~수백 건)에서는 문제가 없다 — 스토어를 치지 않는 것이
+    /// 중요하고, 그래서 `issues`·`statusEnteredAt`·`boardWorkflow`를 미리 갖고 있는다.
+    ///
+    /// - Parameter minimumSpacing: 뷰가 카드 폭과 창 폭으로 계산해 넘긴다.
+    public func boardSnapshot(minimumSpacing: Double) -> BoardSnapshot {
+        BoardLayout.snapshot(
+            issues: issues,
+            statusEnteredAt: statusEnteredAt,
+            workflow: boardWorkflow,
+            rules: rules,
+            minimumSpacing: minimumSpacing,
+            now: clock(),
+            calendar: calendar
+        )
+    }
+
+    /// WIP 한도. 보드의 `active` 레인 헤더가 읽는다.
+    /// 뷰가 `RuleSet.default`를 직접 보면 사용자가 규칙을 고쳐도 화면이 따라가지 않는다.
+    public var wipLimit: Int { rules.wipLimit }
+
     // MARK: - 백필
 
     /// 과거 기록을 불러온다. 사용자가 설정에서 눌러 시작한다 — 자동 실행하지 않는다.
@@ -530,29 +555,6 @@ public final class AppModel {
         let fallbacks = (try? workflow.loadFallbacks())?.statusToStage ?? [:]
         return base.merging(fallbacks)
     }
-
-    /// 보드가 그릴 좌표. 뷰가 시계와 달력을 직접 만들지 않도록 모델이 만든다.
-    ///
-    /// 매 렌더마다 불린다. `BoardLayout.snapshot`은 순수 함수이고 티켓 수만큼만 도는
-    /// 계산이라 미러 규모(수십~수백 건)에서는 문제가 없다 — 스토어를 치지 않는 것이
-    /// 중요하고, 그래서 `issues`·`statusEnteredAt`·`boardWorkflow`를 미리 갖고 있는다.
-    ///
-    /// - Parameter minimumSpacing: 뷰가 카드 폭과 창 폭으로 계산해 넘긴다.
-    public func boardSnapshot(minimumSpacing: Double) -> BoardSnapshot {
-        BoardLayout.snapshot(
-            issues: issues,
-            statusEnteredAt: statusEnteredAt,
-            workflow: boardWorkflow,
-            rules: rules,
-            minimumSpacing: minimumSpacing,
-            now: clock(),
-            calendar: calendar
-        )
-    }
-
-    /// WIP 한도. 보드의 `active` 레인 헤더가 읽는다.
-    /// 뷰가 `RuleSet.default`를 직접 보면 사용자가 규칙을 고쳐도 화면이 따라가지 않는다.
-    public var wipLimit: Int { rules.wipLimit }
 
     /// 스토어에서 파생되는 상태를 한꺼번에 다시 읽는다. 로그인 직후와 백필 종료 후에
     /// 부른다 — 두 시점 모두 이벤트 로그와 미완료 run이 바뀌어 있을 수 있다.
