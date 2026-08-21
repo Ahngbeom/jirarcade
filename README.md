@@ -35,8 +35,8 @@ XP는 **상태를 보고 주지 않고 변화를 보고 줍니다.** 이미 완�
 
 ## 요구 사항
 
-- macOS 15 이상
-- **소스에서 직접 빌드할 때만:** Swift 6.2 이상 (Xcode 16.x 또는 [swift.org](https://swift.org/download/) 툴체인)
+- macOS 15 이상 (Apple Silicon · Intel 모두 — 릴리즈는 유니버설 바이너리로 나갑니다)
+- **소스에서 직접 빌드할 때만:** Swift 6.2 이상 (Xcode 26.2 이상 또는 [swift.org](https://swift.org/download/) 툴체인)
 - Jira Cloud 계정과 [API 토큰](https://id.atlassian.com/manage-profile/security/api-tokens)
 
 ## 설치
@@ -70,6 +70,7 @@ macOS는 `.app` 번들 없이 실행된 프로세스를 **백그라운드 전용
 바이너리는 실행마다 다른 identity로 취급돼 저장한 자격증명을 다시 물을 수 있습니다:
 
 ```bash
+cd -  # 저장소 루트로 돌아갑니다 — make-app.sh는 거기서 실행합니다
 ./scripts/make-app.sh --open
 ```
 

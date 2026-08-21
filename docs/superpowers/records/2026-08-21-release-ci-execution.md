@@ -10,7 +10,7 @@
 ## 리허설이 증명한 것
 
 프리릴리즈 태그 `v0.0.1-rc.1`을 밀어 `release.yml`을 실제로 한 번 돌렸다.
-10개 스텝 전부 `success`, run number `1`.
+9개 스텝 전부 `success`, run number `1`.
 
 - **테스트 게이트**: 태그된 트리에서 `swift test`가 439개 테스트를 전부 통과시켰다.
   실패 0건.
@@ -139,3 +139,8 @@ wall clock(`swift test` 전체 실행 시간)은 2.0~2.7초였고, 이를 반영
    다운로드해 `lipo`/`plutil`/`codesign`을 돌리고 앱을 한 번 띄워 수령자
    입장에서 끝까지 밟아본다 — 초록 워크플로가 곧 올바른 산출물이라는 뜻은
    아니다.
+4. `gh release create`는 성공했는데 뒤이은 `gh release edit --draft=false`가
+   실패하면, 자산은 올라갔지만 릴리즈가 draft로 남는다. 같은 태그를 그냥 다시
+   밀면 기존 draft와 충돌한다 — `gh release view vX.Y.Z`로 draft 여부를 먼저
+   확인하고, `gh release edit vX.Y.Z --draft=false`로 수동 공개하거나
+   `gh release delete vX.Y.Z --yes`로 draft를 지운 뒤에 태그를 다시 민다.

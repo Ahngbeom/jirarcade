@@ -112,7 +112,9 @@ Info.plist 히어독을 변수 확장 모드로 바꾼다(`<<'PLIST'` → `<<PLI
 
 ```bash
 BUILD_ARGS=(--product JirarcadeApp -c "$CONFIG")
-[[ -n "$UNIVERSAL" ]] && BUILD_ARGS+=(--arch arm64 --arch x86_64)
+if [[ -n "$UNIVERSAL" ]]; then
+    BUILD_ARGS+=(--arch arm64 --arch x86_64)
+fi
 
 swift build "${BUILD_ARGS[@]}"
 BIN_DIR="$(swift build "${BUILD_ARGS[@]}" --show-bin-path)"
@@ -264,8 +266,9 @@ macOS는 인터넷에서 받은 미공증 앱에 격리 표시를 붙이고 실�
 
 ### 6.1 README — 테스트 개수
 
-"221개 테스트가 약 0.2초에 끝납니다"는 사실이 아니다. 실측 결과 **439개**가 0.8초에 통과한다.
-백필 작업이 늘린 뒤 갱신되지 않았다.
+"221개 테스트가 약 0.2초에 끝납니다"는 사실이 아니다. 실측 결과 **441개**가 2초 안에 통과한다.
+백필 작업이 늘린 뒤 갱신되지 않았다. (소요 시간은 README의 상한과 맞춘다 — 프레임워크가 보고하는
+실행 시간은 관측마다 조금씩 다르므로 하나의 초 단위 값보다 방어 가능한 상한을 쓴다.)
 
 ### 6.2 README — 설치 섹션
 
