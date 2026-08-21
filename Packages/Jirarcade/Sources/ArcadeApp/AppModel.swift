@@ -203,6 +203,17 @@ public final class AppModel {
         // 만드므로 다음 로그인에서 자연히 깨끗한 상태로 시작한다.
         stopSyncing()
         scheduler = nil
+        // 대기 중인 전이 타이머도 로그아웃의 대상이다. 취소하지 않으면 이 타이머는
+        // syncGeneration을 보지 않는 유일한 비동기 경로라서 계속 잠들어 있다가, 다음
+        // 계정으로 로그인한 뒤 창이 지나는 순간 그 계정의 client로 옛 전이를
+        // POST해버린다(최종 전체 브랜치 리뷰 Finding 1). `pendingTransitions`·
+        // `transitionFailures`도 함께 비운다 — 지우지 않으면 다음 세션에서 같은 키의
+        // 티켓이 나타날 때(예: 같은 사이트로 재로그인) 남의 대기 배너·실패 안내가 그
+        // 티켓 위에 겹쳐 그려진다.
+        transitionTasks.values.forEach { $0.cancel() }
+        transitionTasks = [:]
+        pendingTransitions = [:]
+        transitionFailures = [:]
         // 세대를 올려 진행 중이던 페치가 끝나도 이 계정의 스토어에 쓰지 못하게 막는다
         // (I4). 계정 바인딩(`accountBinding`)은 여기서 지우지 않는다 — 지우면 다음 로그인이 "계정이
         // 바뀌었는지" 판단할 근거를 잃는다. validate() 참고.
@@ -789,9 +800,9 @@ public final class AppModel {
 
     /// 전이를 예약한다. 요청은 실행 취소 창이 지난 뒤에 나간다.
     public func requestTransition(issueKey: String, transition: JiraTransition) {
-        // 미러에 없으면 되돌릴 기준 상태를 알 수 없다. 화면에 없는 티켓이므로 사용자가
-        // 고를 수 있는 상황도 아니다 — 조용히 무시한다.
-        guard let current = issues.first(where: { $0.key == issueKey }) else { return }
+        // 미러에 없는 티켓은 화면에도 없으므로 사용자가 고를 수 있는 상황이 아니다 —
+        // 조용히 무시한다.
+        guard issues.contains(where: { $0.key == issueKey }) else { return }
 
         // 같은 티켓의 대기를 교체한다. 취소하고 다시 고르는 것과 결과가 같아야 한다.
         transitionTasks[issueKey]?.cancel()
@@ -802,8 +813,11 @@ public final class AppModel {
             issueKey: issueKey,
             transitionId: transition.id,
             toStatusName: transition.toStatusName,
-            fromStatusName: current.statusName,
-            firesAt: clock().addingTimeInterval(Double(window.components.seconds))
+            // `Duration.components.seconds`만 쓰면 서브초 성분(attoseconds)이 통째로
+            // 잘린다 — `window`가 정수 초가 아니게 되는 순간(설정을 바꾸거나 테스트가
+            // 밀리초 단위로 줄이는 경우) 카드가 그리는 카운트다운이 실제 타이머보다
+            // 짧거나 길어 보인다. `fullSeconds`는 attoseconds까지 더해 정확한 초를 만든다.
+            firesAt: clock().addingTimeInterval(window.fullSeconds)
         )
         transitionTasks[issueKey] = Task { [weak self, transitionSleep] in
             do {
@@ -891,6 +905,11 @@ public final class AppModel {
     func seedIssuesForTesting(_ seeded: [ObservedIssue]) {
         issues = seeded.sorted { $0.key < $1.key }
     }
+
+    /// 대기 중인 전이 타이머 개수. `transitionTasks`는 `private`이라 테스트가 직접 보지
+    /// 못한다 — `signOut()`이 타이머를 실제로 취소·정리하는지(딕셔너리만 비우고 태스크는
+    /// 살려두는 게 아닌지)를 이 통로 없이는 검증할 수 없다.
+    var transitionTaskCountForTesting: Int { transitionTasks.count }
 }
 
 /// `performSync()`가 던지는, 이미 안전하게 줄여둔 실패. `SyncScheduler`는 이 문자열을
@@ -911,3 +930,13 @@ private struct SyncFailure: Error, CustomStringConvertible {
 /// 던지는 것 자체가 목적이다(I1 참고: 예전에는 조용히 return해서 스케줄러가 이걸 성공으로
 /// 오해했다).
 private struct SyncNotConfigured: Error {}
+
+extension Duration {
+    /// 초 단위 실수값. `components.seconds`만 쓰면 attoseconds 성분이 통째로 버려져
+    /// 정수 초가 아닌 `Duration`(예: 테스트가 밀리초로 줄인 실행 취소 창)에서 결과가
+    /// 잘린다 — `PendingTransition.firesAt` 계산이 이 오차에 그대로 노출된다.
+    var fullSeconds: Double {
+        let comps = components
+        return Double(comps.seconds) + Double(comps.attoseconds) / 1_000_000_000_000_000_000
+    }
+}

@@ -21,7 +21,10 @@ private let demoWorkflow = WorkflowMap(statusToStage: [
 /// 워크플로를 미리 심는 이유: 매핑이 없으면 `routeAfterAuthentication()`이 마법사로
 /// 보내고 `HygieneCalculator`가 단계를 못 갈라 위생 지표가 전부 0이 된다.
 @MainActor
-private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
+private func modelAfterSync(
+    issuesJSON: String,
+    transitionSleep: (@Sendable (Duration) async throws -> Void)? = nil
+) async throws -> AppModel {
     let model = try makeModel(
         workflow: InMemoryWorkflowStore(seeded: demoWorkflow),
         http: {
@@ -30,11 +33,21 @@ private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
                 .init(status: 200, body: Data(issuesJSON.utf8)),
             ])
         },
-        now: now
+        now: now,
+        transitionSleep: transitionSleep
     )
     await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
     await model.syncNow(reason: .manual)
     return model
+}
+
+/// `JiraTransition`은 memberwise init이 없고 `Decodable`로만 만들어진다. `TransitionTests.swift`의
+/// 사본과 같은 이유로 이 파일에서만 쓰는 최소 버전을 둔다.
+private func transition(id: String, name: String, to status: String) throws -> JiraTransition {
+    let body = """
+    {"transitions":[{"id":"\(id)","name":"\(name)","to":{"name":"\(status)"}}]}
+    """
+    return try #require(JiraTransition.decodeList(Data(body.utf8)).first)
 }
 
 @MainActor
@@ -92,6 +105,32 @@ private func modelAfterSync(issuesJSON: String) async throws -> AppModel {
     #expect(model.statusEnteredAt.isEmpty)
     #expect(model.hygiene == nil)
     #expect(model.siteHost == nil)
+}
+
+/// 로그아웃 시점에 대기 중이던 전이가 있으면, 그 타이머는 다음 계정으로 로그인한 뒤에도
+/// 계속 살아 있다가 엉뚱한 사이트로 `POST /issue/{key}/transitions`를 쏠 수 있다
+/// (최종 전체 브랜치 리뷰 Finding 1). `signOut()`은 `syncGeneration`처럼 이 경계를
+/// 지켜야 하는데, 지금은 `pendingTransitions`·`transitionFailures`·타이머 태스크
+/// 어느 것도 건드리지 않는다 — 이 테스트가 그 셋을 모두 확인한다.
+///
+/// `transitionSleep`을 999초로 주입해 타이머가 테스트 시간 안에는 절대 스스로 끝나지
+/// 않게 한다 — signOut() 시점에 "대기 중"이라는 상태를 보장하기 위해서다.
+@MainActor
+@Test func clearsTransitionStateOnSignOut() async throws {
+    let model = try await modelAfterSync(
+        issuesJSON: issuesBody(status: "In Progress", assignee: "acc-me"),
+        transitionSleep: { _ in try await Task.sleep(for: .seconds(999)) }
+    )
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try transition(id: "31", name: "완료로", to: "Done"))
+    #expect(!model.pendingTransitions.isEmpty)
+    #expect(model.transitionTaskCountForTesting == 1)
+
+    await model.signOut()
+
+    #expect(model.pendingTransitions.isEmpty)
+    #expect(model.transitionFailures.isEmpty)
+    #expect(model.transitionTaskCountForTesting == 0)
 }
 
 /// 뷰가 시계와 달력을 직접 만들지 않도록 모델이 스냅샷을 준다.

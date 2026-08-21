@@ -45,11 +45,25 @@ struct TicketCardView: View {
                     .foregroundStyle(dueColor)
             }
             if let pending {
+                // 남은 시간과 대상 상태·취소를 한 줄에 묶는다 — 별도 줄을 더하면(header
+                // + key + summary×2 + due + pending행 + 새 줄) 112pt 카드에서 여유가
+                // 0pt가 된다(아래 예산 계산 참고). 같은 줄에 붙이는 쪽이 실패 블록과
+                // 같은 예산 안에서 안전하게 들어간다.
                 HStack(spacing: 4) {
                     Text("→ \(pending.toStatusName)")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
                         .foregroundStyle(theme.accent)
                         .lineLimit(1)
+                    // 뷰가 스스로 현재 시각을 만들지 않는다 — `TimelineView`가 매초
+                    // 건네는 `context.date`로만 남은 시간을 계산한다. 이 카운트다운 하나만
+                    // 매초 다시 그려지고, 상위(`BoardLaneView`·`QuestBoardView`)는
+                    // 영향받지 않는다 — `TimelineView`의 무효화는 그 서브트리에 갇힌다.
+                    TimelineView(.periodic(from: pending.firesAt, by: 1)) { context in
+                        Text(countdownLabel(firesAt: pending.firesAt, now: context.date))
+                    }
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(theme.inkTertiary)
+                    .monospacedDigit()
                     Spacer()
                     Button("취소") { model.cancelPendingTransition(issueKey: slot.issue.key) }
                         .font(.system(size: 9, design: .monospaced))
@@ -64,10 +78,23 @@ struct TicketCardView: View {
                         .font(.system(size: 9))
                         .foregroundStyle(theme.danger)
                         .lineLimit(2)
-                    if let url = jiraURL {
-                        Link("Jira에서 열기", destination: url)
+                    // "Jira에서 열기"와 "닫기"를 한 줄에 묶는다 — 실패 블록에 새 줄을
+                    // 더하지 않는 이유는 위 pending 블록의 카운트다운이 이미 카드의
+                    // 여유를 다 썼기 때문이다(아래 예산 계산 참고). 닫기 버튼은
+                    // `jiraURL`이 없을 때도(siteHost를 아직 못 받았을 때) 항상 보여야
+                    // 한다 — 그게 없으면 실패한 카드가 세션 내내 메뉴를 다시 열
+                    // 방법이 없다(최종 전체 브랜치 리뷰 Finding 2).
+                    HStack(spacing: 4) {
+                        if let url = jiraURL {
+                            Link("Jira에서 열기", destination: url)
+                                .font(.system(size: 9, design: .monospaced))
+                                .foregroundStyle(theme.accent)
+                        }
+                        Spacer()
+                        Button("닫기") { model.dismissTransitionFailure(issueKey: slot.issue.key) }
                             .font(.system(size: 9, design: .monospaced))
-                            .foregroundStyle(theme.accent)
+                            .buttonStyle(.plain)
+                            .foregroundStyle(theme.inkTertiary)
                     }
                 }
             } else {
@@ -163,6 +190,16 @@ struct TicketCardView: View {
     /// "관측한 것만 안다"는 이 앱의 원칙이 화면에서 깨진다.
     private var stagnationLabel: String {
         (slot.isApproximate ? "~" : "") + "\(slot.daysStagnant)d"
+    }
+
+    /// 대기 중인 전이가 실행되기까지 남은 시간을 카드 문구로 만든다. 초 단위를 올림해
+    /// "0s"가 뜨는 시간이 실제로 타이머가 발사되는 순간과 거의 맞도록 한다(내림이면
+    /// 발사 몇백ms 전부터 "0s"가 떠서 이미 끝난 것처럼 보인다). 지난 시각(음수)은
+    /// `firesAt`을 계산에 쓴 창이 지났을 뿐 아직 요청이 실제로 나가지 않은 짧은
+    /// 틈에서 나올 수 있어 0으로 클램프한다 — 음수를 그대로 보여주면 혼란스럽다.
+    private func countdownLabel(firesAt: Date, now: Date) -> String {
+        let remaining = max(0, firesAt.timeIntervalSince(now))
+        return "\(Int(remaining.rounded(.up)))s"
     }
 
     /// 대기(`pending`)가 있으면 항상 대기 배너가 우선이라 실패 블록은 뜨지 않는다

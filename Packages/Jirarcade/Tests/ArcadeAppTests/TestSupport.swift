@@ -51,6 +51,7 @@ func makeModel(
     accountBinding: InMemoryAccountBindingStore = InMemoryAccountBindingStore(),
     http: @escaping () -> HTTPClient = { ScriptedHTTP(status: 200, body: myselfBody) },
     now: Date = iso("2026-08-14T09:00:00Z"),
+    settings: AppSettings = .default,
     transitionSleep: (@Sendable (Duration) async throws -> Void)? = nil
 ) throws -> AppModel {
     var utc = Calendar(identifier: .gregorian)
@@ -63,6 +64,7 @@ func makeModel(
         clientFactory: { auth in JiraClient(auth: auth, http: http()) },
         clock: { now },
         calendar: utc,
+        settings: settings,
         changelogSourceFactory: changelogSource.map { source in { _ in source } },
         transitionSleep: transitionSleep ?? { try await Task.sleep(for: $0) }
     )

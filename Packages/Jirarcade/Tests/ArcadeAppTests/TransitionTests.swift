@@ -171,7 +171,31 @@ private func transition(
                             transition: try transition(id: "31", name: "완료로", to: "Done"))
 
     #expect(model.pendingTransitions["DEMO-1"]?.toStatusName == "Done")
-    #expect(model.pendingTransitions["DEMO-1"]?.fromStatusName == "In Progress")
+}
+
+/// `Duration.components.seconds`만 쓰면 서브초 성분(attoseconds)이 잘려 `firesAt`이
+/// 부정확해진다(최종 전체 브랜치 리뷰 Finding 3의 이연 발견). 정수 초가 아닌 창으로
+/// 재현한다 — 잘렸다면 결과가 1.5초가 아니라 1초가 된다.
+@MainActor
+@Test func firesAtUsesTheFullSubsecondDuration() async throws {
+    let settings = AppSettings(
+        syncInterval: .seconds(300), foregroundCooldown: .seconds(30),
+        backoffSteps: [.seconds(5)], failuresBeforeSurfacing: 3,
+        transitionUndoWindow: .milliseconds(1500)
+    )
+    let model = try makeModel(
+        http: { ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))]) },
+        now: now, settings: settings,
+        transitionSleep: { _ in try await Task.sleep(for: .seconds(999)) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try transition(id: "31", name: "완료로", to: "Done"))
+
+    let firesAt = try #require(model.pendingTransitions["DEMO-1"]?.firesAt)
+    #expect(firesAt == now.addingTimeInterval(1.5))
 }
 
 /// 취소하면 요청이 나가지 않는다. HTTP 스텁에 응답을 하나(`/myself`)만 넣어 뒀으므로,
