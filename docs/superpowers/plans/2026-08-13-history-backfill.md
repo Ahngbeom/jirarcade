@@ -2200,6 +2200,220 @@ git commit -m "feat: 백필 진행 상태 저장과 재개 스냅샷"
 
 ---
 
+### Task 10b: 폴백을 채점에 연결 — 실효 워크플로 맵
+
+**Files:**
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Domain/WorkflowMap.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Domain/StatusCatalog.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeApp/WorkflowStore.swift`
+- Test: `Packages/Jirarcade/Tests/ArcadeCoreTests/EffectiveWorkflowTests.swift`
+- Test: `Packages/Jirarcade/Tests/ArcadeAppTests/WorkflowStoreTests.swift` (기존 파일에 추가)
+
+**Interfaces:**
+- Produces: `WorkflowMap.merging(_:) -> WorkflowMap`, `StatusCatalog.resolvedFallbacks: [String: Stage]`, `WorkflowStore.loadFallbacks()`·`saveFallbacks(_:)`
+
+**왜 필요한가**
+
+Task 8의 3단 폴백은 지금 **채점에 도달하지 않는다.** `XpAwarder.transitionXP`는
+단계를 이렇게 얻는다:
+
+```swift
+guard
+    let from = event.fromStatus.flatMap({ workflow.stage(for: $0) }),
+    let to   = event.toStatus.flatMap({ workflow.stage(for: $0) })
+else { return 0 }
+```
+
+`StatusCatalog`는 이 경로 어디에도 없다. 백필 엔진이 `catalog.stage(...)`를 부르지만
+반환값을 버리고 이름 수집에만 쓰므로, 폴백은 "매핑 마법사 후보 목록"만 만들고
+XP에는 아무 영향이 없다. 워크플로 개편 이전 구간이 통째로 0점이 된다 —
+스펙 §5가 "0점으로 버리는 것보다 방향이 맞다"고 한 바로 그 상황이 그대로 남는다.
+
+**해결 방식**: 백필이 해석한 폴백 매핑(상태명 → 단계)을 저장하고, 채점기를 만들 때
+현재 `WorkflowMap`에 합친 **실효 맵**을 넘긴다. 합치는 일을 호출부에서 하므로
+`ScoreEngine`·`XpAwarder`·`SyncEngine`은 **변경이 전혀 없다.**
+
+폴백을 사용자 매핑과 **분리해서** 저장하는 이유: 마법사에서 사용자가 그 상태를
+지정하면 사용자 값이 이겨야 하고, 그때 폴백 항목은 덮이는 게 아니라 밑에 깔린 채
+남아야 한다. 한 파일에 섞으면 "이건 내가 정한 것"과 "이건 앱이 추정한 것"을
+구분할 수 없어, 마법사가 추정값을 사용자 선택인 양 보여주게 된다.
+
+- [ ] **Step 1: 실패하는 테스트 작성**
+
+`Tests/ArcadeCoreTests/EffectiveWorkflowTests.swift`:
+
+```swift
+import Testing
+import Foundation
+import JiraKit
+@testable import ArcadeCore
+
+/// 사용자가 마법사에서 지정한 매핑이 폴백 추정값을 이긴다.
+@Test func userMappingBeatsFallback() {
+    let user = WorkflowMap(statusToStage: ["Merged to Staging": .review])
+    let effective = user.merging(["Merged to Staging": .active, "QA Passed": .verify])
+
+    #expect(effective.stage(for: "Merged to Staging") == .review)
+    #expect(effective.stage(for: "QA Passed") == .verify)
+}
+
+/// 합친 뒤에도 원본은 그대로다 — 저장된 사용자 매핑을 오염시키면 안 된다.
+@Test func mergingDoesNotMutateTheOriginal() {
+    let user = WorkflowMap(statusToStage: ["Done": .done])
+    _ = user.merging(["Merged to Staging": .active])
+    #expect(user.statusToStage == ["Done": .done])
+}
+
+@Test func mergingWithNothingChangesNothing() {
+    let user = WorkflowMap(statusToStage: ["Done": .done])
+    #expect(user.merging([:]) == user)
+}
+
+/// 폴백(②)만 모은다. 미매핑(③)은 단계를 모르므로 실효 맵에 넣을 수 없다 —
+/// 넣으면 추측으로 점수를 주는 셈이다.
+@Test func resolvedFallbacksExcludeUnmappedAndMapped() {
+    let entries = [
+        JiraStatusCatalogEntry(id: "10071", name: "Merged to Staging", categoryKey: "indeterminate"),
+        JiraStatusCatalogEntry(id: "10016", name: "In Progress", categoryKey: "indeterminate"),
+    ]
+    let catalog = StatusCatalog(workflow: demoWorkflow, entries: entries)
+
+    _ = catalog.stage(forId: "10071", name: "Merged to Staging")   // ② 폴백
+    _ = catalog.stage(forId: "99999", name: "GhostStatus")         // ③ 미매핑
+    _ = catalog.stage(forId: "10016", name: "In Progress")         // ① 매핑됨
+
+    #expect(catalog.resolvedFallbacks == ["Merged to Staging": .active])
+}
+
+/// 폴백이 실제로 XP를 만든다 — 이 태스크의 존재 이유다.
+@Test func fallbackStageActuallyScores() {
+    let entries = [JiraStatusCatalogEntry(id: "10071", name: "Merged to Staging",
+                                          categoryKey: "indeterminate")]
+    let catalog = StatusCatalog(workflow: demoWorkflow, entries: entries)
+    _ = catalog.stage(forId: "10071", name: "Merged to Staging")
+
+    // demoWorkflow만으로는 "Merged to Staging"이 nil이라 전이 XP가 0이다.
+    #expect(demoWorkflow.stage(for: "Merged to Staging") == nil)
+
+    let effective = demoWorkflow.merging(catalog.resolvedFallbacks)
+    #expect(effective.stage(for: "Merged to Staging") == .active)
+}
+```
+
+`Tests/ArcadeAppTests/WorkflowStoreTests.swift`에 추가:
+
+```swift
+/// 폴백은 사용자 매핑과 따로 저장된다 — 마법사가 "내가 정한 것"과
+/// "앱이 추정한 것"을 구분해 보여줘야 한다.
+@Test func fallbacksRoundTripSeparatelyFromUserMapping() throws {
+    let store = InMemoryWorkflowStore()
+    try store.save(WorkflowMap(statusToStage: ["Done": .done]))
+    try store.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+    #expect(try store.load()?.statusToStage == ["Done": .done])
+    #expect(try store.loadFallbacks()?.statusToStage == ["Merged to Staging": .active])
+}
+
+@Test func missingFallbackFileLoadsAsNil() throws {
+    #expect(try InMemoryWorkflowStore().loadFallbacks() == nil)
+}
+
+/// 파일 저장소도 별도 파일을 쓴다. 같은 파일에 쓰면 한쪽이 다른 쪽을 덮는다.
+@Test func fileStoreKeepsFallbacksInASeparateFile() throws {
+    let dir = URL(fileURLWithPath: NSTemporaryDirectory())
+        .appendingPathComponent(UUID().uuidString, isDirectory: true)
+    defer { try? FileManager.default.removeItem(at: dir) }
+
+    let store = FileWorkflowStore(directory: dir)
+    try store.save(WorkflowMap(statusToStage: ["Done": .done]))
+    try store.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+    #expect(try store.load()?.statusToStage == ["Done": .done])
+    #expect(try store.loadFallbacks()?.statusToStage == ["Merged to Staging": .active])
+}
+```
+
+- [ ] **Step 2: 테스트 실패 확인**
+
+Run: `cd Packages/Jirarcade && swift test --filter "EffectiveWorkflow|Fallback|fallback"`
+Expected: FAIL — `value of type 'WorkflowMap' has no member 'merging'`
+
+- [ ] **Step 3: `WorkflowMap.merging` 추가**
+
+```swift
+    /// 폴백 매핑을 밑에 깔고 현재 매핑을 위에 얹은 **실효 맵**을 만든다.
+    ///
+    /// 사용자가 마법사에서 지정한 매핑이 항상 이긴다 — 폴백은 statusCategory에서
+    /// 끌어낸 추정이고, 사용자 선택은 명시적 의도다. 값 타입이므로 원본은 그대로다.
+    public func merging(_ fallbacks: [String: Stage]) -> WorkflowMap {
+        WorkflowMap(statusToStage: fallbacks.merging(statusToStage) { _, mine in mine })
+    }
+```
+
+- [ ] **Step 4: `StatusCatalog.resolvedFallbacks` 추가**
+
+내부에 `private var fallbacks: [String: Stage] = [:]`를 두고, ② 분기에서 기록한다.
+③ 미매핑은 단계를 모르므로 **넣지 않는다.** 빈 라벨도 넣지 않는다(수집과 같은 이유).
+
+```swift
+    /// 폴백(②)으로 해석한 (상태명 → 단계). 채점 시 `WorkflowMap.merging`으로 합친다.
+    /// 미매핑(③)은 단계를 모르므로 여기 없다 — 넣으면 추측으로 점수를 주는 셈이다.
+    public var resolvedFallbacks: [String: Stage] {
+        lock.withLock { fallbacks }
+    }
+```
+
+② 분기:
+
+```swift
+        if let id, let entry = byId[id], let stage = Self.stage(forCategory: entry.categoryKey) {
+            collect(label)
+            if !label.isEmpty {
+                lock.withLock { fallbacks[label] = stage }
+            }
+            return .fallback(stage)
+        }
+```
+
+- [ ] **Step 5: `WorkflowStore`에 폴백 저장 추가**
+
+프로토콜에 두 메서드를 넣고 두 구현 모두 채운다:
+
+```swift
+public protocol WorkflowStore: Sendable {
+    func load() throws -> WorkflowMap?
+    func save(_ map: WorkflowMap) throws
+    /// 백필이 statusCategory로 추정한 매핑. 사용자 매핑과 **분리해서** 저장한다 —
+    /// 마법사가 "내가 정한 것"과 "앱이 추정한 것"을 구분해 보여줘야 하고,
+    /// 사용자가 지정하면 폴백은 덮이는 게 아니라 밑에 깔린 채 남아야 한다.
+    func loadFallbacks() throws -> WorkflowMap?
+    func saveFallbacks(_ map: WorkflowMap) throws
+}
+```
+
+`FileWorkflowStore`는 `workflow-fallbacks.json`을 쓴다(사용자 매핑은 `workflow.json`).
+`InMemoryWorkflowStore`는 별도 저장 프로퍼티를 둔다. 기존 `loadError`/`saveError` 훅은
+사용자 매핑 경로에만 적용한다 — 폴백 저장 실패를 따로 시험할 필요가 아직 없고,
+공유하면 기존 테스트의 의미가 바뀐다.
+
+- [ ] **Step 6: 테스트 통과 확인**
+
+Run: `cd Packages/Jirarcade && swift test`
+Expected: PASS
+
+- [ ] **Step 7: 커밋**
+
+```bash
+git add Packages/Jirarcade/Sources/ArcadeCore/Domain/WorkflowMap.swift \
+        Packages/Jirarcade/Sources/ArcadeCore/Domain/StatusCatalog.swift \
+        Packages/Jirarcade/Sources/ArcadeApp/WorkflowStore.swift \
+        Packages/Jirarcade/Tests/ArcadeCoreTests/EffectiveWorkflowTests.swift \
+        Packages/Jirarcade/Tests/ArcadeAppTests/WorkflowStoreTests.swift
+git commit -m "feat: 폴백 매핑을 실효 워크플로 맵으로 채점에 연결"
+```
+
+---
+
 ### Task 11: BackfillEngine — 페이지네이션·보충·부분 실패
 
 **Files:**
