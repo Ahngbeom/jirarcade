@@ -65,3 +65,21 @@ func makeModel(
         changelogSourceFactory: changelogSource.map { source in { _ in source } }
     )
 }
+
+/// 검색 응답 본문을 만든다. 담당자를 지정할 수 있는 이유: 이벤트의 `actorAccountId`가
+/// 관측 시점 담당자에서 오므로, 실행자 필터를 다루는 테스트는 이 값을 흔들어야 한다.
+func issuesBody(pairs: [(key: String, status: String, assignee: String)]) -> String {
+    let entries = pairs.map { pair in
+        """
+        {"key":"\(pair.key)","fields":{"summary":"a","status":{"name":"\(pair.status)"},\
+        "issuetype":{"name":"Task"},\
+        "assignee":{"accountId":"\(pair.assignee)","displayName":"Someone"},\
+        "updated":"2026-08-14T09:00:00.000+0000"}}
+        """
+    }
+    return "{\"issues\":[\(entries.joined(separator: ","))]}"
+}
+
+func issuesBody(status: String, assignee: String) -> String {
+    issuesBody(pairs: [(key: "DEMO-1", status: status, assignee: assignee)])
+}

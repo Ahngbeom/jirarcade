@@ -63,13 +63,20 @@ public final class SyncEngine {
     private let diffEngine = DiffEngine()
     private let scoreEngine: ScoreEngine
 
+    /// - Parameter myAccountId: "내가 직접 옮긴 전이만 XP"(스펙 §4.2)를 판정할 계정.
+    ///   기본값이 nil인 것은 `XpAwarder`와 같은 관대함이다 — 모를 때는 전부 준다.
+    ///   다만 동기화는 **로그인 후** 경로라 계정을 알 수 있으므로, 호출부는 실제 값을
+    ///   넘겨야 한다. 넘기지 않으면 같은 이벤트 로그가 이 경로와 `ScoreEngine`을 직접
+    ///   쓰는 집계 경로에서 서로 다른 XP를 내놓는다.
     public init(
         source: any IssueSource, store: ArcadeStore,
-        rules: RuleSet, workflow: WorkflowMap, calendar: Calendar
+        rules: RuleSet, workflow: WorkflowMap, calendar: Calendar,
+        myAccountId: String? = nil
     ) {
         self.source = source
         self.store = store
-        self.scoreEngine = ScoreEngine(rules: rules, workflow: workflow, calendar: calendar)
+        self.scoreEngine = ScoreEngine(rules: rules, workflow: workflow, calendar: calendar,
+                                       myAccountId: myAccountId)
     }
 
     public func sync(

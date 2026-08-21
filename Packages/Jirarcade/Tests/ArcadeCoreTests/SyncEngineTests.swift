@@ -287,3 +287,97 @@ private func makeEngine(_ source: ScriptedSource) throws -> (SyncEngine, ArcadeS
     #expect(try store.loadEvents().isEmpty, "이벤트 로그에도 쓰면 안 된다")
     #expect(try store.loadSyncRuns().last?.failureMessage == "aborted")
 }
+
+/// 동기화 경로도 실행자 필터(스펙 §4.2)를 거쳐야 한다.
+///
+/// `SyncEngine`이 내부 `ScoreEngine`에 `myAccountId`를 넘기지 않던 시절, 남이 옮긴 전이가
+/// 이 경로에서만 XP를 받았다. 같은 이벤트 로그를 읽는 집계 경로는 0점을 냈으므로,
+/// 화면에 두 값이 나란히 뜨면 그대로 버그로 보인다.
+@MainActor
+@Test func syncPathGivesNoXPForTransitionsMovedBySomeoneElse() async throws {
+    let day1 = iso("2026-08-11T09:00:00Z")
+    let day2 = iso("2026-08-12T09:00:00Z")
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedSource([
+        [issue(key: "DEMO-1", status: "To Do", assignee: "acc-other", updated: day1)],
+        [issue(key: "DEMO-1", status: "In Progress", assignee: "acc-other", updated: day2)],
+    ])
+    let engine = SyncEngine(source: source, store: store, rules: .default,
+                            workflow: demoWorkflow, calendar: utc, myAccountId: "acc-me")
+
+    _ = try await engine.sync(jql: "q", now: day1)
+    let second = try await engine.sync(jql: "q", now: day2)
+
+    #expect(second.newEvents.map(\.kind) == [.statusChanged])
+    // 위생 데일리 보너스는 이벤트와 무관하게 붙으므로 빼고 본다.
+    #expect(second.summary.totalXP - second.summary.hygieneBonusXP == 0)
+}
+
+/// 같은 전이라도 내가 옮겼으면 준다 — 위 테스트가 "전이 자체가 0점"이라는 다른 이유로
+/// 통과하고 있지 않다는 것을 고정한다.
+@MainActor
+@Test func syncPathStillRewardsMyOwnTransitions() async throws {
+    let day1 = iso("2026-08-11T09:00:00Z")
+    let day2 = iso("2026-08-12T09:00:00Z")
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedSource([
+        [issue(key: "DEMO-1", status: "To Do", assignee: "acc-me", updated: day1)],
+        [issue(key: "DEMO-1", status: "In Progress", assignee: "acc-me", updated: day2)],
+    ])
+    let engine = SyncEngine(source: source, store: store, rules: .default,
+                            workflow: demoWorkflow, calendar: utc, myAccountId: "acc-me")
+
+    _ = try await engine.sync(jql: "q", now: day1)
+    let second = try await engine.sync(jql: "q", now: day2)
+
+    #expect(second.summary.totalXP - second.summary.hygieneBonusXP > 0)
+}
+
+/// 계정을 모를 때의 관대함은 이 경로에서도 유지된다(`XpAwarder`의 주석 참고).
+/// `myAccountId`를 생략한 기존 호출부가 조용히 0점 세상으로 넘어가면 안 된다.
+@MainActor
+@Test func syncPathWithoutAnAccountStillScoresEveryTransition() async throws {
+    let day1 = iso("2026-08-11T09:00:00Z")
+    let day2 = iso("2026-08-12T09:00:00Z")
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedSource([
+        [issue(key: "DEMO-1", status: "To Do", assignee: "acc-other", updated: day1)],
+        [issue(key: "DEMO-1", status: "In Progress", assignee: "acc-other", updated: day2)],
+    ])
+    let engine = SyncEngine(source: source, store: store, rules: .default,
+                            workflow: demoWorkflow, calendar: utc)
+
+    _ = try await engine.sync(jql: "q", now: day1)
+    let second = try await engine.sync(jql: "q", now: day2)
+
+    #expect(second.summary.totalXP - second.summary.hygieneBonusXP > 0)
+}
+
+/// 동기화 경로와 집계 경로는 같은 이벤트 로그에 대해 같은 XP를 내야 한다.
+/// 한쪽에만 실행자 필터가 걸리는 회귀를 여기서 잡는다.
+@MainActor
+@Test func syncSummaryMatchesADirectRecomputeOverTheSameLog() async throws {
+    let day1 = iso("2026-08-11T09:00:00Z")
+    let day2 = iso("2026-08-12T09:00:00Z")
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = ScriptedSource([
+        [issue(key: "DEMO-1", status: "To Do", assignee: "acc-me", updated: day1),
+         issue(key: "DEMO-2", status: "To Do", assignee: "acc-other", updated: day1)],
+        [issue(key: "DEMO-1", status: "In Progress", assignee: "acc-me", updated: day2),
+         issue(key: "DEMO-2", status: "In Progress", assignee: "acc-other", updated: day2)],
+    ])
+    let engine = SyncEngine(source: source, store: store, rules: .default,
+                            workflow: demoWorkflow, calendar: utc, myAccountId: "acc-me")
+
+    _ = try await engine.sync(jql: "q", now: day1)
+    let synced = try await engine.sync(jql: "q", now: day2)
+
+    let scoreEngine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc,
+                                  myAccountId: "acc-me")
+    let recomputed = scoreEngine.recompute(events: try store.loadEvents(),
+                                           issues: try store.loadMirror(), now: day2).summary
+
+    #expect(synced.summary == recomputed)
+    #expect(synced.summary.totalXP - synced.summary.hygieneBonusXP > 0,
+           "둘 다 0이면 이 비교가 아무것도 보장하지 못한다")
+}

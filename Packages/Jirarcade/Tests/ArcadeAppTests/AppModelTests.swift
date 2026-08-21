@@ -662,3 +662,96 @@ private func assertDoesNotLeak(
 
     #expect(model.phase == .signedOut(message: "이메일 또는 토큰이 올바르지 않습니다."))
 }
+
+/// 남이 옮긴 전이는 동기화 경로에서도 0점이어야 한다(스펙 §4.2).
+///
+/// `AppModel`이 `SyncEngine`에 `myAccountId`를 넘기지 않던 시절, 이 경로만 실행자 필터를
+/// 건너뛰어 `summary`가 `lifetimeSummary`보다 큰 XP를 보여줬다.
+@MainActor
+@Test func syncPathAppliesTheExecutorFilter() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(
+        seeded: WorkflowMap(statusToStage: ["To Do": .backlog, "In Progress": .active])
+    )
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(issuesBody(status: "To Do", assignee: "acc-other").utf8)),
+            .init(status: 200,
+                  body: Data(issuesBody(status: "In Progress", assignee: "acc-other").utf8)),
+        ])
+    })
+    await model.start()
+    await model.syncNow()
+    await model.syncNow()
+
+    let summary = try #require(model.summary)
+    // 위생 데일리 보너스는 이벤트와 무관하게 붙으므로 빼고 본다.
+    #expect(summary.totalXP - summary.hygieneBonusXP == 0)
+}
+
+/// 같은 전이라도 내 계정이 담당이면 준다 — 위 테스트가 "전이 자체가 0점"이라는
+/// 다른 이유로 통과하고 있지 않다는 것을 고정한다.
+@MainActor
+@Test func syncPathStillRewardsMyOwnTransitions() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(
+        seeded: WorkflowMap(statusToStage: ["To Do": .backlog, "In Progress": .active])
+    )
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(issuesBody(status: "To Do", assignee: "acc-me").utf8)),
+            .init(status: 200,
+                  body: Data(issuesBody(status: "In Progress", assignee: "acc-me").utf8)),
+        ])
+    })
+    await model.start()
+    await model.syncNow()
+    await model.syncNow()
+
+    let summary = try #require(model.summary)
+    #expect(summary.totalXP - summary.hygieneBonusXP > 0)
+}
+
+/// 동기화 경로(`summary`)와 집계 경로(`lifetimeSummary`)는 같은 이벤트 로그에 대해 같은
+/// 값을 내야 한다. 한쪽에만 실행자 필터가 걸리는 회귀를 여기서 잡는다.
+///
+/// `lifetimeSummary`는 동기화 직후가 아니라 인증 직후에 갱신되므로(refreshDerivedState),
+/// 동기화 뒤 앱을 다시 시작한 상황 — 두 값이 실제로 나란히 뜨는 상황 — 을 재현한다.
+@MainActor
+@Test func syncSummaryAndLifetimeSummaryAgree() async throws {
+    let creds = InMemoryCredentialStore(
+        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
+    )
+    let workflow = InMemoryWorkflowStore(
+        seeded: WorkflowMap(statusToStage: ["To Do": .backlog, "In Progress": .active])
+    )
+    let store = try ArcadeStore(container: ArcadeStore.makeInMemoryContainer())
+    // 내 티켓과 남의 티켓을 섞는다 — 전부 0점이면 이 비교가 아무것도 보장하지 못한다.
+    let before = issuesBody(pairs: [("DEMO-1", "To Do", "acc-me"),
+                                    ("DEMO-2", "To Do", "acc-other")])
+    let after = issuesBody(pairs: [("DEMO-1", "In Progress", "acc-me"),
+                                   ("DEMO-2", "In Progress", "acc-other")])
+    let model = try makeModel(store: store, credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(before.utf8)),
+            .init(status: 200, body: Data(after.utf8)),
+        ])
+    })
+    await model.start()
+    await model.syncNow()
+    await model.syncNow()
+    let synced = try #require(model.summary)
+
+    // 재시작: 같은 스토어를 다시 읽어 집계 경로가 lifetimeSummary를 채운다.
+    await model.start()
+
+    #expect(model.lifetimeSummary == synced)
+    #expect(synced.totalXP - synced.hygieneBonusXP > 0, "내 전이의 XP는 남아 있어야 한다")
+}

@@ -241,7 +241,11 @@ public final class AppModel {
 
         let engine = SyncEngine(
             source: JiraIssueSource(client: client),
-            store: store, rules: rules, workflow: effectiveWorkflow(), calendar: calendar
+            store: store, rules: rules, workflow: effectiveWorkflow(), calendar: calendar,
+            // 여기까지 왔다면 validate()가 이미 accountId를 채웠다. 넘기지 않으면 이
+            // 경로만 실행자 필터를 건너뛰어, 같은 이벤트가 summary와 lifetimeSummary에서
+            // 다른 XP를 받는다. 매 호출마다 새로 읽으므로 계정 전환 후에도 옛 값이 남지 않는다.
+            myAccountId: myAccountId
         )
         // performSync() 시작 시점의 세대를 캡처한다. `SyncEngine.sync()`가 페치를 끝낸
         // 직후 이 값이 그때도 여전히 최신인지 확인한다 — 그 사이 로그아웃하거나 다른
