@@ -1254,8 +1254,8 @@ private let auth = try! APITokenAuth(site: "example.atlassian.net", email: "u@e.
         with: #require(request.httpBody)) as? [String: Any]
     #expect(payload?["jql"] as? String == "assignee = currentUser()")
     #expect(payload?["maxResults"] as? Int == 100)
-    let expand = payload?["expand"] as? [String]
-    #expect(expand?.contains("changelog") == true)
+    // 배열이 아니라 문자열이어야 한다. 배열로 보내면 백필이 changelog를 한 건도 못 받는다.
+    #expect(payload?["expand"] as? String == "changelog")
     // created와 duedate가 없으면 priorUpdatedAt/dueDateAtObservation을 복원할 수 없다.
     let fields = payload?["fields"] as? [String]
     #expect(fields?.contains("created") == true)
@@ -1376,7 +1376,12 @@ public struct JiraStatusCatalogEntry: Sendable, Equatable, Decodable {
             "jql": jql,
             "maxResults": maxResults,
             "fields": ["created", "duedate"],
-            "expand": ["changelog"],
+            // 이 엔드포인트에서만 expand가 배열이 아니라 **콤마 구분 문자열**이다.
+            // Atlassian 문서가 명시적으로 경고한다: "unlike the majority of instances
+            // where expand is specified, expand is defined as a comma-delimited string".
+            // 구버전 POST /search는 배열이라 혼동하기 쉽다. 배열로 보내면 400이거나
+            // 무시되고, 어느 쪽이든 changelog가 안 와서 백필 이벤트가 0건이 된다.
+            "expand": "changelog",
         ]
         if let pageToken { payload["nextPageToken"] = pageToken }
 
