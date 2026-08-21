@@ -2521,7 +2521,9 @@ struct BoardLaneView: View {
 뷰는 시계도 달력도 만들지 않는다(Global Constraints). 모델은 이미 `rules`·`clock`·`calendar`를
 전부 들고 있으므로 스냅샷 생성이 거기 있어야 한다.
 
-`AppModel`에 추가한다 (`recomputeFromLog()` 위쪽, 공개 API 구역):
+`AppModel`에 추가한다. **자체 `// MARK: - 보드` 섹션을 만들어 그 아래 둘 것** —
+`recomputeFromLog()` 바로 위는 `// MARK: - 백필` 블록 안이라, 거기 넣으면 보드 API가
+Xcode 점프 바에서 백필 코드로 읽힌다:
 
 ```swift
     /// 보드가 그릴 좌표. 뷰가 시계와 달력을 직접 만들지 않도록 모델이 만든다.
