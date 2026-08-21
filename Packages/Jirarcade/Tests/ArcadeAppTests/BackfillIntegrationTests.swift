@@ -429,3 +429,123 @@ private func backfillIssue(
 
     #expect(model.lastBackfillFailure == nil, "이전 계정의 중단 사유를 새 계정에 보여주면 안 된다")
 }
+
+// MARK: - 매핑 재진입과 백필 재시작
+
+/// 매핑을 끝낸 뒤에도 마법사로 돌아갈 수 있어야 한다. 그러지 못하면 백필이 발견한
+/// 과거 상태를 사용자가 영영 고칠 수 없다 — 폴백이 방향까지 틀린 경우가 실물에서 나왔다.
+@MainActor
+@Test func mappingCanBeReopenedAfterItIsConfirmed() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["Done": .done]))
+    let model = try makeModel(credentials: signedIn(), workflow: workflow)
+    await model.start()
+    #expect(model.phase == .ready)
+
+    await model.reopenMapping()
+
+    guard case .mappingWorkflow = model.phase else {
+        Issue.record("마법사로 돌아가야 한다: \(model.phase)")
+        return
+    }
+}
+
+/// 후보 조회가 실패해도 마법사는 열려야 한다. 과거 이력에서 발견한 상태만으로도
+/// 고칠 것이 있고, 애초에 고쳐야 할 것은 지금 티켓이 아니라 그 목록이다.
+/// (기본 스텁 HTTP는 응답을 하나만 들고 있어 `myself()`에서 소진된다 —
+///  그래서 뒤이은 후보 조회는 자연히 실패한다.)
+@MainActor
+@Test func reopeningMappingSurvivesACandidateLookupFailure() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                        totalIssueCount: 10)
+    try store.advanceBackfill(runId, nextPageToken: nil, processedIssueCount: 10,
+                              discovered: ["Merged to Staging"], partiallyRestored: [])
+    try store.finishBackfill(runId, at: iso("2026-08-13T09:30:00Z"), failure: nil)
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["Done": .done]))
+    let model = try makeModel(store: store, credentials: signedIn(), workflow: workflow)
+    await model.start()
+
+    await model.reopenMapping()
+
+    guard case .mappingWorkflow(let candidates) = model.phase else {
+        Issue.record("조회가 실패해도 마법사는 열려야 한다: \(model.phase)")
+        return
+    }
+    #expect(candidates.isEmpty, "조회가 실패했으므로 현재 티켓에서 온 후보는 없다")
+    #expect(model.historyDiscoveredStatuses == ["Merged to Staging"],
+            "마법사가 후보에 더할 과거 발견 목록은 그대로 남아 있어야 한다")
+}
+
+/// 다시 연 마법사는 **기존 매핑을 초기값으로** 들고 있어야 한다.
+/// 빈 화면으로 시작하면 확정하는 순간 이미 설정한 매핑이 통째로 사라진다.
+@MainActor
+@Test func reopenedMappingCarriesTheExistingSelection() async throws {
+    let existing = WorkflowMap(statusToStage: ["Done": .done, "To Do": .backlog])
+    let workflow = InMemoryWorkflowStore(seeded: existing)
+    let model = try makeModel(credentials: signedIn(), workflow: workflow)
+    await model.start()
+
+    await model.reopenMapping()
+
+    #expect(model.currentMapping.statusToStage == existing.statusToStage)
+}
+
+/// `currentMapping`을 노출하는 것만으로는 부족하다 — 마법사가 그 값을 실제로 초기값으로
+/// 집어야 데이터가 보존된다. 그 배선은 SwiftUI 뷰 안에 있고 ArcadeUI에는 테스트 타깃이
+/// 없으므로, `ModuleBoundaryTests`가 색 리터럴을 잡는 것과 같은 방식으로 소스를 읽어 지킨다.
+/// 이 줄이 빠지면 "매핑 수정하기"가 조용히 기존 매핑을 지우는 버튼이 된다.
+@Test func theMappingWizardSeedsItsSelectionFromTheStoredMap() throws {
+    let view = URL(fileURLWithPath: #filePath)
+        .deletingLastPathComponent()   // ArcadeAppTests
+        .deletingLastPathComponent()   // Tests
+        .deletingLastPathComponent()   // 패키지 루트
+        .appendingPathComponent("Sources/ArcadeUI/WorkflowMappingView.swift")
+    let text = try String(contentsOf: view, encoding: .utf8)
+
+    // 결과를 먼저 Bool로 받는다 — `#expect(text.contains(...))`로 쓰면 실패 메시지가
+    // 파일 전체를 쏟아내 무엇이 틀렸는지 읽을 수 없다.
+    let seedsFromStoredMap = text.contains("State(initialValue: model.currentMapping.statusToStage)")
+    #expect(seedsFromStoredMap,
+            "마법사가 기존 매핑을 초기값으로 집지 않으면 확정하는 순간 매핑이 덮어써진다")
+}
+
+/// 처음부터 다시 훑는 경로가 있어야 한다. 이어받기는 1회차에 놓친 티켓을 다시 보지 않으므로
+/// 카탈로그 실패로 떨어진 정확도를 회복할 방법이 그것뿐이다.
+@MainActor
+@Test func restartingBackfillIgnoresTheResumePoint() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "assignee = currentUser()",
+                                        at: iso("2026-08-13T00:00:00Z"), totalIssueCount: 200)
+    try store.advanceBackfill(runId, nextPageToken: "tok-9", processedIssueCount: 100,
+                              discovered: [], partiallyRestored: [])
+
+    let source = StubChangelogSource(pages: [([], nil)])
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+
+    await model.startBackfill()   // 재개가 아니라 처음부터
+
+    #expect(source.requestedTokens == [nil], "저장된 커서를 무시하고 처음부터 훑는다")
+    #expect(model.hasResumableBackfill == false, "재시작이 이전 재개 지점도 정리한다")
+}
+
+/// 로그아웃은 백필 관련 파생 상태를 남기지 않는다. 계정이 바뀌면 이전 조직의
+/// 상태명과 진행 상황이 새 계정 화면에 뜬다.
+@MainActor
+@Test func signOutClearsEveryBackfillDerivedValue() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T00:00:00Z"),
+                                        totalIssueCount: 10)
+    try store.advanceBackfill(runId, nextPageToken: "tok", processedIssueCount: 5,
+                              discovered: ["Merged to Staging"], partiallyRestored: [])
+    let model = try makeModel(store: store, credentials: signedIn())
+    await model.start()
+    #expect(model.hasResumableBackfill)
+
+    await model.signOut()
+
+    #expect(model.historyDiscoveredStatuses.isEmpty)
+    #expect(model.hasResumableBackfill == false)
+    #expect(model.lastBackfillFailure == nil)
+    #expect(model.backfillWasDegraded == false)
+}

@@ -8,7 +8,20 @@ struct WorkflowMappingView: View {
     let candidates: [String]
 
     /// 상태명 → 선택된 단계. 비어 있으면 매핑하지 않은 것이다.
-    @State private var selection: [String: Stage] = [:]
+    @State private var selection: [String: Stage]
+
+    init(model: AppModel, candidates: [String]) {
+        self.model = model
+        self.candidates = candidates
+        // 다시 열었을 때 이미 설정한 매핑이 선택된 채로 보여야 한다. 빈 상태로 시작하면
+        // "시작하기"를 누르는 순간 `confirmMapping`이 selection 전체를 저장하므로
+        // 기존 매핑이 통째로 덮어써진다.
+        //
+        // 후보 목록에 없는 항목(지금 티켓에도, 과거 이력에도 안 나온 상태)도 그대로
+        // 실려 보존된다 — 화면에 안 보이는 것을 저장하는 셈이지만, 사용자가 예전에
+        // 의도적으로 매핑한 값이라 지우는 것보다 낫다.
+        _selection = State(initialValue: model.currentMapping.statusToStage)
+    }
 
     /// 현재 미Done 티켓에서 본 상태 + 백필이 과거 이력에서 발견한 상태.
     /// 후자에는 표시를 달아 "지금은 안 쓰지만 과거에 있던 상태"임을 알린다 —
@@ -20,7 +33,13 @@ struct WorkflowMappingView: View {
              + historical.sorted().map { ($0, true) }
     }
 
-    private var unmappedCount: Int { allCandidates.count - selection.count }
+    /// 화면에 뜬 후보 중 아직 단계를 고르지 않은 것의 수.
+    ///
+    /// `selection.count`를 빼면 안 된다 — 다시 연 마법사의 selection에는 후보 목록에 없는
+    /// 기존 매핑까지 들어 있어 값이 음수로 내려간다.
+    private var unmappedCount: Int {
+        allCandidates.count { selection[$0.name] == nil }
+    }
 
     /// 후보 개수 문구. 과거 이력에서 온 것이 섞여 있으면 출처를 함께 밝힌다 —
     /// "내 티켓에서 찾았습니다"만 남으면 개수와 목록이 어긋나 보인다.

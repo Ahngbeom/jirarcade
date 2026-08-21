@@ -174,6 +174,10 @@ public final class AppModel {
         historyDiscoveredStatuses = []
         lastBackfillFailure = nil
         backfillWasDegraded = false
+        // 재개 제안도 이 계정의 미완료 run에서 나온 값이다. 바로 위 세 줄과 같은 이유로
+        // 지운다 — 계정을 바꾸면 validate()가 미러와 함께 run도 버리므로(store.reset()),
+        // 남겨두면 다음 로그인이 끝나기 전까지 모델만 이전 계정의 진행 상황을 들고 있다.
+        hasResumableBackfill = false
         lastSync = nil
         credentialSaveWarning = nil
         workflowSaveWarning = nil
@@ -195,6 +199,30 @@ public final class AppModel {
         }
         refreshUnmapped(against: map)
         phase = .ready
+    }
+
+    /// 저장된 워크플로 매핑. 마법사를 다시 열 때 초기값으로 쓴다 —
+    /// 빈 화면으로 시작하면 확정하는 순간 이미 설정한 매핑이 통째로 사라진다.
+    ///
+    /// 읽기 실패와 "아직 없음"을 구분하지 않고 빈 맵으로 접는다: 둘 다 마법사가
+    /// 처음부터 고르게 하는 것 말고 할 수 있는 일이 없고, 읽지 못한 사실 자체는
+    /// `routeAfterAuthentication()`이 이미 `workflowSaveWarning`으로 알린다.
+    public var currentMapping: WorkflowMap {
+        (try? workflow.load()) ?? WorkflowMap(statusToStage: [:])
+    }
+
+    /// 설정에서 매핑 마법사를 다시 연다.
+    ///
+    /// 첫 설정 이후에는 `routeAfterAuthentication()`이 마법사로 보내지 않으므로,
+    /// 이 경로가 없으면 백필이 발견한 과거 상태를 사용자가 영영 고칠 수 없다.
+    /// 폴백은 statusCategory에서 끌어낸 추정이라 방향까지 틀릴 수 있다 —
+    /// 보류 성격의 상태가 `done` 범주에 있으면 완료 전이로 채점되고 마감 보너스까지 받는다.
+    ///
+    /// `mappingCandidates()`가 실패하면 빈 배열을 준다. 그래도 마법사는 열려야 한다 —
+    /// 고칠 것은 지금 티켓의 상태가 아니라 `historyDiscoveredStatuses`이고,
+    /// 마법사가 그 목록을 후보에 더해 보여준다.
+    public func reopenMapping() async {
+        phase = .mappingWorkflow(candidates: await mappingCandidates())
     }
 
     /// 미러에 있는 상태 중 매핑되지 않은 것을 다시 센다.
