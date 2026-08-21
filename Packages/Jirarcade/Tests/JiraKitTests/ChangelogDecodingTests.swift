@@ -132,6 +132,52 @@ private let searchBody = """
     #expect(history.id == "99")
 }
 
+/// 분수초 없는 형식도 파싱된다. 폴백이 구조적으로 테스트된다.
+@Test func decodesTimestampsWithoutFractionalSeconds() throws {
+    let body = """
+    { "issues": [{
+        "key": "TEST-1", "fields": { "created": "2023-01-01T09:00:00+0900" },
+        "changelog": { "startAt": 0, "maxResults": 1, "total": 1, "histories": [
+          { "id": "1", "created": "2023-01-02T09:00:00+0900",
+            "items": [{ "field": "status", "from": "1", "to": "2" }] }
+        ] }
+    }] }
+    """
+    let (issues, _) = try JiraChangelogResponse.decodeSearch(Data(body.utf8))
+    let issue = try #require(issues.first)
+    #expect(issue.createdAt != nil)
+    #expect(issue.changelog.histories[0].createdAt != nil)
+}
+
+/// 이슈의 created가 파싱 불가면 던진다.
+@Test func unparsableTimestampThrowsRatherThanSubstituting() throws {
+    let body = """
+    { "issues": [{
+        "key": "TEST-1", "fields": { "created": "garbage-timestamp" },
+        "changelog": { "startAt": 0, "maxResults": 0, "total": 0, "histories": [] }
+    }] }
+    """
+    #expect(throws: JiraError.self) {
+        _ = try JiraChangelogResponse.decodeSearch(Data(body.utf8))
+    }
+}
+
+/// history의 created가 파싱 불가면 던진다.
+@Test func unparsableHistoryTimestampThrows() throws {
+    let body = """
+    { "issues": [{
+        "key": "TEST-1", "fields": { "created": "2023-01-01T00:00:00+0900" },
+        "changelog": { "startAt": 0, "maxResults": 1, "total": 1, "histories": [
+          { "id": "1", "created": "not-a-date",
+            "items": [{ "field": "status", "from": "1", "to": "2" }] }
+        ] }
+    }] }
+    """
+    #expect(throws: JiraError.self) {
+        _ = try JiraChangelogResponse.decodeSearch(Data(body.utf8))
+    }
+}
+
 private extension Array {
     subscript(safe index: Int) -> Element? {
         indices.contains(index) ? self[index] : nil

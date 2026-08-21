@@ -39,14 +39,14 @@ public enum JiraChangelogResponse {
         _ data: Data
     ) throws -> (issues: [JiraIssueWithChangelog], nextPageToken: String?) {
         let envelope = try JSONDecoder().decode(SearchEnvelope.self, from: data)
-        return (envelope.issues.map(\.model), envelope.nextPageToken)
+        return (try envelope.issues.map { try $0.model() }, envelope.nextPageToken)
     }
 
     public static func decodeIssueChangelog(_ data: Data) throws -> JiraChangelogPage {
         let raw = try JSONDecoder().decode(StandaloneEnvelope.self, from: data)
         return JiraChangelogPage(
             startAt: raw.startAt, maxResults: raw.maxResults, total: raw.total,
-            histories: raw.values.map(\.model)
+            histories: try raw.values.map { try $0.model() }
         )
     }
 
@@ -74,12 +74,15 @@ public enum JiraChangelogResponse {
             let duedate: String?
         }
 
-        var model: JiraIssueWithChangelog {
-            JiraIssueWithChangelog(
+        func model() throws -> JiraIssueWithChangelog {
+            guard let createdAt = JiraChangelogResponse.timestamp(fields.created) else {
+                throw JiraError.decoding(context: "issue \(key): created=\(fields.created)")
+            }
+            return JiraIssueWithChangelog(
                 key: key,
-                createdAt: JiraChangelogResponse.timestamp(fields.created) ?? .distantPast,
+                createdAt: createdAt,
                 dueDate: fields.duedate.flatMap(JiraChangelogResponse.dateOnly),
-                changelog: changelog.model
+                changelog: try changelog.model()
             )
         }
     }
@@ -90,9 +93,9 @@ public enum JiraChangelogResponse {
         let total: Int
         let histories: [RawHistory]
 
-        var model: JiraChangelogPage {
+        func model() throws -> JiraChangelogPage {
             JiraChangelogPage(startAt: startAt, maxResults: maxResults, total: total,
-                              histories: histories.map(\.model))
+                              histories: try histories.map { try $0.model() })
         }
     }
 
@@ -104,10 +107,13 @@ public enum JiraChangelogResponse {
 
         struct Author: Decodable { let accountId: String? }
 
-        var model: JiraChangelogHistory {
-            JiraChangelogHistory(
+        func model() throws -> JiraChangelogHistory {
+            guard let createdAt = JiraChangelogResponse.timestamp(created) else {
+                throw JiraError.decoding(context: "history \(id): created=\(created)")
+            }
+            return JiraChangelogHistory(
                 id: id,
-                createdAt: JiraChangelogResponse.timestamp(created) ?? .distantPast,
+                createdAt: createdAt,
                 authorAccountId: author?.accountId,
                 items: items.map(\.model)
             )
