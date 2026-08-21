@@ -78,6 +78,18 @@ public final class AppModel {
     /// 정규화된 Jira 호스트. 티켓 링크를 만들 때만 쓴다.
     /// 자격증명 전체가 아니라 호스트 하나만 내보낸다 — 이메일과 토큰은 화면에 닿을 이유가 없다.
     public private(set) var siteHost: String?
+    /// 실행 취소 창에서 대기 중인 전이. 티켓 키로 색인한다.
+    ///
+    /// 하나만 대기하게 하면 "새 전이가 오면 앞의 것을 즉시 확정한다"는 규칙이 따라붙고,
+    /// 그러면 세 티켓을 연달아 정리하는 흐름에서 앞의 두 건이 취소 기회를 잃는다.
+    /// 5초 실행 취소가 "다른 티켓을 건드리지 않는 한"이라는 숨은 조건을 갖게 된다.
+    public private(set) var pendingTransitions: [String: PendingTransition] = [:]
+    /// 티켓별 마지막 전이 실패 안내. **Jira가 준 사유를 담지 않는다** — 앱이 쓴 문구만 담는다.
+    public private(set) var transitionFailures: [String: String] = [:]
+
+    /// 대기 중인 타이머. 취소하려면 이걸 취소한다.
+    private var transitionTasks: [String: Task<Void, Never>] = [:]
+    private let transitionSleep: @Sendable (Duration) async throws -> Void
 
     /// 진행 중이던 동기화가 로그아웃·계정 전환을 가로질러 스토어에 쓰지 않도록 막는 데
     /// 쓰는 세대 값. 인증에 성공할 때(로그인/시작)와 로그아웃할 때마다 올라간다.
@@ -127,7 +139,9 @@ public final class AppModel {
         calendar: Calendar,
         rules: RuleSet = .default,
         settings: AppSettings = .default,
-        changelogSourceFactory: ((JiraClient) -> any ChangelogSource)? = nil
+        changelogSourceFactory: ((JiraClient) -> any ChangelogSource)? = nil,
+        transitionSleep: @Sendable @escaping (Duration) async throws -> Void
+            = { try await Task.sleep(for: $0) }
     ) {
         self.store = store
         self.credentials = credentials
@@ -140,6 +154,7 @@ public final class AppModel {
         self.calendar = calendar
         self.rules = rules
         self.settings = settings
+        self.transitionSleep = transitionSleep
         if let raw = UserDefaults.standard.string(forKey: "appearance"),
            let saved = AppearancePreference(rawValue: raw) {
             self.appearancePreference = saved
@@ -716,6 +731,68 @@ public final class AppModel {
             jql: "assignee = currentUser() AND statusCategory != Done"
         ) else { return [] }
         return Set(result.issues.map(\.statusName)).sorted()
+    }
+
+    /// 이 티켓에서 지금 고를 수 있는 전이. **캐싱하지 않는다** — 관리자가 워크플로를
+    /// 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 된다(v0.1 스펙 §8.5).
+    public func availableTransitions(for issueKey: String) async throws -> [JiraTransition] {
+        guard let client else { throw JiraError.unauthorized }
+        return try await client.transitions(issueKey: issueKey)
+    }
+
+    /// 전이를 예약한다. 요청은 실행 취소 창이 지난 뒤에 나간다.
+    public func requestTransition(issueKey: String, transition: JiraTransition) {
+        // 미러에 없으면 되돌릴 기준 상태를 알 수 없다. 화면에 없는 티켓이므로 사용자가
+        // 고를 수 있는 상황도 아니다 — 조용히 무시한다.
+        guard let current = issues.first(where: { $0.key == issueKey }) else { return }
+
+        // 같은 티켓의 대기를 교체한다. 취소하고 다시 고르는 것과 결과가 같아야 한다.
+        transitionTasks[issueKey]?.cancel()
+        transitionFailures[issueKey] = nil
+
+        let window = settings.transitionUndoWindow
+        pendingTransitions[issueKey] = PendingTransition(
+            issueKey: issueKey,
+            transitionId: transition.id,
+            toStatusName: transition.toStatusName,
+            fromStatusName: current.statusName,
+            firesAt: clock().addingTimeInterval(Double(window.components.seconds))
+        )
+        transitionTasks[issueKey] = Task { [weak self, transitionSleep] in
+            do {
+                try await transitionSleep(window)
+            } catch {
+                // 취소됐다 — 요청을 보내지 않는다. 그것이 이 창의 전부다.
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.executeTransition(issueKey: issueKey)
+        }
+    }
+
+    /// 대기 중인 전이를 되돌린다. Jira에는 아직 아무것도 보내지 않았다.
+    public func cancelPendingTransition(issueKey: String) {
+        transitionTasks[issueKey]?.cancel()
+        transitionTasks[issueKey] = nil
+        pendingTransitions[issueKey] = nil
+    }
+
+    public func dismissTransitionFailure(issueKey: String) {
+        transitionFailures[issueKey] = nil
+    }
+
+    /// Task 7에서 채운다. 지금은 대기만 지운다.
+    private func executeTransition(issueKey: String) async {
+        pendingTransitions[issueKey] = nil
+        transitionTasks[issueKey] = nil
+    }
+
+    /// 테스트가 동기화 없이 보드 상태를 준비하기 위한 통로.
+    ///
+    /// 프로덕션 경로는 `recomputeFromLog()`뿐이다. 이 함수를 프로덕션 코드에서 부르면
+    /// 미러와 화면이 갈라진다.
+    func seedIssuesForTesting(_ seeded: [ObservedIssue]) {
+        issues = seeded.sorted { $0.key < $1.key }
     }
 }
 

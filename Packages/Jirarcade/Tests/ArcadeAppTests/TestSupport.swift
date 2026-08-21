@@ -50,7 +50,8 @@ func makeModel(
     workflow: InMemoryWorkflowStore = InMemoryWorkflowStore(),
     accountBinding: InMemoryAccountBindingStore = InMemoryAccountBindingStore(),
     http: @escaping () -> HTTPClient = { ScriptedHTTP(status: 200, body: myselfBody) },
-    now: Date = iso("2026-08-14T09:00:00Z")
+    now: Date = iso("2026-08-14T09:00:00Z"),
+    transitionSleep: (@Sendable (Duration) async throws -> Void)? = nil
 ) throws -> AppModel {
     var utc = Calendar(identifier: .gregorian)
     utc.timeZone = TimeZone(identifier: "UTC")!
@@ -62,7 +63,28 @@ func makeModel(
         clientFactory: { auth in JiraClient(auth: auth, http: http()) },
         clock: { now },
         calendar: utc,
-        changelogSourceFactory: changelogSource.map { source in { _ in source } }
+        changelogSourceFactory: changelogSource.map { source in { _ in source } },
+        transitionSleep: transitionSleep ?? { try await Task.sleep(for: $0) }
+    )
+}
+
+/// 테스트용 `ObservedIssue`. `ArcadeCoreTests`의 동명 헬퍼와 같은 모양이지만, 별도
+/// 테스트 타깃이라 공유할 수 없다.
+func issue(
+    key: String,
+    summary: String = "샘플 티켓",
+    status: String,
+    type: String = "개선",
+    priority: String? = "Medium",
+    assignee: String? = "acc-me",
+    assigneeName: String? = "bahn",
+    due: Date? = nil,
+    updated: Date = iso("2026-08-12T00:00:00Z")
+) -> ObservedIssue {
+    ObservedIssue(
+        key: key, summary: summary, statusName: status, issueType: type,
+        priority: priority, assigneeAccountId: assignee, assigneeName: assigneeName,
+        dueDate: due, jiraUpdatedAt: updated
     )
 }
 
