@@ -781,10 +781,60 @@ public final class AppModel {
         transitionFailures[issueKey] = nil
     }
 
-    /// Task 7에서 채운다. 지금은 대기만 지운다.
+    /// 실행 취소 창이 지난 뒤 실제로 요청을 보낸다.
     private func executeTransition(issueKey: String) async {
+        guard let pending = pendingTransitions[issueKey], let client else {
+            pendingTransitions[issueKey] = nil
+            transitionTasks[issueKey] = nil
+            return
+        }
+        // 결과와 무관하게 대기는 끝난다. 낙관적 표시를 남겨두면 실패했는데도 카드가
+        // 새 레인에 머문다.
         pendingTransitions[issueKey] = nil
         transitionTasks[issueKey] = nil
+
+        do {
+            try await client.performTransition(issueKey: issueKey,
+                                               transitionId: pending.transitionId)
+        } catch JiraError.unauthorized {
+            // 만료 배너가 이미 같은 사실을 말한다. 카드에도 실패를 띄우면 인증 문제가
+            // 두 번 보이고, 사용자는 티켓 문제와 세션 문제를 구분하지 못한다.
+            phase = .expired
+            return
+        } catch {
+            transitionFailures[issueKey] = Self.transitionFailureMessage(error)
+            return
+        }
+
+        // XP를 직접 주지 않는다. 동기화가 diff로 `.statusChanged`를 만들고 ScoreEngine이
+        // 여느 이벤트와 똑같이 채점한다 — 점수가 관측 로그의 순수 함수라는 불변식을
+        // 지키는 유일한 방법이고, 덕분에 AbuseGuard의 왕복 차단도 그대로 적용된다.
+        await syncNow(reason: .manual)
+    }
+
+    /// 화면에 띄울 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
+    ///
+    /// `JiraError.transitionRejected(reason:)`는 Jira 응답의 `errorMessages`를 그대로
+    /// 담고 그 본문에는 이메일이 섞일 수 있다(`redactedErrorDescription` 참고).
+    /// v0.1 스펙 §8.4는 화면에 닿는 실패 문자열까지 이 제약 아래 둔다.
+    ///
+    /// 사유 대신 Jira로 가는 길을 준다 — 전이가 거부되는 이유는 앱이 채울 수 없는
+    /// 정보를 Jira가 요구하기 때문이고, 그것을 채울 수 있는 곳은 어차피 Jira다.
+    private static func transitionFailureMessage(_ error: any Error) -> String {
+        switch error {
+        case JiraError.transitionRejected:
+            return "Jira가 이 전이를 거부했습니다. 필요한 정보를 Jira에서 채워 주세요."
+        case JiraError.offline:
+            return "연결되지 않았습니다. 다시 시도해 주세요."
+        case JiraError.forbidden:
+            return "이 티켓을 옮길 권한이 없습니다."
+        case JiraError.notFound:
+            return "티켓을 찾을 수 없습니다. Jira에서 삭제되었을 수 있습니다."
+        case JiraError.rateLimited:
+            return "요청이 너무 잦습니다. 잠시 뒤 다시 시도해 주세요."
+        default:
+            return "전이하지 못했습니다. 잠시 뒤 다시 시도해 주세요."
+        }
     }
 
     /// 테스트가 동기화 없이 보드 상태를 준비하기 위한 통로.

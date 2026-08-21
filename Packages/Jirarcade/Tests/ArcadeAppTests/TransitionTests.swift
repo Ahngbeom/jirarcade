@@ -100,6 +100,41 @@ actor ManualSleep {
     var hasSleeper: Bool { !waiters.isEmpty }
 }
 
+/// `sleeper.fire()` 이후 `executeTransition`이 끝날 때까지 협조적으로 양보한다.
+///
+/// `fire()`는 대기 중이던 sleep의 continuation을 재개할 뿐이다 — 그 뒤로
+/// `executeTransition`이 실제 HTTP 호출을 보내고(성공 시) 뒤따르는 `syncNow(...)`까지
+/// 끝내려면, `[weak self]` 클로저 안에서 스폰된 태스크가 `ManualSleep` 액터에서
+/// `MainActor`로 다시 홉하는 것을 포함해 여러 번의 스케줄링 홉을 거쳐야 한다. 그 홉
+/// 수는 실행마다 달라진다(실측 12~15회) — 실제 시간이 걸리는 게 아니라 협력형
+/// 스케줄러가 대기 중인 작업을 언제 큐에서 꺼내는지가 매번 다르기 때문이다.
+/// 그래서 `await Task.yield()` 한 번으로는 불충분할 수 있다: 조건이 참이 될 때까지
+/// 반복해서 양보한다. 실시간 sleep이 아니므로 진짜로 끝나지 않는 경로가 있어도
+/// 테스트가 몇 초씩 늘어지지 않고, 그런 경우에는 `limit`에 도달해 조건이 여전히
+/// 거짓인 채로 반환되어 뒤따르는 `#expect`가 실패로 드러낸다.
+@MainActor
+private func settle(limit: Int = 200, until condition: () -> Bool) async {
+    var remaining = limit
+    while !condition() && remaining > 0 {
+        await Task.yield()
+        remaining -= 1
+    }
+}
+
+/// 로그인 직후 곧바로 `.ready`로 가는 워크플로 저장소.
+///
+/// 이 파일의 테스트는 `signIn(...)` 뒤에 HTTP 스텁을 정확히 몇 번 쓸지 큐로 미리
+/// 정해 둔다(`/myself` 다음에 전이 요청, 성공 시 그 다음에 동기화). 워크플로 매핑이
+/// 없으면 `routeAfterAuthentication()`이 `.mappingWorkflow`로 보내고, 그 상태는
+/// 화면이 후보 목록을 얻으려고 **또 다른 HTTP 요청**(`mappingCandidates()`)을 조용히
+/// 보낸다 — 큐에서 전이 요청 몫으로 넣어 둔 응답을 그 요청이 가로채 버려서, 실제
+/// 전이 요청은 큐가 빈 채로 나가 `badServerResponse`를 맞는다. 매핑을 심어 두면
+/// `.ready`로 곧장 가서 이 여분의 요청이 아예 생기지 않는다. 매핑 내용 자체는 이
+/// 테스트들의 관심사가 아니므로 최소한(전이 전후 상태 두 개)만 채운다.
+private func readySeededWorkflow() -> InMemoryWorkflowStore {
+    InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["In Progress": .active, "Done": .done]))
+}
+
 /// `JiraTransition`은 memberwise init이 없고 `Decodable`로만 만들어진다.
 /// `decodeList`가 throws라 전역 `let`에서는 부를 수 없으므로 헬퍼로 감싼다.
 private func transition(
@@ -204,4 +239,121 @@ private func transition(
                             transition: try transition(id: "31", name: "완료로", to: "Done"))
 
     #expect(model.pendingTransitions.isEmpty)
+}
+
+/// 창이 지나면 요청이 나가고, 성공하면 동기화가 뒤따른다. XP를 직접 주지 않고
+/// diff가 이벤트를 만들게 하는 것이 이 앱의 채점 불변식을 지키는 방법이다.
+@MainActor
+@Test func firingTheTransitionSyncsAfterSuccess() async throws {
+    let sleeper = ManualSleep()
+    let model = try makeModel(
+        workflow: readySeededWorkflow(),
+        http: {
+            ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),   // /myself
+                .init(status: 204, body: Data()),                  // POST transitions
+                .init(status: 200, body: Data(issuesBody(pairs: []).utf8)), // 뒤따르는 동기화
+            ])
+        },
+        now: now,
+        transitionSleep: { try await sleeper.sleep($0) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try transition(id: "31", name: "완료로", to: "Done"))
+
+    await sleeper.fire()
+    await settle { model.lastSync != nil }
+
+    #expect(model.pendingTransitions["DEMO-1"] == nil)
+    #expect(model.transitionFailures["DEMO-1"] == nil)
+    #expect(model.lastSync != nil)
+}
+
+/// 400은 대부분 "필수 필드가 비어 있다"이다. 사유는 Jira 응답 본문에서 오고 그 안에
+/// 이메일이 섞일 수 있으므로 화면에 옮기지 않는다 — 대신 Jira로 가는 길을 준다.
+@MainActor
+@Test func aRejectedTransitionRollsBackWithoutQuotingJira() async throws {
+    let sleeper = ManualSleep()
+    let leak = "someone@example.com"
+    let model = try makeModel(
+        workflow: readySeededWorkflow(),
+        http: {
+            ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 400,
+                      body: Data(#"{"errorMessages":["\#(leak) 필드가 필요합니다"]}"#.utf8)),
+            ])
+        },
+        now: now,
+        transitionSleep: { try await sleeper.sleep($0) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try transition(id: "31", name: "완료로", to: "Done"))
+
+    await sleeper.fire()
+    await settle { model.transitionFailures["DEMO-1"] != nil }
+
+    #expect(model.pendingTransitions["DEMO-1"] == nil)
+    let message = try #require(model.transitionFailures["DEMO-1"])
+    #expect(!message.contains(leak), "Jira 응답 본문이 화면 문구에 섞였다: \(message)")
+    #expect(!message.contains("@"))
+}
+
+@MainActor
+@Test func anExpiredTokenDuringTransitionGoesToTheExpiredPhase() async throws {
+    let sleeper = ManualSleep()
+    let model = try makeModel(
+        workflow: readySeededWorkflow(),
+        http: {
+            ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 401, body: Data()),
+            ])
+        },
+        now: now,
+        transitionSleep: { try await sleeper.sleep($0) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try transition(id: "31", name: "완료로", to: "Done"))
+
+    await sleeper.fire()
+    await settle { model.phase == .expired }
+
+    #expect(model.phase == .expired)
+    #expect(model.pendingTransitions["DEMO-1"] == nil)
+    // 만료 배너가 이미 같은 사실을 말한다. 카드에도 실패를 띄우면 인증 문제가 두 번 보인다.
+    #expect(model.transitionFailures["DEMO-1"] == nil)
+}
+
+@MainActor
+@Test func dismissingClearsTheFailure() async throws {
+    let sleeper = ManualSleep()
+    let model = try makeModel(
+        workflow: readySeededWorkflow(),
+        http: {
+            ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 500, body: Data()),
+            ])
+        },
+        now: now,
+        transitionSleep: { try await sleeper.sleep($0) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try transition(id: "31", name: "완료로", to: "Done"))
+    await sleeper.fire()
+    await settle { model.transitionFailures["DEMO-1"] != nil }
+    #expect(model.transitionFailures["DEMO-1"] != nil)
+
+    model.dismissTransitionFailure(issueKey: "DEMO-1")
+
+    #expect(model.transitionFailures["DEMO-1"] == nil)
 }
