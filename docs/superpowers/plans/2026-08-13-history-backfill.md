@@ -2238,6 +2238,103 @@ XP에는 아무 영향이 없다. 워크플로 개편 이전 구간이 통째로
 남아야 한다. 한 파일에 섞으면 "이건 내가 정한 것"과 "이건 앱이 추정한 것"을
 구분할 수 없어, 마법사가 추정값을 사용자 선택인 양 보여주게 된다.
 
+- [ ] **Step 0: Task 8 리뷰 지적 반영 — 이름 없는 상태 해석**
+
+`StatusCatalog.stage(forId:name:)`의 ①은 `if let name`이라 **이름이 있을 때만** 동작한다.
+`JiraChangelogItem.toString`/`fromString`은 옵셔널이므로, changelog가 ID만 보내면
+①을 건너뛰고 카테고리 폴백이 이긴다. 리뷰어가 실행으로 확인한 결과:
+
+```
+StatusCatalog(workflow: demoWorkflow,
+              entries: [JiraStatusCatalogEntry(id: "10020", name: "In Review",
+                                               categoryKey: "indeterminate")])
+  .stage(forId: "10020", name: nil)
+→ fallback(.active)      // demoWorkflow는 "In Review"를 .review로 매핑하는데도
+```
+
+`.review`는 order 2, `.active`는 order 1이다. XP는 `to.order > from.order`로 전진을
+판정하므로 이 한 칸 차이가 전진을 후퇴로 뒤집어 **조용히 0점**을 만든다.
+같은 원인으로 수집 라벨에도 `"10020"`이라는 숫자 ID가 들어가, 마법사가
+사용자에게 무슨 상태인지 알 수 없는 항목을 띄우고 그렇게 저장된 키는
+①의 이름 조회에 영원히 걸리지 않는다.
+
+카탈로그 엔트리에 이미 정확한 이름이 있으므로 되찾아 쓴다:
+
+```swift
+    public func stage(forId id: String?, name: String?) -> StageResolution {
+        // changelog가 이름 없이 ID만 보내는 항목이 있다. 카탈로그에 그 ID가 있으면
+        // 정확한 이름을 되찾아 ①에 태운다 — 그러지 않으면 매핑된 상태가 카테고리
+        // 폴백으로 떨어져 단계가 한 칸 어긋나고, 수집 라벨에도 숫자 ID가 들어간다.
+        let entry = id.flatMap { byId[$0] }
+        let resolvedName = name ?? entry?.name
+        let label = resolvedName ?? id ?? ""
+
+        // ① 현재 매핑
+        if let resolvedName, let mapped = workflow.stage(for: resolvedName) {
+            return .mapped(mapped)
+        }
+
+        // ② statusCategory 폴백
+        if let entry, let stage = Self.stage(forCategory: entry.categoryKey) {
+            collect(label)
+            ...
+```
+
+같은 라운드에서 리뷰가 지적한 **검증 공백** 세 곳도 테스트로 막는다. 셋 다 변이가
+생존하는 것이 확인됐다(구현을 틀리게 바꿔도 테스트가 통과했다):
+
+```swift
+/// 이름 없이 ID만 오는 항목도 매핑된 상태로 해석돼야 한다.
+/// 카테고리 폴백에 맡기면 .review(order 2)가 .active(order 1)로 한 칸 어긋나
+/// 전진 판정이 뒤집힌다.
+@Test func idOnlyItemStillResolvesThroughTheWorkflowMap() {
+    let catalog = StatusCatalog(
+        workflow: demoWorkflow,
+        entries: [JiraStatusCatalogEntry(id: "10020", name: "In Review",
+                                         categoryKey: "indeterminate")]
+    )
+    #expect(catalog.stage(forId: "10020", name: nil) == .mapped(.review))
+    #expect(catalog.unmappedNames.isEmpty, "매핑된 상태는 마법사 후보가 아니다")
+}
+
+/// 폴백으로 떨어질 때도 라벨은 숫자 ID가 아니라 이름이어야 한다 —
+/// 마법사가 만든 매핑의 키가 되고, 그 키는 이름으로 조회된다.
+@Test func fallbackLabelUsesTheCatalogNameNotTheId() {
+    let catalog = StatusCatalog(
+        workflow: demoWorkflow,
+        entries: [JiraStatusCatalogEntry(id: "10071", name: "Merged to Staging",
+                                         categoryKey: "indeterminate")]
+    )
+    #expect(catalog.stage(forId: "10071", name: nil) == .fallback(.active))
+    #expect(catalog.unmappedNames == ["Merged to Staging"])
+}
+
+/// 실제 Jira는 statusCategory.key로 "undefined"(No Category)를 돌려주는 항목이 있다.
+/// 모르는 카테고리는 추측하지 않고 미매핑으로 둔다 — 추측하면 0점이어야 할 상태가
+/// 조용히 점수를 받는다.
+@Test func unknownCategoryKeyIsNotGuessed() {
+    let catalog = StatusCatalog(
+        workflow: demoWorkflow,
+        entries: [JiraStatusCatalogEntry(id: "10099", name: "Uncategorized",
+                                         categoryKey: "undefined")]
+    )
+    #expect(catalog.stage(forId: "10099", name: "Uncategorized") == .unmapped("Uncategorized"))
+}
+
+/// 채점이 실제로 읽는 프로퍼티다. 미매핑에 단계를 주는 구현으로 바뀌어도
+/// 지금 테스트는 전부 통과한다(변이 생존 확인됨).
+@Test func stageAccessorReflectsTheResolutionKind() {
+    #expect(StageResolution.mapped(.review).stage == .review)
+    #expect(StageResolution.fallback(.active).stage == .active)
+    #expect(StageResolution.unmapped("X").stage == nil)
+}
+```
+
+기존 `StatusCatalogTests.swift`의 픽스처 `"검수Done"`을 `"QA Done"`으로 바꾼다.
+`TestSupport.swift`가 명시한 "실제 조직의 상태명을 저장소에 남기지 않는다" 정책과
+어긋나 보이는데, "이름에 Done이 있지만 카테고리는 indeterminate"라는 테스트 의도는
+영어 이름으로도 똑같이 달성된다.
+
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 `Tests/ArcadeCoreTests/EffectiveWorkflowTests.swift`:
@@ -2408,6 +2505,7 @@ git add Packages/Jirarcade/Sources/ArcadeCore/Domain/WorkflowMap.swift \
         Packages/Jirarcade/Sources/ArcadeCore/Domain/StatusCatalog.swift \
         Packages/Jirarcade/Sources/ArcadeApp/WorkflowStore.swift \
         Packages/Jirarcade/Tests/ArcadeCoreTests/EffectiveWorkflowTests.swift \
+        Packages/Jirarcade/Tests/ArcadeCoreTests/StatusCatalogTests.swift \
         Packages/Jirarcade/Tests/ArcadeAppTests/WorkflowStoreTests.swift
 git commit -m "feat: 폴백 매핑을 실효 워크플로 맵으로 채점에 연결"
 ```
