@@ -1,0 +1,39 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+
+# 연속 푸시가 러너를 겹쳐 잡지 않게 한다. 낡은 실행은 취소한다.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+defaults:
+  run:
+    # 패키지가 리포 루트가 아니다.
+    working-directory: Packages/Jirarcade
+
+jobs:
+  test:
+    runs-on: macos-26
+    steps:
+      - uses: actions/checkout@v7
+
+      # 툴체인을 핀으로 박지 않는다. Package.swift가 swift-tools-version 6.2를
+      # 요구하므로 러너가 낮아지면 빌드가 즉시 실패하고, 올라가면 이 로그가
+      # 릴리즈보다 먼저 알려준다. 릴리즈 워크플로는 반대로 명시 핀을 쓴다 —
+      # CI는 "미래에 깨지나"를, 릴리즈는 "어제와 같은가"를 알고 싶기 때문이다.
+      - name: 툴체인 확인
+        run: |
+          swift --version
+          xcodebuild -version
+          echo "설치된 Xcode:"
+          ls /Applications | grep -i '^Xcode' || true
+
+      - name: 빌드
+        run: swift build --build-tests
+
+      - name: 테스트
+        run: swift test
