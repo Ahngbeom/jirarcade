@@ -1714,6 +1714,25 @@ diff가 이벤트를 만들고 `ScoreEngine`이 여느 이벤트와 똑같이 �
 
 - [ ] **Step 1: 실패하는 테스트를 덧붙인다**
 
+> **구현 중 드러난 두 가지 (실측):**
+> 1. 로그인 픽스처에 워크플로를 심지 않으면 `routeAfterAuthentication()`이 매핑 마법사로
+>    보내고, 마법사가 **HTTP 호출을 하나 더 소비해** 전이 POST용 응답을 가져가 버린다.
+>    Task 5의 `modelAfterSync`와 같은 이유이며, 전이 테스트에도 똑같이 필요하다.
+> 2. `await sleeper.fire()` 뒤의 `Task.yield()` **한 번으로는 부족하다** — HTTP 호출과
+>    성공 경로의 `syncNow`가 끝나기까지 실측 12~15회가 필요하고 실행마다 다르다.
+>    실시간 `sleep`으로 덮지 말고 조건 기반 폴링으로 기다린다:
+>    ```swift
+>    private func settle(limit: Int = 200, until condition: () -> Bool) async {
+>        var remaining = limit
+>        while !condition() && remaining > 0 {
+>            await Task.yield()
+>            remaining -= 1
+>        }
+>    }
+>    ```
+>    조건이 만족되면 즉시 반환하므로 결정적이고, 끝내 만족되지 않으면 멈추는 대신
+>    단언이 실패한다.
+
 `TransitionTests.swift` 끝에 추가한다:
 
 ```swift
