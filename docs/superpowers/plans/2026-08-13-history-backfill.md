@@ -3708,13 +3708,24 @@ git commit -m "feat: 백필 실행·재개 배선과 폴백을 반영한 시즌�
                     .foregroundStyle(theme.inkSecondary)
 
                 if let progress = model.backfillProgress {
-                    ProgressView(value: Double(progress.processed),
-                                 total: Double(max(progress.total, 1))) {
-                        Text("불러오는 중 \(progress.processed)/\(progress.total)")
-                            .font(.caption)
-                            .foregroundStyle(theme.inkSecondary)
+                    // 총계를 모를 수 있다 — 새 검색 API는 total을 주지 않는다.
+                    // 그때는 불확정 바를 쓴다. 처리한 수를 총계로 삼으면 늘 100%로 보인다.
+                    if let total = progress.total, total > 0 {
+                        ProgressView(value: Double(min(progress.processed, total)),
+                                     total: Double(total)) {
+                            Text("불러오는 중 \(progress.processed)/\(total)")
+                                .font(.caption)
+                                .foregroundStyle(theme.inkSecondary)
+                        }
+                        .tint(theme.accent)
+                    } else {
+                        ProgressView {
+                            Text("불러오는 중 \(progress.processed)건")
+                                .font(.caption)
+                                .foregroundStyle(theme.inkSecondary)
+                        }
+                        .tint(theme.accent)
                     }
-                    .tint(theme.accent)
                     Button("중단") { model.cancelBackfill() }
                     Text("중단해도 지금까지 불러온 기록은 남고, 나중에 이어서 받을 수 있습니다.")
                         .font(.caption2)
@@ -3738,13 +3749,22 @@ git commit -m "feat: 백필 실행·재개 배선과 폴백을 반영한 시즌�
 ```swift
             if let progress = model.backfillProgress {
                 HStack(spacing: 8) {
-                    ProgressView(value: Double(progress.processed),
-                                 total: Double(max(progress.total, 1)))
-                        .tint(theme.accent)
-                        .frame(width: 120)
-                    Text("과거 기록 \(progress.processed)/\(progress.total)")
-                        .font(.caption)
-                        .foregroundStyle(theme.inkSecondary)
+                    if let total = progress.total, total > 0 {
+                        ProgressView(value: Double(min(progress.processed, total)),
+                                     total: Double(total))
+                            .tint(theme.accent)
+                            .frame(width: 120)
+                        Text("과거 기록 \(progress.processed)/\(total)")
+                            .font(.caption)
+                            .foregroundStyle(theme.inkSecondary)
+                    } else {
+                        ProgressView()
+                            .tint(theme.accent)
+                            .frame(width: 120)
+                        Text("과거 기록 \(progress.processed)건")
+                            .font(.caption)
+                            .foregroundStyle(theme.inkSecondary)
+                    }
                 }
             }
 
@@ -3816,17 +3836,33 @@ git commit -m "feat: 백필 버튼·진행 바와 시즌/통산 레벨 표시"
     let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
                                         totalIssueCount: 100)
     try store.advanceBackfill(runId, nextPageToken: "tok", processedIssueCount: 40,
-                              discovered: ["Merged to Staging", "검수Done"], partiallyRestored: [])
+                              discovered: ["Merged to Staging", "QA Done"], partiallyRestored: [])
 
-    let creds = InMemoryCredentialStore(
-        seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
-    )
-    let model = try makeModel(store: store, credentials: creds)
+    let model = try makeModel(store: store)
 
     await model.start()
 
-    #expect(Set(model.historyDiscoveredStatuses) == ["Merged to Staging", "검수Done"])
+    #expect(Set(model.historyDiscoveredStatuses) == ["Merged to Staging", "QA Done"])
     #expect(model.hasResumableBackfill == true, "중단된 백필이 있으면 이어받기를 제안해야 한다")
+}
+
+/// **정상 종료된** 백필의 발견 목록도 남아야 한다. `resumableBackfill()`은 미완료 run만
+/// 보므로 그것만 읽으면 백필이 끝나는 순간 매핑 후보가 통째로 사라진다 —
+/// 정작 매핑이 필요한 시점은 백필이 끝난 뒤다.
+@MainActor
+@Test func discoveriesSurviveAFinishedBackfill() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                        totalIssueCount: 100)
+    try store.advanceBackfill(runId, nextPageToken: nil, processedIssueCount: 100,
+                              discovered: ["Merged to Staging"], partiallyRestored: [])
+    try store.finishBackfill(runId, at: iso("2026-08-13T09:30:00Z"), failure: nil)
+
+    let model = try makeModel(store: store)
+    await model.start()
+
+    #expect(model.historyDiscoveredStatuses == ["Merged to Staging"])
+    #expect(model.hasResumableBackfill == false, "끝난 백필은 이어받기 대상이 아니다")
 }
 ```
 
@@ -3843,19 +3879,36 @@ Expected: FAIL — `value of type 'AppModel' has no member 'historyDiscoveredSta
     public private(set) var historyDiscoveredStatuses: [String] = []
 ```
 
-`runBackfill`의 성공 경로에서 채운다(`try? store.advanceBackfill(...)` 뒤):
+**`ArcadeStore`에 조회 하나를 추가한다.** `resumableBackfill()`은 미완료 run만 보므로
+그것만 읽으면 백필이 정상 종료되는 순간 매핑 후보가 사라진다 — 정작 매핑이 필요한
+시점은 백필이 끝난 뒤다:
+
+```swift
+    /// 가장 최근 백필이 발견한 미매핑 상태명. **완료 여부와 무관하게** 마지막 run을 본다.
+    /// 끝난 백필의 발견 목록도 매핑 후보로 남아야 하기 때문이다.
+    public func lastDiscoveredStatuses() throws -> [String] {
+        var descriptor = FetchDescriptor<BackfillRun>(
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first?.discoveredUnmappedStatuses ?? []
+    }
+```
+
+`runBackfill`의 마지막(진행 바를 지우고 요약을 갱신하는 자리)에서 채운다:
 
 ```swift
             historyDiscoveredStatuses = outcome.discoveredStatuses
 ```
 
-`start()`에서도 복원한다 — 앱을 껐다 켜도 후보가 남아야 한다:
+성공·실패 어느 쪽이든 저장소에서도 복원한다. `start()`와 백필 종료 지점 모두에서:
 
 ```swift
-        if let snapshot = try? store.resumableBackfill() {
-            historyDiscoveredStatuses = snapshot.discovered
-        }
+        historyDiscoveredStatuses = (try? store.lastDiscoveredStatuses()) ?? []
 ```
+
+> 백필이 예외로 끝나면 `outcome`이 없으므로 저장소 경로가 유일한 출처다.
+> 엔진이 페이지마다 `advanceBackfill`로 저장해 두었으므로 중단 시점까지의 발견은 남아 있다.
 
 - [ ] **Step 4: 매핑 마법사에 후보를 더한다**
 
@@ -3890,7 +3943,8 @@ Expected: PASS, 경고 0
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift \
+git add Packages/Jirarcade/Sources/ArcadeCore/Store/ArcadeStore.swift \
+        Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift \
         Packages/Jirarcade/Sources/ArcadeUI/WorkflowMappingView.swift \
         Packages/Jirarcade/Tests/ArcadeAppTests/BackfillIntegrationTests.swift
 git commit -m "feat: 백필이 발견한 과거 상태를 매핑 마법사 후보로 제출"
