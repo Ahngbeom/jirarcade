@@ -342,3 +342,90 @@ private func backfillIssue(
     #expect(model.backfillWasDegraded == false, "카탈로그를 받은 성공 실행이면 경고가 걷힌다")
     #expect(model.lastBackfillFailure == nil, "성공한 실행 뒤에는 실패 사유가 남지 않는다")
 }
+
+/// 백필이 발견한 과거 상태가 앱을 다시 켜도 남아 매핑 후보로 올라온다.
+/// 사용자가 확정하면 재집계로 소급 XP가 정확해진다 — 이벤트가 원본이고 점수는 파생이다(스펙 §5).
+@MainActor
+@Test func historyDiscoveredStatusesRestoreOnLaunch() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                        totalIssueCount: 100)
+    try store.advanceBackfill(runId, nextPageToken: "tok", processedIssueCount: 40,
+                              discovered: ["Merged to Staging", "QA Done"], partiallyRestored: [])
+
+    let model = try makeModel(store: store, credentials: signedIn())
+
+    await model.start()
+
+    #expect(Set(model.historyDiscoveredStatuses) == ["Merged to Staging", "QA Done"])
+    #expect(model.hasResumableBackfill == true, "중단된 백필이 있으면 이어받기를 제안해야 한다")
+}
+
+/// **정상 종료된** 백필의 발견 목록도 남아야 한다. `resumableBackfill()`은 미완료 run만
+/// 보므로 그것만 읽으면 백필이 끝나는 순간 매핑 후보가 통째로 사라진다 —
+/// 정작 매핑이 필요한 시점은 백필이 끝난 뒤다.
+@MainActor
+@Test func discoveriesSurviveAFinishedBackfill() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                        totalIssueCount: 100)
+    try store.advanceBackfill(runId, nextPageToken: nil, processedIssueCount: 100,
+                              discovered: ["Merged to Staging"], partiallyRestored: [])
+    try store.finishBackfill(runId, at: iso("2026-08-13T09:30:00Z"), failure: nil)
+
+    let model = try makeModel(store: store, credentials: signedIn())
+    await model.start()
+
+    #expect(model.historyDiscoveredStatuses == ["Merged to Staging"])
+    #expect(model.hasResumableBackfill == false, "끝난 백필은 이어받기 대상이 아니다")
+}
+
+/// 로그아웃이 백필에서 나온 값들을 지운다. 남으면 다른 계정으로 로그인했을 때 이전 조직의
+/// 상태명이 새 계정의 매핑 후보로 뜬다 — 조직이 다르면 완전히 무의미한 목록이다.
+/// `ArcadeStore.reset()`이 `BackfillRun`을 지우는 것과 같은 이유다.
+@MainActor
+@Test func signOutClearsHistoryDiscoveriesAndDegradedWarning() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    // 카탈로그를 못 받으면 매핑에 없는 상태는 전부 ③ 미매핑으로 수집된다 —
+    // 발견 목록과 정확도 경고를 한 번에 세우는 가장 짧은 경로다.
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me",
+                        toId: "10071", to: "Merged to Staging")], nil)
+    ])
+    source.catalogError = StubError()
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(store: store, changelogSource: source,
+                              credentials: signedIn(), workflow: workflow)
+    await model.start()
+    await model.startBackfill()
+
+    #expect(model.historyDiscoveredStatuses == ["Merged to Staging"],
+            "이 테스트가 무엇을 지우는지 검증하려면 먼저 값이 서 있어야 한다")
+    #expect(model.backfillWasDegraded, "카탈로그를 못 받았으므로 정확도 경고가 서 있어야 한다")
+
+    await model.signOut()
+
+    #expect(model.historyDiscoveredStatuses.isEmpty,
+            "이전 계정의 상태명이 새 계정의 매핑 후보로 뜨면 안 된다")
+    #expect(model.backfillWasDegraded == false,
+            "정확도 경고는 이전 계정의 백필에 대한 결론이다")
+}
+
+/// 실패 사유도 로그아웃에서 지워진다. 스토어에서 다시 읽는 값이지만, 다음 로그인이
+/// 성공하기 전까지는 이전 계정의 사유가 모델에 남는다.
+@MainActor
+@Test func signOutClearsLastBackfillFailure() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let runId = try store.beginBackfill(jql: "q", at: iso("2026-08-13T09:00:00Z"),
+                                        totalIssueCount: 100)
+    try store.recordBackfillFailure(runId, message: "StubError")
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(store: store, credentials: signedIn(), workflow: workflow)
+    await model.start()
+    #expect(model.lastBackfillFailure == "StubError")
+
+    await model.signOut()
+
+    #expect(model.lastBackfillFailure == nil, "이전 계정의 중단 사유를 새 계정에 보여주면 안 된다")
+}

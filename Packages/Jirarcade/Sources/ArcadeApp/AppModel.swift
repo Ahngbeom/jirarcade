@@ -43,6 +43,10 @@ public final class AppModel {
     /// 마지막 백필이 상태 카탈로그를 못 받아 폴백 ②가 비활성인 채로 돌았다.
     /// 매핑에 없는 과거 상태가 전부 0점 처리됐다는 뜻이라 사용자에게 알려야 한다.
     public private(set) var backfillWasDegraded: Bool = false
+    /// 백필이 과거 이력에서 발견한, 현재 매핑에 없는 상태명.
+    /// 매핑 마법사가 이 목록을 후보에 더해 보여준다 — 폴백이 추정한 단계를 사용자가
+    /// 바로잡으면 재집계에서 사용자 매핑이 폴백을 이겨 소급 XP가 정확해진다.
+    public private(set) var historyDiscoveredStatuses: [String] = []
     /// 로그인한 계정. "내가 직접 옮긴 것만 XP" 판정에 쓴다.
     public private(set) var myAccountId: String?
 
@@ -163,6 +167,13 @@ public final class AppModel {
         lifetimeSummary = nil
         seasonSummary = nil
         myAccountId = nil
+        // 백필에서 나온 값들도 함께 버린다. 남으면 다른 계정으로 로그인했을 때 이전 조직의
+        // 상태명이 새 계정의 매핑 후보로 뜨고(조직이 다르면 완전히 무의미한 목록이다),
+        // 이전 계정의 중단 사유와 정확도 경고가 새 계정의 설정 화면에 붙는다.
+        // `ArcadeStore.reset()`이 `BackfillRun`을 지우는 것과 같은 이유다.
+        historyDiscoveredStatuses = []
+        lastBackfillFailure = nil
+        backfillWasDegraded = false
         lastSync = nil
         credentialSaveWarning = nil
         workflowSaveWarning = nil
@@ -392,6 +403,10 @@ public final class AppModel {
         // 실패 사유는 스토어가 원본이다 — 앱을 다시 켜도 남아야 "이어서 불러오기"가
         // 왜 떠 있는지 설명할 수 있다. 읽지 못하면 nil, 즉 "알리지 않음"으로 둔다.
         lastBackfillFailure = try? store.lastBackfillFailure()
+        // 발견 목록도 스토어가 원본이다. `BackfillOutcome`에서 받으면 안 되는 이유가 둘 있다:
+        // 재개한 실행의 outcome에는 **이번 실행분만** 담기지만 스토어는 run 전체를 누적하고,
+        // 실패로 끝난 실행에는 outcome 자체가 없다(중단 지점까지의 발견은 스토어에 남아 있다).
+        historyDiscoveredStatuses = (try? store.lastDiscoveredStatuses()) ?? []
         await refreshSummaries()
     }
 

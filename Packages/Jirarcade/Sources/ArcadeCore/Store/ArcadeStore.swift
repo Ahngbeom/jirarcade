@@ -355,6 +355,19 @@ public class ArcadeStore {
         descriptor.fetchLimit = 1
         return try context.fetch(descriptor).first?.failureMessage
     }
+
+    /// 가장 최근 백필이 발견한 미매핑 상태명. **완료 여부와 무관하게** 마지막 run을 본다.
+    ///
+    /// `resumableBackfill()`을 대신 쓰면 백필이 정상 종료되는 순간 후보가 통째로 사라진다 —
+    /// 정작 매핑이 필요한 시점은 백필이 끝난 뒤다. 정렬 키가 `startedAt`인 것은
+    /// `lastBackfillFailure()`와 같은 이유다: `finishedAt`은 실패한 run에서 nil이다.
+    public func lastDiscoveredStatuses() throws -> [String] {
+        var descriptor = FetchDescriptor<BackfillRun>(
+            sortBy: [SortDescriptor(\.startedAt, order: .reverse)]
+        )
+        descriptor.fetchLimit = 1
+        return try context.fetch(descriptor).first?.discoveredUnmappedStatuses ?? []
+    }
 }
 
 // MARK: - 변환
