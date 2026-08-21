@@ -4625,3 +4625,107 @@ Expected: PASS, 경고 0
 ```bash
 git commit -m "fix: 백필 상태 표시가 사실과 어긋나던 경로들"
 ```
+
+
+---
+
+### Task 18: 채점 정확성 — 이중 계상, 시즌 연속, 계정 격리
+
+**Files:**
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Store/ArcadeStore.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Backfill/BackfillEngine.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeCore/Rules/ScoreEngine.swift`
+- Modify: `Packages/Jirarcade/Sources/ArcadeApp/WorkflowStore.swift`, `AppModel.swift`
+- Test: 해당 모듈의 기존 테스트 파일들
+
+**왜 필요한가**
+
+최종 리뷰가 프로브로 재현한 세 건이다. 셋 다 **사용자가 보는 점수가 틀린다.**
+
+- [ ] **Step 1: 백필이 라이브 관측을 대체한다 (리뷰 C1)**
+
+`appendBackfillEvents`의 중복 검사는 `sourceHistoryId != nil`인 레코드만 조회한다.
+라이브 동기화가 넣은 이벤트(`origin == observed`, `sourceHistoryId == nil`)는 그 집합에 없으므로
+**같은 실제 전이가 두 행으로 남고 둘 다 채점된다.**
+
+프로브: 같은 티켓의 `In Progress → Done` 전이 하나에 대해 라이브만 104 XP, 라이브+백필 166 XP.
+
+`AbuseGuard`의 24시간 창은 절반만 가린다:
+1. 전이와 관측 사이가 24시간을 넘으면(밤·주말·휴가) 창 밖이다.
+2. 동기화 간격에 두 칸 이상 옮기면 라이브는 `To Do → In Review` **한 건**으로 뭉치는데
+   changelog에는 두 건이 있다. 중복 시그니처가 `issueKey|from|to`라 아예 겹치지 않는다.
+
+**해결(사용자 결정): 백필이 대체한다.** changelog를 온전히 받은 티켓은 그 티켓의 기존
+`observed` 상태전이 이벤트를 지우고 백필 이벤트로 바꾼다. 백필이 더 정확하기 때문이다 —
+실제 전이 시각과 실제 행위자를 담고 있고, 라이브는 동기화 간격 사이의 움직임을 한 건으로 뭉친다.
+
+```swift
+    /// 백필 이벤트를 넣으면서, 같은 티켓의 라이브 관측 전이를 대체한다.
+    ///
+    /// changelog는 그 티켓의 완전한 이력이므로 라이브 diff보다 정확하다 — 실제 전이 시각과
+    /// 행위자를 담고, 동기화 간격 사이의 두 칸 이동도 두 건으로 남긴다. 남겨두면 같은 전이가
+    /// 두 번 채점된다(historyId 중복 검사는 백필끼리만 막는다).
+    ///
+    /// - Parameter fullyRestoredKeys: changelog를 온전히 받은 티켓. 부분 복원된 티켓은
+    ///   대체하지 않는다 — 불완전한 이력으로 관측 기록을 지우면 있었던 전이가 사라진다.
+    public func appendBackfillEvents(
+        _ events: [DomainEvent], historyIds: [String], fullyRestoredKeys: Set<String>
+    ) throws -> Int
+```
+
+대체 대상은 **`.statusChanged`만**이다. `.appeared`/`.vanished`/`.touched`는 관측 자체의 기록이라
+changelog에 대응물이 없다.
+
+`BackfillEngine`이 온전히 받은 티켓 키를 넘긴다. 지금 `partiallyRestored`에 넣는 판정을
+뒤집으면 되므로 새 정보가 필요하지 않다.
+
+**테스트로 고정할 것:**
+- 라이브 이벤트가 있는 티켓에 백필을 돌리면 그 티켓의 `observed` 전이가 사라지고 XP가
+  이중 계상되지 않는다(프로브의 104 vs 166 시나리오를 그대로).
+- 부분 복원된 티켓은 대체하지 않는다.
+- `.appeared`/`.vanished`는 남는다.
+- 백필을 두 번 돌려도 결과가 같다(기존 멱등 불변식이 깨지지 않는다).
+
+- [ ] **Step 2: 시즌이 통산 연속을 공유한다 (리뷰 B1)**
+
+`ScoreEngine.recompute`는 `statusEnteredAt`을 시즌 밖 이벤트로도 갱신하지만 **연속 기록은
+시즌 안 이벤트로만 다시 센다.** 그래서 시즌 시작 직후의 이벤트가 통산에서는 누적된 배수를,
+시즌에서는 처음부터 다시 센 배수를 받는다.
+
+프로브: 평일마다 전진 이벤트가 있을 때 같은 이벤트가 **통산 111 XP, 시즌 75 XP**(48% 차이).
+
+**해결(사용자 결정): 통산 연속을 공유한다.** 시즌은 **범위만** 자르고 채점 규칙은 바꾸지 않는다 —
+`statusEnteredAt`이 이미 그렇게 동작하므로 일관된다. `BackfillInvariantTests`가 주장하는
+불변식이 그제서야 실제로 성립한다.
+
+> 기존 테스트가 이 결함을 놓친 이유: 픽스처의 두 이벤트가 6개월 떨어져 있어 양쪽 다 연속 1일이다.
+> **연속이 실제로 쌓이는 픽스처**로 고쳐야 회귀 가드가 된다.
+
+- [ ] **Step 3: 계정이 바뀌면 채점 입력도 버린다 (리뷰 B2)**
+
+`store.reset()`이 미러·이벤트·백필 run을 버리고 `signOut()`이 `historyDiscoveredStatuses`를
+"다른 조직의 상태명은 새 계정에서 무의미하다"는 이유로 비우는데, **`workflow.json`과
+`workflow-fallbacks.json`은 어느 경로에서도 지워지지 않는다.**
+
+결과: 새 계정으로 로그인해도 이전 조직에서 `statusCategory`로 추정한 매핑이 `effectiveWorkflow()`에
+계속 병합된다. `Done`·`In Progress` 같은 흔한 이름이 겹치면 새 계정의 전이가 남의 조직 추정으로
+채점되고, 그 상태는 새 백필이 다시 발견하기 전까지 마법사에 뜨지도 않는다.
+
+`WorkflowStore`에 삭제를 더하고, 계정이 바뀌는 경로(`store.reset()`을 부르는 자리)에서 함께 부른다.
+
+> **사용자 매핑(`workflow.json`)도 지운다.** 조직이 다르면 상태 이름 체계가 다르고,
+> 남겨두면 다음 로그인에서 마법사가 뜨지 않아(`load() != nil`) 새 조직 상태를 설정할 기회가
+> 사라진다. 같은 계정으로 다시 로그인하는 경우에는 `reset()`이 불리지 않으므로 영향이 없다.
+
+- [ ] **Step 4: 테스트**
+
+각 Step마다 **구현을 틀리게 바꿔 해당 테스트가 죽는지** 확인하고 원복한다.
+
+Run: `cd Packages/Jirarcade && swift test`
+Expected: PASS, 경고 0
+
+- [ ] **Step 5: 커밋**
+
+```bash
+git commit -m "fix: 백필이 라이브 관측을 대체하고, 시즌이 통산 연속을 공유한다"
+```
