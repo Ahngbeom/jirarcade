@@ -15,6 +15,8 @@ private final class StubChangelogSource: ChangelogSource, @unchecked Sendable {
     /// 이 토큰을 요청받으면 던진다. 중단·실패 시나리오에 쓴다.
     /// 이중 옵셔널인 이유: "실패시키지 않음"(nil)과 "nil 토큰에서 실패"(.some(nil))가 다르다.
     var failOnToken: String??
+    /// 상태 카탈로그 조회를 실패시킨다. 폴백 ②가 꺼진 채로 도는 시나리오에 쓴다.
+    var catalogError: (any Error)?
 
     init(pages: [(issues: [JiraIssueWithChangelog], nextPageToken: String?)],
          catalog: [JiraStatusCatalogEntry] = []) {
@@ -34,7 +36,10 @@ private final class StubChangelogSource: ChangelogSource, @unchecked Sendable {
         JiraChangelogPage(startAt: 0, maxResults: 100, total: 0, histories: [])
     }
 
-    func fetchStatusCatalog() async throws -> [JiraStatusCatalogEntry] { catalog }
+    func fetchStatusCatalog() async throws -> [JiraStatusCatalogEntry] {
+        if let catalogError { throw catalogError }
+        return catalog
+    }
 }
 
 /// 백필은 로그인해야 돌아간다(`client`가 있어야 소스를 만든다). 모든 테스트가
@@ -279,4 +284,61 @@ private func backfillIssue(
     #expect(lifetime.totalXP > 0, "이벤트가 있으므로 통산 XP가 0이면 집계가 안 된 것이다")
     #expect(season.totalXP > 0, "시즌 안 이벤트가 있으므로 시즌 XP도 0이 아니다")
     #expect(season.totalXP < lifetime.totalXP, "시즌 밖 이벤트가 통산에만 잡혀야 한다")
+}
+
+/// 실패 사유가 모델까지 오고, 앱을 다시 켜도 남는다. 설정 화면이 "이어서 불러오기" 옆에
+/// 왜 중단됐는지 적을 수 있는 유일한 근거다 — 스토어에만 있고 모델이 읽지 않으면
+/// 사용자는 재개 버튼이 왜 떠 있는지 알 수 없다.
+@MainActor
+@Test func failureReasonReachesTheModelAndSurvivesRelaunch() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], "tok-2"),
+    ])
+    source.failOnToken = .some("tok-2")
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+
+    await model.startBackfill()
+
+    // 타입 이름만 담긴다 — 호스트·JQL·토큰 조각이 새면 안 된다(BackfillEngine.failureDescription).
+    #expect(model.lastBackfillFailure == "StubError")
+
+    let relaunched = try makeModel(store: store, credentials: signedIn())
+    await relaunched.start()
+    #expect(relaunched.lastBackfillFailure == "StubError",
+            "다시 켰을 때도 중단 사유가 보여야 한다")
+}
+
+/// 카탈로그를 못 받은 실행은 정확도가 낮다고 표시되고, 카탈로그를 받은 실행이 성공하면
+/// 표시가 걷힌다. 그 사이의 **실패한** 실행은 결론을 덮지 않는다 — 실패한 실행에는
+/// "카탈로그를 받았는가"에 대한 결론 자체가 없기 때문이다.
+@MainActor
+@Test func degradedFlagIsSetOnlyBySuccessfulRuns() async throws {
+    let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
+    let source = StubChangelogSource(pages: [
+        ([backfillIssue(key: "MPT-1", historyId: "1",
+                        at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], nil)
+    ])
+    source.catalogError = StubError()
+    let model = try makeModel(store: store, changelogSource: source, credentials: signedIn())
+    await model.start()
+
+    await model.startBackfill()
+    #expect(model.backfillWasDegraded, "카탈로그를 못 받았으면 폴백 ②가 꺼진 채로 돈 것이다")
+
+    // 실패한 실행이 경고를 걷어가면 안 된다.
+    source.pages = [([], nil)]
+    source.failOnToken = .some(nil)
+    await model.startBackfill()
+    #expect(model.backfillWasDegraded, "실패한 실행의 값으로 이전 결론을 덮지 않는다")
+
+    // 카탈로그를 받은 성공 실행만 경고를 걷는다.
+    source.failOnToken = nil
+    source.catalogError = nil
+    source.pages = [([], nil)]
+    await model.startBackfill()
+    #expect(model.backfillWasDegraded == false, "카탈로그를 받은 성공 실행이면 경고가 걷힌다")
+    #expect(model.lastBackfillFailure == nil, "성공한 실행 뒤에는 실패 사유가 남지 않는다")
 }

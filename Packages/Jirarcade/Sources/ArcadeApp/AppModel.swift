@@ -33,6 +33,16 @@ public final class AppModel {
     public private(set) var seasonSummary: PlayerSummary?
     /// 중단된 백필이 남아 있는지. 설정 화면이 "이어서 불러오기"를 보여줄 근거다.
     public private(set) var hasResumableBackfill: Bool = false
+    /// 지난 백필이 실패로 멈춘 사유. 성공했거나 사용자가 중단했으면 nil이다.
+    /// 취소는 실패가 아니다 — 스스로 누른 것을 "실패했습니다"로 보여주면 안 된다.
+    /// (엔진이 취소를 기록하지 않으므로 자연히 nil이 된다.)
+    ///
+    /// 담기는 값은 에러 **타입 이름**뿐이다(호스트·JQL·토큰 조각이 새지 않게) —
+    /// 화면은 그대로 보여주지 말고 문장으로 감싸야 한다.
+    public private(set) var lastBackfillFailure: String?
+    /// 마지막 백필이 상태 카탈로그를 못 받아 폴백 ②가 비활성인 채로 돌았다.
+    /// 매핑에 없는 과거 상태가 전부 0점 처리됐다는 뜻이라 사용자에게 알려야 한다.
+    public private(set) var backfillWasDegraded: Bool = false
     /// 로그인한 계정. "내가 직접 옮긴 것만 XP" 판정에 쓴다.
     public private(set) var myAccountId: String?
 
@@ -341,6 +351,9 @@ public final class AppModel {
                 self?.backfillProgress = BackfillProgress(processed: processed, total: total)
             }
             persistFallbacks(outcome.resolvedFallbacks)
+            // 성공 경로에서만 갱신한다 — 실패로 끝난 실행에는 카탈로그를 받았는지에 대한
+            // 결론 자체가 없다. 그 값으로 덮으면 직전 성공이 남긴 경고가 사라진다.
+            backfillWasDegraded = outcome.catalogUnavailable
         } catch {
             // 실패·중단해도 여기까지 넣은 이벤트는 유효하고 진행 지점이 저장돼 있다.
             // run을 미완료로 남겨 "이어서 불러오기"가 뜨게 하는 것이 의도된 동작이다.
@@ -376,6 +389,9 @@ public final class AppModel {
     /// 부른다 — 두 시점 모두 이벤트 로그와 미완료 run이 바뀌어 있을 수 있다.
     private func refreshDerivedState() async {
         hasResumableBackfill = (try? store.resumableBackfill()) != nil
+        // 실패 사유는 스토어가 원본이다 — 앱을 다시 켜도 남아야 "이어서 불러오기"가
+        // 왜 떠 있는지 설명할 수 있다. 읽지 못하면 nil, 즉 "알리지 않음"으로 둔다.
+        lastBackfillFailure = try? store.lastBackfillFailure()
         await refreshSummaries()
     }
 
