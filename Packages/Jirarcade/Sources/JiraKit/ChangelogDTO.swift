@@ -156,3 +156,28 @@ public enum JiraChangelogResponse {
         return formatter.date(from: raw)
     }
 }
+
+/// `/rest/api/3/status`의 항목. 워크플로에서 빠진 과거 상태도 여기 남아 있어,
+/// 매핑되지 않은 상태를 statusCategory로 폴백할 수 있다(스펙 §5).
+public struct JiraStatusCatalogEntry: Sendable, Equatable, Decodable {
+    public let id: String
+    public let name: String
+    /// `new` / `indeterminate` / `done`. Jira의 3분류 키다.
+    public let categoryKey: String
+
+    private enum CodingKeys: String, CodingKey { case id, name, statusCategory }
+    private struct Category: Decodable { let key: String }
+
+    public init(from decoder: any Decoder) throws {
+        let container = try decoder.container(keyedBy: CodingKeys.self)
+        id = try container.decode(String.self, forKey: .id)
+        name = try container.decode(String.self, forKey: .name)
+        categoryKey = try container.decode(Category.self, forKey: .statusCategory).key
+    }
+
+    public init(id: String, name: String, categoryKey: String) {
+        self.id = id
+        self.name = name
+        self.categoryKey = categoryKey
+    }
+}
