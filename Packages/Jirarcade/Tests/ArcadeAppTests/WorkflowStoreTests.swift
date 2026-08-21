@@ -61,3 +61,35 @@ private func withTempDirectory<T>(_ body: (URL) throws -> T) rethrows -> T {
         #expect(try store.load() == map)
     }
 }
+
+/// 폴백은 사용자 매핑과 따로 저장된다 — 마법사가 "내가 정한 것"과
+/// "앱이 추정한 것"을 구분해 보여줘야 한다.
+@Test func fallbacksRoundTripSeparatelyFromUserMapping() throws {
+    let store = InMemoryWorkflowStore()
+    try store.save(WorkflowMap(statusToStage: ["Done": .done]))
+    try store.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+    let user = try store.load()
+    let fallbacks = try store.loadFallbacks()
+    #expect(user?.statusToStage == ["Done": .done])
+    #expect(fallbacks?.statusToStage == ["Merged to Staging": .active])
+}
+
+@Test func missingFallbackFileLoadsAsNil() throws {
+    let loaded = try InMemoryWorkflowStore().loadFallbacks()
+    #expect(loaded == nil)
+}
+
+/// 파일 저장소도 별도 파일을 쓴다. 같은 파일에 쓰면 한쪽이 다른 쪽을 덮는다.
+@Test func fileStoreKeepsFallbacksInASeparateFile() throws {
+    try withTempDirectory { dir in
+        let store = FileWorkflowStore(directory: dir)
+        try store.save(WorkflowMap(statusToStage: ["Done": .done]))
+        try store.saveFallbacks(WorkflowMap(statusToStage: ["Merged to Staging": .active]))
+
+        let user = try store.load()
+        let fallbacks = try store.loadFallbacks()
+        #expect(user?.statusToStage == ["Done": .done])
+        #expect(fallbacks?.statusToStage == ["Merged to Staging": .active])
+    }
+}

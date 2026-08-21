@@ -29,6 +29,7 @@ public final class StatusCatalog: @unchecked Sendable {
     private let byId: [String: JiraStatusCatalogEntry]
     private let lock = NSLock()
     private var collected: Set<String> = []
+    private var fallbacks: [String: Stage] = [:]
 
     public init(workflow: WorkflowMap, entries: [JiraStatusCatalogEntry]) {
         self.workflow = workflow
@@ -40,17 +41,32 @@ public final class StatusCatalog: @unchecked Sendable {
         lock.withLock { collected }
     }
 
+    /// 폴백(②)으로 해석한 (상태명 → 단계). 채점 시 `WorkflowMap.merging`으로 합친다.
+    /// 미매핑(③)은 단계를 모르므로 여기 없다 — 넣으면 추측으로 점수를 주는 셈이다.
+    public var resolvedFallbacks: [String: Stage] {
+        lock.withLock { fallbacks }
+    }
+
     public func stage(forId id: String?, name: String?) -> StageResolution {
-        let label = name ?? id ?? ""
+        // changelog가 이름 없이 ID만 보내는 항목이 있다. 카탈로그에 그 ID가 있으면
+        // 정확한 이름을 되찾아 ①에 태운다 — 그러지 않으면 매핑된 상태가 카테고리
+        // 폴백으로 떨어져 단계가 한 칸 어긋나고, 수집 라벨에도 숫자 ID가 들어간다.
+        let entry = id.flatMap { byId[$0] }
+        let resolvedName = name ?? entry?.name
+        let label = resolvedName ?? id ?? ""
 
         // ① 현재 매핑
-        if let name, let mapped = workflow.stage(for: name) {
+        if let resolvedName, let mapped = workflow.stage(for: resolvedName) {
             return .mapped(mapped)
         }
 
         // ② statusCategory 폴백. 이름은 바뀔 수 있으므로 ID로 찾는다.
-        if let id, let entry = byId[id], let stage = Self.stage(forCategory: entry.categoryKey) {
+        if let entry, let stage = Self.stage(forCategory: entry.categoryKey) {
             collect(label)
+            // 빈 라벨은 실효 맵의 키가 될 수 없다 — 수집에서 빼는 것과 같은 이유다.
+            if !label.isEmpty {
+                lock.withLock { fallbacks[label] = stage }
+            }
             return .fallback(stage)
         }
 

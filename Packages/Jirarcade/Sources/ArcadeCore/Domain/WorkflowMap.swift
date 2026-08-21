@@ -31,6 +31,14 @@ public struct WorkflowMap: Codable, Sendable, Equatable {
         statusToStage[statusName]
     }
 
+    /// 폴백 매핑을 밑에 깔고 현재 매핑을 위에 얹은 **실효 맵**을 만든다.
+    ///
+    /// 사용자가 마법사에서 지정한 매핑이 항상 이긴다 — 폴백은 statusCategory에서
+    /// 끌어낸 추정이고, 사용자 선택은 명시적 의도다. 값 타입이므로 원본은 그대로다.
+    public func merging(_ fallbacks: [String: Stage]) -> WorkflowMap {
+        WorkflowMap(statusToStage: fallbacks.merging(statusToStage) { _, mine in mine })
+    }
+
     /// 입력에 등장한 상태 중 매핑되지 않은 것을 최초 등장 순서대로, 중복 없이 돌려준다.
     public func unmappedStatuses(in statusNames: [String]) -> [String] {
         var seen = Set<String>()
