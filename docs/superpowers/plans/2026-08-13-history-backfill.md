@@ -3699,6 +3699,33 @@ git commit -m "feat: 백필 실행·재개 배선과 폴백을 반영한 시즌�
 - Consumes: `AppModel.backfillProgress`·`startBackfill()`·`seasonSummary`·`lifetimeSummary` (Task 12)
 - Produces: 없음 (화면)
 
+- [ ] **Step 0: 백필 결과를 알릴 두 값을 `AppModel`에 노출**
+
+백필이 실패로 멈추거나 정확도가 낮은 채로 끝나도 지금은 사용자에게 알릴 방법이 없다.
+값은 이미 있는데 화면까지 오는 경로가 없다.
+
+```swift
+    /// 지난 백필이 실패로 멈춘 사유. 성공했거나 사용자가 중단했으면 nil이다.
+    /// 취소는 실패가 아니다 — 스스로 누른 것을 "실패했습니다"로 보여주면 안 된다.
+    public private(set) var lastBackfillFailure: String?
+    /// 마지막 백필이 상태 카탈로그를 못 받아 폴백 ②가 비활성인 채로 돌았다.
+    /// 매핑에 없는 과거 상태가 전부 0점 처리됐다는 뜻이라 사용자에게 알려야 한다.
+    public private(set) var backfillWasDegraded: Bool = false
+```
+
+`start()`와 백필 종료 지점에서 갱신한다:
+
+```swift
+        lastBackfillFailure = try? store.lastBackfillFailure()
+```
+
+`backfillWasDegraded`는 `outcome.catalogUnavailable`로 채운다(성공 경로에서만 갱신 —
+실패로 끝난 실행의 값으로 이전 성공 결과를 덮지 않는다).
+
+> `lastBackfillFailure()`는 에러 **타입 이름**만 담는다(호스트·JQL·토큰 조각이 새지 않게).
+> 그대로 보여주면 사용자에게 의미가 없으므로, 화면에서는 "지난 불러오기가 중단되었습니다"
+> 같은 문장으로 감싸고 타입 이름은 부가 정보로만 곁들인다.
+
 - [ ] **Step 1: 설정에 백필 버튼 추가**
 
 `SettingsView.swift`의 적당한 섹션에 넣는다. 색은 반드시 `theme.*`를 쓴다:
@@ -3739,10 +3766,23 @@ git commit -m "feat: 백필 실행·재개 배선과 폴백을 반영한 시즌�
                     Button("이어서 불러오기") {
                         Task { await model.resumeBackfillIfAvailable() }
                     }
+                    if let failure = model.lastBackfillFailure {
+                        Text("지난 불러오기가 중단되었습니다 (\(failure)). 이어서 받을 수 있습니다.")
+                            .font(.caption)
+                            .foregroundStyle(theme.inkSecondary)
+                    }
                 } else {
                     Button("과거 기록 불러오기") {
                         Task { await model.startBackfill() }
                     }
+                }
+
+                if model.backfillWasDegraded {
+                    // 카탈로그를 못 받으면 폴백 ②가 꺼진 채로 돈다 — 매핑에 없는 과거
+                    // 상태가 전부 0점이 된다. 조용히 두면 사용자는 XP가 왜 적은지 모른다.
+                    Text("상태 목록을 불러오지 못해 일부 과거 상태를 인식하지 못했습니다. 다시 불러오면 더 정확해집니다.")
+                        .font(.caption)
+                        .foregroundStyle(theme.inkTertiary)
                 }
             }
 ```
@@ -3812,7 +3852,8 @@ cd /Users/bahn/personal/jirarcade && ./scripts/make-app.sh --open
 - [ ] **Step 6: 커밋**
 
 ```bash
-git add Packages/Jirarcade/Sources/ArcadeUI/SettingsView.swift \
+git add Packages/Jirarcade/Sources/ArcadeApp/AppModel.swift \
+        Packages/Jirarcade/Sources/ArcadeUI/SettingsView.swift \
         Packages/Jirarcade/Sources/ArcadeUI/ArcadeFloorView.swift
 git commit -m "feat: 백필 버튼·진행 바와 시즌/통산 레벨 표시"
 ```
