@@ -90,13 +90,18 @@ public final class ArcadeStore {
         try context.save()
     }
 
-    /// 미러·이벤트 로그·동기화 이력을 전부 버린다.
+    /// 미러·이벤트 로그·동기화 이력·백필 진행을 전부 버린다.
     /// 다른 계정으로 로그인할 때만 쓴다 — append-only 원칙의 유일한 예외이며,
     /// 남의 데이터와 섞이는 것보다 버리는 편이 안전하기 때문이다.
+    ///
+    /// `BackfillRun`이 남으면 새 계정에서 `resumableBackfill()`이 옛 계정의 스냅샷을 돌려준다.
+    /// jql과 nextPageToken은 옛 계정의 조회 범위·페이지 커서라, 그대로 이어받으면
+    /// 남의 커서로 이 계정의 백필을 진행한다.
     public func reset() throws {
         for row in try context.fetch(FetchDescriptor<IssueSnapshot>()) { context.delete(row) }
         for row in try context.fetch(FetchDescriptor<IssueEventRecord>()) { context.delete(row) }
         for row in try context.fetch(FetchDescriptor<SyncRunRecord>()) { context.delete(row) }
+        for row in try context.fetch(FetchDescriptor<BackfillRun>()) { context.delete(row) }
         try context.save()
     }
 
@@ -240,7 +245,11 @@ public final class ArcadeStore {
     /// `context.model(for:)`를 쓰지 않는다 — 다른 스토어에서 온 식별자를 주면 nil을
     /// 돌려주는 대신 클래스가 맞는 껍데기를 만들어 주고, 프로퍼티에 손대는 순간
     /// "backing data could no longer be found"로 크래시한다. 존재 여부를 물어야 하는
-    /// 자리라서 fetch로 확인한다. run은 백필 한 번에 한 행이라 전량 조회해도 싸다.
+    /// 자리라서 fetch로 확인한다.
+    ///
+    /// `#Predicate`로 좁히지 못하는 것은 `PersistentIdentifier` 비교가 술어에서 안 되기 때문이다.
+    /// 완료된 run은 이력으로 남으므로 행 수는 누적 백필 시도 횟수만큼 늘지만, 그 규모에서는
+    /// 페이지마다 전량 조회해도 여전히 싸다.
     private func backfillRun(for id: PersistentIdentifier) throws -> BackfillRun? {
         try context.fetch(FetchDescriptor<BackfillRun>())
             .first { $0.persistentModelID == id }
