@@ -89,6 +89,14 @@ public final class AppModel {
     /// 상세 시트가 지금 보여줄 상태. 시트가 열려 있을 때만 `.idle`이 아니다 —
     /// 미러에는 들어가지 않는 순전히 화면용 값이다(`IssueDetail.swift` 참고).
     public private(set) var detailState: IssueDetailState = .idle
+    /// 상세 시트를 채우는 중인 요청. `closeDetail()`과 `signOut()`이 이걸 취소해,
+    /// 시트가 닫히거나 로그아웃한 뒤에도 Jira에 요청이 계속 나가지 않게 한다.
+    private var detailTask: Task<Void, Never>?
+    /// `openDetail`을 부를 때마다 하나씩 올라간다. 늦게 도착한 응답이 지금 시트가
+    /// 실제로 기다리는 요청인지 가린다. `syncGeneration`만으로는 부족하다 — 그건
+    /// "계정이 바뀌었는가"만 답하므로, 같은 계정에서 A를 닫고 B를 연 경우(둘 다
+    /// syncGeneration은 그대로다)까지는 잡지 못한다.
+    private var detailToken = 0
 
     /// 저장이 날아가 있는 티켓. 버튼을 잠가 이중 제출을 막는다 — 댓글 POST는
     /// 멱등이 아니라 두 번 누르면 댓글이 둘이 된다.
@@ -236,6 +244,11 @@ public final class AppModel {
         editTasks = [:]
         editInFlight = []
         editFailures = [:]
+        // 상세 시트가 열려 있던 채로 로그아웃하면, 남겨둔 페치가 옛 계정의 client로
+        // 댓글 요청까지 마저 보낸다(최종 전체 브랜치 리뷰 Finding 1) — 취소해 끊는다.
+        detailTask?.cancel()
+        detailTask = nil
+        detailToken += 1
         detailState = .idle
         // 세대를 올려 진행 중이던 페치가 끝나도 이 계정의 스토어에 쓰지 못하게 막는다
         // (I4). 계정 바인딩(`accountBinding`)은 여기서 지우지 않는다 — 지우면 다음 로그인이 "계정이
@@ -932,37 +945,69 @@ public final class AppModel {
 
     public func openDetail(issueKey: String) async {
         guard let client else { return }
+        // 이 시트에 대해 이미 날아가고 있던 요청이 있다면 더 이상 그 결과를 기다리지
+        // 않는다 — 새로 여는 티켓이 이제부터 "지금 시트가 기다리는 요청"이다.
+        detailTask?.cancel()
+        detailToken += 1
+        let token = detailToken
         detailState = .loading(issueKey: issueKey)
         let generation = syncGeneration
 
-        do {
-            let detail = try await client.issueDetail(issueKey: issueKey)
-            let comments = try await client.comments(issueKey: issueKey,
-                                                     limit: Self.commentPageSize)
-            // 받아오는 동안 계정이 바뀌었으면 이 결과는 남의 것이다.
-            guard generation == syncGeneration else { return }
-            detailState = .loaded(IssueDetailView(
-                key: detail.key,
-                summary: detail.summary,
-                descriptionText: detail.description.map(ADFRenderer.plainText(from:)) ?? "",
-                comments: comments.map {
-                    CommentView(id: $0.id, authorName: $0.authorName, created: $0.created,
-                                text: $0.body.map(ADFRenderer.plainText(from:)) ?? "")
-                }
-            ))
-        } catch JiraError.unauthorized {
-            guard generation == syncGeneration else { return }
-            phase = .expired
-            detailState = .idle
-        } catch {
-            guard generation == syncGeneration else { return }
-            // 앱이 직접 쓴 문구를 쓴다. `redactedErrorDescription`은 로그와 동기화
-            // 이력을 위한 타입 이름(`JiraError.forbidden` 같은)이라 화면에 놓을 것이 아니다.
-            detailState = .failed(Self.detailFailureMessage(error))
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                // 이 태스크가 여전히 최신 요청일 때만 슬롯을 비운다 — 늦게 끝난 옛
+                // 태스크가 그사이 새로 시작된 태스크의 참조를 지워버리면 `closeDetail()`이
+                // 그 새 태스크를 더 이상 취소할 수 없게 된다.
+                if self.detailToken == token { self.detailTask = nil }
+            }
+            do {
+                let detail = try await client.issueDetail(issueKey: issueKey)
+                // 상세를 받는 사이 시트가 닫혔거나 다른 티켓이 열렸으면(=더 이상 이
+                // 요청을 기다리지 않으면) 댓글까지 마저 받아올 이유가 없다. 이 검사를
+                // 여기 두지 않으면 로그아웃 뒤에도 댓글 요청이 옛 계정으로 나간다 —
+                // "Jira와 더 이상 말하지 않는다"는 로그아웃의 첫 번째 의미를 어긴다.
+                guard self.isCurrentDetailFetch(token: token, generation: generation) else { return }
+                let comments = try await client.comments(issueKey: issueKey,
+                                                         limit: Self.commentPageSize)
+                // 받아오는 동안 시트가 닫혔거나, 다른 티켓이 열렸거나, 계정이 바뀌었으면
+                // 이 결과는 지금 시트가 기다리는 것이 아니다.
+                guard self.isCurrentDetailFetch(token: token, generation: generation) else { return }
+                self.detailState = .loaded(IssueDetailView(
+                    key: detail.key,
+                    summary: detail.summary,
+                    descriptionText: detail.description.map(ADFRenderer.plainText(from:)) ?? "",
+                    comments: comments.map {
+                        CommentView(id: $0.id, authorName: $0.authorName, created: $0.created,
+                                    text: $0.body.map(ADFRenderer.plainText(from:)) ?? "")
+                    }
+                ))
+            } catch JiraError.unauthorized {
+                guard self.isCurrentDetailFetch(token: token, generation: generation) else { return }
+                self.phase = .expired
+                self.detailState = .idle
+            } catch {
+                guard self.isCurrentDetailFetch(token: token, generation: generation) else { return }
+                // 앱이 직접 쓴 문구를 쓴다. `redactedErrorDescription`은 로그와 동기화
+                // 이력을 위한 타입 이름(`JiraError.forbidden` 같은)이라 화면에 놓을 것이 아니다.
+                self.detailState = .failed(Self.detailFailureMessage(error))
+            }
         }
+        detailTask = task
+        await task.value
+    }
+
+    /// `token`이 지금도 `openDetail`이 기다리는 요청이고, 그사이 계정도 바뀌지
+    /// 않았는지. 셋 중 하나라도 어긋나면 이 응답은 지금 시트가 기다리는 것이 아니다.
+    private func isCurrentDetailFetch(token: Int, generation: Int) -> Bool {
+        token == detailToken && generation == syncGeneration
     }
 
     public func closeDetail() {
+        detailTask?.cancel()
+        detailTask = nil
+        // 늦게 도착하는 응답이 있어도 더 이상 기다리는 요청이 아니라고 답하도록.
+        detailToken += 1
         detailState = .idle
     }
 
