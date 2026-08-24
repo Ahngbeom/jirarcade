@@ -93,3 +93,17 @@ import Foundation
     #expect(comments[0].body == nil)
     #expect(comments[1].id == "13")
 }
+
+/// 상세 본문이 구조적으로 잘못된 티켓도 제목은 살린다 — 구조가 깨진 본문 때문에
+/// 상세 전체가 실패하면 제목도 못 보고 댓글도 못 본다.
+@Test func anInvalidDescriptionDoesNotDropTheSummary() throws {
+    let json = #"""
+    {"key":"DEMO-9","fields":{"summary":"제목은 멀쩡함","description":{"notype":"oops"}}}
+    """#
+
+    let detail = try JiraIssueDetail.decode(Data(json.utf8))
+
+    #expect(detail.key == "DEMO-9")
+    #expect(detail.summary == "제목은 멀쩡함")
+    #expect(detail.description == nil)
+}

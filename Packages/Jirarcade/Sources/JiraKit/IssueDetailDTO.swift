@@ -30,6 +30,16 @@ public struct JiraIssueDetail: Sendable, Equatable {
         struct Fields: Decodable {
             let summary: String
             let description: ADFNode?
+
+            private enum CodingKeys: String, CodingKey {
+                case summary, description
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                summary = try container.decode(String.self, forKey: .summary)
+                description = (try? container.decodeIfPresent(ADFNode.self, forKey: .description)) ?? nil
+            }
         }
     }
 }
