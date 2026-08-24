@@ -104,15 +104,24 @@ public struct JiraClient: Sendable {
         return try decode(JiraUser.self, from: data)
     }
 
+    /// 사이트의 필드 목록 원본. 스프린트 필드 ID를 찾는 데 쓴다.
+    ///
+    /// 파싱을 `JiraFieldCatalog`에 맡기고 여기서는 바이트만 돌려주는 이유: 이 응답은 수백 개
+    /// 항목이고 앱이 쓰는 것은 한 필드의 id 하나뿐이다. DTO로 전부 모델링할 값이 없다.
+    public func fields() async throws -> Data {
+        try await perform(method: "GET", path: "/field", body: nil, resource: "field")
+    }
+
     public func searchIssues(
-        jql: String, fields: [String], maxResults: Int, pageToken: String?
+        jql: String, fields: [String], maxResults: Int, pageToken: String?,
+        sprintFieldID: String? = nil
     ) async throws -> IssuePage {
         var payload: [String: Any] = ["jql": jql, "fields": fields, "maxResults": maxResults]
         if let pageToken { payload["nextPageToken"] = pageToken }
         let body = try JSONSerialization.data(withJSONObject: payload)
         let data = try await perform(method: "POST", path: "/search/jql", body: body, resource: "search")
         do {
-            return try JiraSearchResponse.decode(data)
+            return try JiraSearchResponse.decode(data, sprintFieldID: sprintFieldID)
         } catch {
             throw JiraError.decoding(context: "search: \(error)")
         }

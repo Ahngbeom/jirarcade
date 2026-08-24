@@ -40,13 +40,7 @@ extension JiraSprint: Decodable {
     /// `JiraSearchResponse`가 이슈 단위로 이미 쓰는 방식이다 — 스프린트 하나 때문에
     /// 그 티켓의 이월 정보를 통째로 잃으면 안 된다.
     public static func decodeList(_ data: Data) throws -> [JiraSprint] {
-        struct Failable: Decodable {
-            let value: JiraSprint?
-            init(from decoder: any Decoder) throws {
-                value = try? JiraSprint(from: decoder)
-            }
-        }
-        return try JSONDecoder().decode([Failable].self, from: data).compactMap(\.value)
+        try JSONDecoder().decode([FailableSprint].self, from: data).compactMap(\.value)
     }
 
     /// `.withFractionalSeconds`가 켜진 포매터는 소수점이 **없으면 nil을 돌려준다**.
@@ -91,5 +85,14 @@ public enum JiraFieldCatalog {
         }
         let entries = try JSONDecoder().decode([Entry].self, from: data)
         return entries.first { $0.schema?.custom == sprintSchema }?.id
+    }
+}
+
+/// 배열 원소 하나가 실패해도 나머지를 살리는 래퍼.
+/// `JiraSearchResponse`가 이슈 단위로 쓰는 것과 같은 도구이며, 여기서는 스프린트 원소에 쓴다.
+struct FailableSprint: Decodable {
+    let value: JiraSprint?
+    init(from decoder: any Decoder) throws {
+        value = try? JiraSprint(from: decoder)
     }
 }

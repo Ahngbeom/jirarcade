@@ -101,3 +101,70 @@ private let threeSprints = """
 
     #expect(try JiraFieldCatalog.sprintFieldID(in: Data(body.utf8)) == "customfield_10020")
 }
+
+private func searchBody(sprintFieldKey: String, sprintJSON: String) -> String {
+    """
+    {"issues":[{"key":"DEMO-1","fields":{
+      "summary":"a","status":{"name":"In Progress"},"issuetype":{"name":"Task"},
+      "updated":"2026-08-14T09:00:00.000+0000",
+      "\(sprintFieldKey)":\(sprintJSON)
+    }}]}
+    """
+}
+
+/// 필드 키는 사이트마다 다르다. 디코딩 시점에 넘긴 키로 읽는다.
+@Test func readsSprintsFromTheFieldKeyItIsGiven() throws {
+    let body = searchBody(sprintFieldKey: "customfield_10020", sprintJSON: """
+    [{"id":1,"name":"DEMO 스프린트 (1)","state":"closed","startDate":"2026-05-14T10:00:00.000Z"},
+     {"id":2,"name":"DEMO 스프린트 (2)","state":"future","startDate":"2026-05-21T10:00:00.000Z"}]
+    """)
+
+    let page = try JiraSearchResponse.decode(Data(body.utf8), sprintFieldID: "customfield_10020")
+
+    #expect(page.issues.count == 1)
+    #expect(page.issues[0].sprints.map(\.id) == [1, 2])
+}
+
+/// 다른 사이트의 키를 넘기면 그 필드가 없으므로 빈 배열이다 — 오류가 아니다.
+@Test func yieldsNoSprintsWhenTheKeyDoesNotMatch() throws {
+    let body = searchBody(sprintFieldKey: "customfield_10020", sprintJSON: "[]")
+
+    let page = try JiraSearchResponse.decode(Data(body.utf8), sprintFieldID: "customfield_99999")
+
+    #expect(page.issues[0].sprints.isEmpty)
+}
+
+/// 스프린트를 쓰지 않는 사이트에서는 필드 ID 자체가 nil이다.
+@Test func yieldsNoSprintsWhenNoFieldIDIsKnown() throws {
+    let body = searchBody(sprintFieldKey: "customfield_10020", sprintJSON: """
+    [{"id":1,"name":"DEMO 스프린트 (1)","state":"closed","startDate":"2026-05-14T10:00:00.000Z"}]
+    """)
+
+    let page = try JiraSearchResponse.decode(Data(body.utf8), sprintFieldID: nil)
+
+    #expect(page.issues[0].sprints.isEmpty)
+}
+
+/// 스프린트 필드가 `null`인 티켓이 흔하다(어느 스프린트에도 없는 티켓).
+@Test func treatsANullSprintFieldAsNoSprints() throws {
+    let body = searchBody(sprintFieldKey: "customfield_10020", sprintJSON: "null")
+
+    let page = try JiraSearchResponse.decode(Data(body.utf8), sprintFieldID: "customfield_10020")
+
+    #expect(page.issues[0].sprints.isEmpty)
+}
+
+/// 스프린트 원소 하나가 깨져도 그 **티켓 전체**를 잃으면 안 된다.
+/// 티켓 단위 실패는 `IssuePage.failures`로 이미 다루지만, 스프린트는 부가 정보다.
+@Test func keepsTheIssueWhenOneSprintElementIsBroken() throws {
+    let body = searchBody(sprintFieldKey: "customfield_10020", sprintJSON: """
+    [{"id":1,"name":"DEMO 스프린트 (1)","state":"closed","startDate":"2026-05-14T10:00:00.000Z"},
+     {"id":"broken","name":"x","state":"closed"}]
+    """)
+
+    let page = try JiraSearchResponse.decode(Data(body.utf8), sprintFieldID: "customfield_10020")
+
+    #expect(page.issues.count == 1)
+    #expect(page.issues[0].sprints.map(\.id) == [1])
+    #expect(page.failures.isEmpty)
+}
