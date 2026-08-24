@@ -56,8 +56,10 @@ struct PlanetView: View {
     /// D-3을 경계로 삼는 판단은 뷰의 몫이다 — `DueState`는 사실만 담는다.
     @ViewBuilder private var dueRing: some View {
         if case .dueIn(let days) = planet.dueState, days <= 3 {
+            // `TicketCardView.dueColor`가 D-3 이내를 accent로 그린다 — overdue만 danger를
+            // 쓴다. 카드와 궤도가 같은 티켓을 다른 색으로 그리면 어느 쪽이 맞는지 알 수 없다.
             Circle()
-                .strokeBorder(theme.danger, lineWidth: 1)
+                .strokeBorder(theme.accent, lineWidth: 1)
                 .padding(-3)
         } else if case .overdue = planet.dueState {
             Circle()
