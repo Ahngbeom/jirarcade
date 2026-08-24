@@ -3,8 +3,7 @@ import Foundation
 /// 스프린트 커스텀 필드의 ID를 기억한다.
 ///
 /// `WorkflowStore`에 얹지 않는 이유: 그 프로토콜은 이미 사용자 매핑과 백필 폴백을 함께
-/// 떠안고 있고, history-backfill 후속 항목 §5.9가 "구현이 늘면 별도 프로토콜로 쪼개는 편이
-/// 낫다"고 지적해 두었다. 스프린트 필드 ID는 워크플로와 아무 관계가 없으므로 처음부터 따로 둔다.
+/// 떠안고 있다. 스프린트 필드 ID는 워크플로와 아무 관계가 없으므로 처음부터 따로 둔다.
 public protocol SprintFieldStore: Sendable {
     func load() throws -> String?
     func save(_ id: String) throws
