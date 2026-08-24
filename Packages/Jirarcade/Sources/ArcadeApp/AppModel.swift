@@ -543,6 +543,25 @@ public final class AppModel {
         )
     }
 
+    /// 궤도 뷰가 그릴 좌표. `boardSnapshot`과 같은 미러·같은 시계를 쓴다.
+    ///
+    /// 뷰가 `OrbitLayout.snapshot`을 직접 부르지 않는 이유는 그 함수가 `now`와
+    /// `calendar`를 받기 때문이다 — `ArcadeUI`에는 시계가 없어야 한다.
+    ///
+    /// - Parameter zoomProgress: 0이면 `Stage` 넷으로 뭉쳐 보이고 1이면 상태별로
+    ///   갈라진다. 뷰가 줌 배율에서 계산해 넘긴다.
+    public func orbitSnapshot(zoomProgress: Double) -> OrbitSnapshot {
+        OrbitLayout.snapshot(
+            issues: optimisticIssues,
+            statusEnteredAt: statusEnteredAt,
+            workflow: boardWorkflow,
+            rules: rules,
+            zoomProgress: zoomProgress,
+            now: clock(),
+            calendar: calendar
+        )
+    }
+
     /// 대기 중인 전이를 미러 위에 **겹친** 목록.
     ///
     /// 스토어를 건드리지 않는 것이 핵심이다 — 롤백은 `pendingTransitions`에서 지우는
