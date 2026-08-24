@@ -39,7 +39,11 @@ public struct XpAwarder: Sendable {
         case .appeared, .vanished, .dueDateChanged:
             return 0
         case .touched:
-            return wakeXP(event: event, issue: issue, statusEnteredAt: statusEnteredAt, now: now)
+            // "무엇이든 갱신됐다"는 정체를 깬 증거가 아니다. 댓글·워크로그·필드 수정이
+            // 전부 여기로 들어오고, 그중 어느 것도 티켓을 앞으로 옮기지 않는다.
+            // 앱이 댓글을 쓸 수 있게 된 뒤로는 이 분기가 자기 점수를 벌어들이는
+            // 경로가 된다 — 실제 작업 없이 반복할 수 있기 때문이다.
+            return 0
         case .statusChanged:
             return transitionXP(event: event, issue: issue, statusEnteredAt: statusEnteredAt, now: now)
         }

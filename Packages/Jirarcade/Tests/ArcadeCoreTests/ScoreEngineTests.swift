@@ -184,8 +184,10 @@ private func eventXP(_ result: (scored: [ScoredEvent], summary: PlayerSummary)) 
     let transition = result.scored.first {
         $0.event.issueKey == "DEMO-1" && $0.event.toStatus == "In Review"
     }
-    // 40 × (1 + 2/14) = 45.71 → 46, × 1.5 = 69, × 1.15(연속 3일차) = 79.35 → 79
-    #expect(transition?.xp == 79)
+    // 40 × (1 + 2/14) = 45.71 → 46, × 1.5 = 69
+    // touched가 0점이 된 뒤로는 08-12가 체크인 일이 아니므로 연속은 2일차다.
+    // × 1.10(연속 2일차) = 75.9 → 76
+    #expect(transition?.xp == 76)
 }
 
 @Test func summaryLevelMatchesTheCurve() {
@@ -408,4 +410,22 @@ private func calendarDay(_ date: Date) -> Date {
     let a = engine.recompute(events: events, issues: [:], now: now)
     let b = engine.recompute(events: events, issues: [:], now: now, since: nil)
     #expect(a.summary == b.summary)
+}
+
+/// touched만 있는 날은 체크인이 아니다. 체크인은 XP가 붙은 날의 집합이고,
+/// touched가 0점이 된 뒤로는 그런 날이 점수에도 연속 기록에도 남지 않는다.
+@Test func aDayWithOnlyTouchedEventsIsNotACheckIn() {
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow,
+                             calendar: utc, myAccountId: "acc-me")
+    let events = [
+        DomainEvent(issueKey: "DEMO-1", kind: .touched, fromStatus: nil, toStatus: nil,
+                    observedAt: iso("2026-08-20T09:00:00Z"), actorAccountId: "acc-me",
+                    priorUpdatedAt: iso("2026-05-01T09:00:00Z"), dueDateAtObservation: nil)
+    ]
+
+    let (_, summary) = engine.recompute(events: events, issues: [:],
+                                        now: iso("2026-08-24T09:00:00Z"))
+
+    #expect(summary.totalXP == 0)
+    #expect(summary.streak.currentStreak == 0)
 }
