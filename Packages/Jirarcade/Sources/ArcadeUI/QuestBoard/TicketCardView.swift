@@ -44,9 +44,12 @@ struct TicketCardView: View {
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(dueColor)
             }
-            // 이월은 대기·실패 블록이 없을 때만 그린다. 그 둘은 그 순간 행동을 요구하는
-            // 정보라 우선하고, 카드 높이 예산이 이미 빠듯하다(실패 상태에서 104pt 중 92pt).
-            if slot.sprintCarryOvers > 0, pending == nil, failure == nil {
+            // 이월은 실패 블록이 없을 때만 그린다. 실패 블록은 2줄 메시지에 링크 줄까지
+            // 붙어 35pt를 쓰므로, 이월 줄을 더하면 104pt 콘텐츠 박스를 106pt로 넘긴다.
+            // 대기 중에는 숨기지 않는다 — 대기 줄은 한 줄(11pt)이라 이월을 같이 그려도
+            // 96pt로 8pt가 남고, 이는 메뉴가 뜨는 보통 상태보다 오히려 여유가 크다.
+            // 마감일 줄과 같은 규칙으로 두는 편이 "왜 이 줄만 사라지나"를 만들지 않는다.
+            if slot.sprintCarryOvers > 0, failure == nil {
                 Text("↻ 스프린트 \(slot.sprintCarryOvers)회")
                     .font(.system(size: 9, design: .monospaced))
                     .foregroundStyle(theme.inkTertiary)
