@@ -148,3 +148,58 @@ private func swiftFiles(in directory: URL) -> [URL] {
     #expect(holders == ["AtlassianLinks.swift"],
             "토큰 URL이 여러 곳에 있다: \(holders.sorted())")
 }
+
+/// 보드는 시트가 아니라 전체 화면으로 열려야 한다. 매일 여러 번 여는 화면이고
+/// 시트(minWidth 420)로는 레인 네 개와 축이 들어가지 않는다.
+@Test func theQuestBoardOpensFullScreen() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("ArcadeUI")
+        .appendingPathComponent("QuestBoard")
+        .appendingPathComponent("QuestBoardCabinet.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    #expect(text.contains("var presentation: CabinetPresentation { .fullScreen }"),
+            "퀘스트 보드가 전체 화면으로 열리지 않는다")
+}
+
+/// 티켓 URL도 토큰 페이지와 같은 규칙을 받는다 — 한곳에서만 만든다.
+/// 카드와 실패 안내가 각자 문자열을 조립하면 한쪽만 고쳤을 때 다른 곳이 깨진다.
+@Test func theIssueURLIsBuiltInExactlyOnePlace() throws {
+    let files = swiftFiles(in: sourcesDirectory())
+    #expect(!files.isEmpty)
+
+    let needle = "/browse/"
+    var holders: [String] = []
+    for file in files where try String(contentsOf: file, encoding: .utf8).contains(needle) {
+        holders.append(file.lastPathComponent)
+    }
+
+    #expect(holders == ["AtlassianLinks.swift"],
+            "티켓 URL이 여러 곳에서 조립된다: \(holders.sorted())")
+}
+
+/// 매핑되지 않은 티켓을 보드가 반드시 보여준다. 어느 레인에도 들어가지 못하므로
+/// 화면이 따로 다루지 않으면 조용히 사라지고, 사용자는 티켓이 없어졌다고 생각한다.
+@Test func theBoardSurfacesUnmappedIssues() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("ArcadeUI")
+        .appendingPathComponent("QuestBoard")
+        .appendingPathComponent("QuestBoardView.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    #expect(text.contains("unmappedIssues"),
+            "보드가 BoardSnapshot.unmappedIssues를 읽지 않는다 — 티켓이 조용히 사라진다")
+}
+
+/// 매핑 마법사로 가는 길이 보드 안에 있어야 한다. 설정을 거치게 하면 사용자가
+/// 문제를 본 자리에서 고칠 수 없다.
+@Test func theUnmappedLaneLinksToTheMappingWizard() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("ArcadeUI")
+        .appendingPathComponent("QuestBoard")
+        .appendingPathComponent("UnmappedLaneView.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    #expect(text.contains("reopenMapping"),
+            "매핑되지 않은 레인에 마법사로 가는 길이 없다")
+}

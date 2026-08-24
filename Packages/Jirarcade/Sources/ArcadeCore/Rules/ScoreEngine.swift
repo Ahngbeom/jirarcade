@@ -74,9 +74,9 @@ public struct ScoreEngine: Sendable {
             )
             scored.append(ScoredEvent(event: event, xp: xp))
 
-            if event.kind == .statusChanged {
-                statusEnteredAt[event.issueKey] = event.observedAt
-            }
+            // 갱신 규칙은 StatusTimeline이 유일하게 정의한다. 여기에 규칙을 복사해 두면
+            // 보드가 쓰는 최종값과 채점이 쓰는 시점별 값이 서로 다른 규칙으로 갈릴 수 있다.
+            StatusTimeline.apply(event, to: &statusEnteredAt)
         }
 
         let voided = abuseGuard.applyVoids(to: scored)

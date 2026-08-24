@@ -60,6 +60,36 @@ public final class AppModel {
     public private(set) var historyDiscoveredStatuses: [String] = []
     /// 로그인한 계정. "내가 직접 옮긴 것만 XP" 판정에 쓴다.
     public private(set) var myAccountId: String?
+    /// 현재 미러를 키 오름차순으로. 보드가 읽는다.
+    ///
+    /// 정렬을 여기서 하는 이유: 미러는 딕셔너리라 순회 순서가 불안정하고, 보드가 매
+    /// 렌더마다 정렬하면 같은 일을 반복한다. 갱신은 동기화마다 한 번뿐이다.
+    public private(set) var issues: [ObservedIssue] = []
+    /// 티켓별 현재 상태 진입 시각. 없는 티켓은 보드가 `jiraUpdatedAt`으로 폴백하고
+    /// 그 사실을 화면에 표시한다.
+    public private(set) var statusEnteredAt: [String: Date] = [:]
+    /// 위생 리포트. HUD가 읽는다.
+    public private(set) var hygiene: HygieneReport?
+    /// 실효 워크플로 맵(사용자 매핑 + 폴백)의 **캐시**.
+    ///
+    /// `currentMapping`/`currentFallbacks`처럼 매 접근마다 디스크를 치면 안 된다 —
+    /// 보드는 렌더마다 이 값을 읽고 티켓 수만큼 `stage(for:)`를 부른다.
+    public private(set) var boardWorkflow = WorkflowMap(statusToStage: [:])
+    /// 정규화된 Jira 호스트. 티켓 링크를 만들 때만 쓴다.
+    /// 자격증명 전체가 아니라 호스트 하나만 내보낸다 — 이메일과 토큰은 화면에 닿을 이유가 없다.
+    public private(set) var siteHost: String?
+    /// 실행 취소 창에서 대기 중인 전이. 티켓 키로 색인한다.
+    ///
+    /// 하나만 대기하게 하면 "새 전이가 오면 앞의 것을 즉시 확정한다"는 규칙이 따라붙고,
+    /// 그러면 세 티켓을 연달아 정리하는 흐름에서 앞의 두 건이 취소 기회를 잃는다.
+    /// 5초 실행 취소가 "다른 티켓을 건드리지 않는 한"이라는 숨은 조건을 갖게 된다.
+    public private(set) var pendingTransitions: [String: PendingTransition] = [:]
+    /// 티켓별 마지막 전이 실패 안내. **Jira가 준 사유를 담지 않는다** — 앱이 쓴 문구만 담는다.
+    public private(set) var transitionFailures: [String: String] = [:]
+
+    /// 대기 중인 타이머. 취소하려면 이걸 취소한다.
+    private var transitionTasks: [String: Task<Void, Never>] = [:]
+    private let transitionSleep: @Sendable (Duration) async throws -> Void
 
     /// 진행 중이던 동기화가 로그아웃·계정 전환을 가로질러 스토어에 쓰지 않도록 막는 데
     /// 쓰는 세대 값. 인증에 성공할 때(로그인/시작)와 로그아웃할 때마다 올라간다.
@@ -109,7 +139,9 @@ public final class AppModel {
         calendar: Calendar,
         rules: RuleSet = .default,
         settings: AppSettings = .default,
-        changelogSourceFactory: ((JiraClient) -> any ChangelogSource)? = nil
+        changelogSourceFactory: ((JiraClient) -> any ChangelogSource)? = nil,
+        transitionSleep: @Sendable @escaping (Duration) async throws -> Void
+            = { try await Task.sleep(for: $0) }
     ) {
         self.store = store
         self.credentials = credentials
@@ -122,6 +154,7 @@ public final class AppModel {
         self.calendar = calendar
         self.rules = rules
         self.settings = settings
+        self.transitionSleep = transitionSleep
         if let raw = UserDefaults.standard.string(forKey: "appearance"),
            let saved = AppearancePreference(rawValue: raw) {
             self.appearancePreference = saved
@@ -170,6 +203,17 @@ public final class AppModel {
         // 만드므로 다음 로그인에서 자연히 깨끗한 상태로 시작한다.
         stopSyncing()
         scheduler = nil
+        // 대기 중인 전이 타이머도 로그아웃의 대상이다. 취소하지 않으면 이 타이머는
+        // syncGeneration을 보지 않는 유일한 비동기 경로라서 계속 잠들어 있다가, 다음
+        // 계정으로 로그인한 뒤 창이 지나는 순간 그 계정의 client로 옛 전이를
+        // POST해버린다(최종 전체 브랜치 리뷰 Finding 1). `pendingTransitions`·
+        // `transitionFailures`도 함께 비운다 — 지우지 않으면 다음 세션에서 같은 키의
+        // 티켓이 나타날 때(예: 같은 사이트로 재로그인) 남의 대기 배너·실패 안내가 그
+        // 티켓 위에 겹쳐 그려진다.
+        transitionTasks.values.forEach { $0.cancel() }
+        transitionTasks = [:]
+        pendingTransitions = [:]
+        transitionFailures = [:]
         // 세대를 올려 진행 중이던 페치가 끝나도 이 계정의 스토어에 쓰지 못하게 막는다
         // (I4). 계정 바인딩(`accountBinding`)은 여기서 지우지 않는다 — 지우면 다음 로그인이 "계정이
         // 바뀌었는지" 판단할 근거를 잃는다. validate() 참고.
@@ -181,6 +225,13 @@ public final class AppModel {
         lifetimeSummary = nil
         seasonSummary = nil
         myAccountId = nil
+        siteHost = nil
+        // 보드 상태도 이 계정의 미러에서 나온 값이다. 남겨두면 다음 로그인이 끝나기
+        // 전까지 남의 티켓이 화면에 떠 있다.
+        issues = []
+        statusEnteredAt = [:]
+        hygiene = nil
+        boardWorkflow = WorkflowMap(statusToStage: [:])
         // 백필에서 나온 값들도 함께 버린다. 남으면 다른 계정으로 로그인했을 때 이전 조직의
         // 상태명이 새 계정의 매핑 후보로 뜨고(조직이 다르면 완전히 무의미한 목록이다),
         // 이전 계정의 중단 사유와 정확도 경고가 새 계정의 설정 화면에 붙는다.
@@ -215,7 +266,7 @@ public final class AppModel {
         // 매핑은 채점의 **입력**이다. 다시 계산하지 않으면 사용자가 잘못된 폴백을 고쳐도
         // XP·레벨이 그대로여서 아무 일도 일어나지 않은 것처럼 보인다. 동기화 완료를
         // 기다리지 않고 저장된 이벤트로 바로 도는 이유가 그것이다 — 즉시 반영돼야 한다.
-        await refreshSummaries()
+        await recomputeFromLog()
         phase = .ready
     }
 
@@ -350,7 +401,7 @@ public final class AppModel {
         // 결과를 새 계정의 스토어에 쓰지 않는다(I4).
         let generation = syncGeneration
         do {
-            // 반환된 요약은 쓰지 않는다. 통산 XP를 만드는 자리는 `refreshSummaries()`
+            // 반환된 요약은 쓰지 않는다. 통산 XP를 만드는 자리는 `recomputeFromLog()`
             // 하나뿐이어야 한다 — 여기서도 따로 담아 두면 갱신 시점이 갈려, 백필 직후부터
             // 다음 동기화까지 캐비닛과 HUD가 서로 다른 레벨을 나란히 보여준다.
             _ = try await engine.sync(
@@ -378,7 +429,7 @@ public final class AppModel {
         refreshUnmapped()
         // 방금 들어온 이벤트를 곧바로 집계에 반영한다. 여기서 갱신하지 않으면 화면의
         // 레벨은 다음 인증이나 백필 종료까지 옛 값에 머문다.
-        await refreshSummaries()
+        await recomputeFromLog()
     }
 
     private func refreshUnmapped(against map: WorkflowMap) {
@@ -391,6 +442,53 @@ public final class AppModel {
             unmappedStatuses = fromMirror
         }
     }
+
+    // MARK: - 보드
+
+    /// 보드가 그릴 좌표. 뷰가 시계와 달력을 직접 만들지 않도록 모델이 만든다.
+    ///
+    /// 매 렌더마다 불린다. `BoardLayout.snapshot`은 순수 함수이고 티켓 수만큼만 도는
+    /// 계산이라 미러 규모(수십~수백 건)에서는 문제가 없다 — 스토어를 치지 않는 것이
+    /// 중요하고, 그래서 `issues`·`statusEnteredAt`·`boardWorkflow`를 미리 갖고 있는다.
+    ///
+    /// - Parameter minimumSpacing: 뷰가 카드 폭과 창 폭으로 계산해 넘긴다.
+    public func boardSnapshot(minimumSpacing: Double) -> BoardSnapshot {
+        BoardLayout.snapshot(
+            issues: optimisticIssues,
+            statusEnteredAt: statusEnteredAt,
+            workflow: boardWorkflow,
+            rules: rules,
+            minimumSpacing: minimumSpacing,
+            now: clock(),
+            calendar: calendar
+        )
+    }
+
+    /// 대기 중인 전이를 미러 위에 **겹친** 목록.
+    ///
+    /// 스토어를 건드리지 않는 것이 핵심이다 — 롤백은 `pendingTransitions`에서 지우는
+    /// 것이고, Jira에는 아직 아무것도 보내지 않았으므로 되돌릴 것도 없다.
+    private var optimisticIssues: [ObservedIssue] {
+        guard !pendingTransitions.isEmpty else { return issues }
+        return issues.map { issue in
+            guard let pending = pendingTransitions[issue.key] else { return issue }
+            // `ObservedIssue`는 전부 `let`이라 상태명만 바꾼 사본을 만든다.
+            // `jiraUpdatedAt`은 **건드리지 않는다** — 아직 Jira에서 아무 일도 일어나지
+            // 않았고, 여기서 지금 시각으로 밀면 정체일이 0으로 보였다가 실패 시
+            // 되돌아오는 깜빡임이 생긴다.
+            return ObservedIssue(
+                key: issue.key, summary: issue.summary,
+                statusName: pending.toStatusName, issueType: issue.issueType,
+                priority: issue.priority, assigneeAccountId: issue.assigneeAccountId,
+                assigneeName: issue.assigneeName, dueDate: issue.dueDate,
+                jiraUpdatedAt: issue.jiraUpdatedAt
+            )
+        }
+    }
+
+    /// WIP 한도. 보드의 `active` 레인 헤더가 읽는다.
+    /// 뷰가 `RuleSet.default`를 직접 보면 사용자가 규칙을 고쳐도 화면이 따라가지 않는다.
+    public var wipLimit: Int { rules.wipLimit }
 
     // MARK: - 백필
 
@@ -505,16 +603,31 @@ public final class AppModel {
         // 재개한 실행의 outcome에는 **이번 실행분만** 담기지만 스토어는 run 전체를 누적하고,
         // 실패로 끝난 실행에는 outcome 자체가 없다(중단 지점까지의 발견은 스토어에 남아 있다).
         historyDiscoveredStatuses = (try? store.discoveredStatuses()) ?? []
-        await refreshSummaries()
+        await recomputeFromLog()
     }
 
-    /// 통산과 시즌을 각각 집계한다. 같은 이벤트 로그를 두 범위로 읽을 뿐이다.
-    private func refreshSummaries() async {
+    /// 이벤트 로그와 미러에서 파생되는 모든 것을 다시 만든다 — 보드가 읽는 상태와
+    /// 통산·시즌 요약.
+    ///
+    /// 동기화 성공과 로그인·백필 종료가 **공통으로 지나는 유일한 지점**이고, 이미
+    /// 이벤트 로그와 미러를 둘 다 읽고 있다. 보드 갱신을 위해 새 갱신 시점이나 새
+    /// 스토어 읽기를 만들 이유가 없다.
+    private func recomputeFromLog() async {
         guard let events = try? store.loadEvents(),
               let mirror = try? store.loadMirror() else { return }
         let now = clock()
+        // 한 번만 읽어 캐시한다. 예전에는 이 함수 안에서만 두 번 불렀고 화면이 렌더마다
+        // 또 불렀다(후속 항목 §4.2).
+        let workflowMap = effectiveWorkflow()
+        boardWorkflow = workflowMap
+
+        issues = mirror.values.sorted { $0.key < $1.key }
+        statusEnteredAt = StatusTimeline.latestStatusEntry(from: events)
+        hygiene = HygieneCalculator(rules: rules, workflow: workflowMap, calendar: calendar)
+            .evaluate(issues, now: now)
+
         let engine = ScoreEngine(
-            rules: rules, workflow: effectiveWorkflow(),
+            rules: rules, workflow: workflowMap,
             calendar: calendar, myAccountId: myAccountId
         )
         lifetimeSummary = engine.recompute(events: events, issues: mirror, now: now).summary
@@ -570,6 +683,9 @@ public final class AppModel {
         // "내가 직접 옮긴 것만 XP"(스펙 §4.2)를 판정하려면 내가 누구인지 알아야 한다.
         // 여기가 accountId를 손에 넣는 유일한 지점이다.
         myAccountId = me.accountId
+        // 티켓 링크를 만들 때 쓴다. APITokenAuth와 같은 정규화를 거쳐야 사용자가 어떻게
+        // 입력했든 같은 호스트가 된다.
+        siteHost = JiraSite.normalize(creds.site)
         // 이 시점 이전에 시작된 동기화는 더 이상 유효하지 않다 — 이 사용자로(또는 이
         // 사용자가 다른 계정으로) 새로 인증됐으니, 그 전에 날아간 페치가 나중에 끝나도
         // 스토어에 쓰면 안 된다(I4).
@@ -674,6 +790,126 @@ public final class AppModel {
         ) else { return [] }
         return Set(result.issues.map(\.statusName)).sorted()
     }
+
+    /// 이 티켓에서 지금 고를 수 있는 전이. **캐싱하지 않는다** — 관리자가 워크플로를
+    /// 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 된다(v0.1 스펙 §8.5).
+    public func availableTransitions(for issueKey: String) async throws -> [JiraTransition] {
+        guard let client else { throw JiraError.unauthorized }
+        return try await client.transitions(issueKey: issueKey)
+    }
+
+    /// 전이를 예약한다. 요청은 실행 취소 창이 지난 뒤에 나간다.
+    public func requestTransition(issueKey: String, transition: JiraTransition) {
+        // 미러에 없는 티켓은 화면에도 없으므로 사용자가 고를 수 있는 상황이 아니다 —
+        // 조용히 무시한다.
+        guard issues.contains(where: { $0.key == issueKey }) else { return }
+
+        // 같은 티켓의 대기를 교체한다. 취소하고 다시 고르는 것과 결과가 같아야 한다.
+        transitionTasks[issueKey]?.cancel()
+        transitionFailures[issueKey] = nil
+
+        let window = settings.transitionUndoWindow
+        pendingTransitions[issueKey] = PendingTransition(
+            issueKey: issueKey,
+            transitionId: transition.id,
+            toStatusName: transition.toStatusName,
+            // `Duration.components.seconds`만 쓰면 서브초 성분(attoseconds)이 통째로
+            // 잘린다 — `window`가 정수 초가 아니게 되는 순간(설정을 바꾸거나 테스트가
+            // 밀리초 단위로 줄이는 경우) 카드가 그리는 카운트다운이 실제 타이머보다
+            // 짧거나 길어 보인다. `fullSeconds`는 attoseconds까지 더해 정확한 초를 만든다.
+            firesAt: clock().addingTimeInterval(window.fullSeconds)
+        )
+        transitionTasks[issueKey] = Task { [weak self, transitionSleep] in
+            do {
+                try await transitionSleep(window)
+            } catch {
+                // 취소됐다 — 요청을 보내지 않는다. 그것이 이 창의 전부다.
+                return
+            }
+            guard !Task.isCancelled else { return }
+            await self?.executeTransition(issueKey: issueKey)
+        }
+    }
+
+    /// 대기 중인 전이를 되돌린다. Jira에는 아직 아무것도 보내지 않았다.
+    public func cancelPendingTransition(issueKey: String) {
+        transitionTasks[issueKey]?.cancel()
+        transitionTasks[issueKey] = nil
+        pendingTransitions[issueKey] = nil
+    }
+
+    public func dismissTransitionFailure(issueKey: String) {
+        transitionFailures[issueKey] = nil
+    }
+
+    /// 실행 취소 창이 지난 뒤 실제로 요청을 보낸다.
+    private func executeTransition(issueKey: String) async {
+        guard let pending = pendingTransitions[issueKey], let client else {
+            pendingTransitions[issueKey] = nil
+            transitionTasks[issueKey] = nil
+            return
+        }
+        // 결과와 무관하게 대기는 끝난다. 낙관적 표시를 남겨두면 실패했는데도 카드가
+        // 새 레인에 머문다.
+        pendingTransitions[issueKey] = nil
+        transitionTasks[issueKey] = nil
+
+        do {
+            try await client.performTransition(issueKey: issueKey,
+                                               transitionId: pending.transitionId)
+        } catch JiraError.unauthorized {
+            // 만료 배너가 이미 같은 사실을 말한다. 카드에도 실패를 띄우면 인증 문제가
+            // 두 번 보이고, 사용자는 티켓 문제와 세션 문제를 구분하지 못한다.
+            phase = .expired
+            return
+        } catch {
+            transitionFailures[issueKey] = Self.transitionFailureMessage(error)
+            return
+        }
+
+        // XP를 직접 주지 않는다. 동기화가 diff로 `.statusChanged`를 만들고 ScoreEngine이
+        // 여느 이벤트와 똑같이 채점한다 — 점수가 관측 로그의 순수 함수라는 불변식을
+        // 지키는 유일한 방법이고, 덕분에 AbuseGuard의 왕복 차단도 그대로 적용된다.
+        await syncNow(reason: .manual)
+    }
+
+    /// 화면에 띄울 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
+    ///
+    /// `JiraError.transitionRejected(reason:)`는 Jira 응답의 `errorMessages`를 그대로
+    /// 담고 그 본문에는 이메일이 섞일 수 있다(`redactedErrorDescription` 참고).
+    /// v0.1 스펙 §8.4는 화면에 닿는 실패 문자열까지 이 제약 아래 둔다.
+    ///
+    /// 사유 대신 Jira로 가는 길을 준다 — 전이가 거부되는 이유는 앱이 채울 수 없는
+    /// 정보를 Jira가 요구하기 때문이고, 그것을 채울 수 있는 곳은 어차피 Jira다.
+    private static func transitionFailureMessage(_ error: any Error) -> String {
+        switch error {
+        case JiraError.transitionRejected:
+            return "Jira가 이 전이를 거부했습니다. 필요한 정보를 Jira에서 채워 주세요."
+        case JiraError.offline:
+            return "연결되지 않았습니다. 다시 시도해 주세요."
+        case JiraError.forbidden:
+            return "이 티켓을 옮길 권한이 없습니다."
+        case JiraError.notFound:
+            return "티켓을 찾을 수 없습니다. Jira에서 삭제되었을 수 있습니다."
+        case JiraError.rateLimited:
+            return "요청이 너무 잦습니다. 잠시 뒤 다시 시도해 주세요."
+        default:
+            return "전이하지 못했습니다. 잠시 뒤 다시 시도해 주세요."
+        }
+    }
+
+    /// 테스트가 동기화 없이 보드 상태를 준비하기 위한 통로.
+    ///
+    /// 프로덕션 경로는 `recomputeFromLog()`뿐이다. 이 함수를 프로덕션 코드에서 부르면
+    /// 미러와 화면이 갈라진다.
+    func seedIssuesForTesting(_ seeded: [ObservedIssue]) {
+        issues = seeded.sorted { $0.key < $1.key }
+    }
+
+    /// 대기 중인 전이 타이머 개수. `transitionTasks`는 `private`이라 테스트가 직접 보지
+    /// 못한다 — `signOut()`이 타이머를 실제로 취소·정리하는지(딕셔너리만 비우고 태스크는
+    /// 살려두는 게 아닌지)를 이 통로 없이는 검증할 수 없다.
+    var transitionTaskCountForTesting: Int { transitionTasks.count }
 }
 
 /// `performSync()`가 던지는, 이미 안전하게 줄여둔 실패. `SyncScheduler`는 이 문자열을
@@ -694,3 +930,13 @@ private struct SyncFailure: Error, CustomStringConvertible {
 /// 던지는 것 자체가 목적이다(I1 참고: 예전에는 조용히 return해서 스케줄러가 이걸 성공으로
 /// 오해했다).
 private struct SyncNotConfigured: Error {}
+
+extension Duration {
+    /// 초 단위 실수값. `components.seconds`만 쓰면 attoseconds 성분이 통째로 버려져
+    /// 정수 초가 아닌 `Duration`(예: 테스트가 밀리초로 줄인 실행 취소 창)에서 결과가
+    /// 잘린다 — `PendingTransition.firesAt` 계산이 이 오차에 그대로 노출된다.
+    var fullSeconds: Double {
+        let comps = components
+        return Double(comps.seconds) + Double(comps.attoseconds) / 1_000_000_000_000_000_000
+    }
+}
