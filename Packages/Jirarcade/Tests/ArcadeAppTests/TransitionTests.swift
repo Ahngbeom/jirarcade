@@ -285,6 +285,7 @@ private func transition(
         http: {
             ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),   // /myself
+                .init(status: 200, body: Data("[]".utf8)),         // signIn의 field
                 .init(status: 204, body: Data()),                  // POST transitions
                 .init(status: 200, body: Data(issuesBody(pairs: []).utf8)), // 뒤따르는 동기화
             ])
@@ -316,6 +317,7 @@ private func transition(
         http: {
             ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 200, body: Data("[]".utf8)),   // signIn의 field
                 .init(status: 400,
                       body: Data(#"{"errorMessages":["\#(leak) 필드가 필요합니다"]}"#.utf8)),
             ])
@@ -345,6 +347,7 @@ private func transition(
         http: {
             ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 200, body: Data("[]".utf8)),   // signIn의 field
                 .init(status: 401, body: Data()),
             ])
         },
@@ -373,6 +376,7 @@ private func transition(
         http: {
             ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 200, body: Data("[]".utf8)),   // signIn의 field
                 .init(status: 500, body: Data()),
             ])
         },

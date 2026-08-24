@@ -24,22 +24,30 @@ public struct FetchResult: Sendable, Equatable {
 /// 실제 Jira를 쓰는 구현. 페이지네이션을 모두 소진해 한 번에 돌려준다.
 public struct JiraIssueSource: IssueSource {
     private let client: JiraClient
-    private let fields = [
+    /// 스프린트 커스텀 필드 ID. 없으면 스프린트를 요청하지 않는다.
+    private let sprintFieldID: String?
+    private let baseFields = [
         "summary", "status", "issuetype", "priority", "assignee", "duedate", "updated",
     ]
 
-    public init(client: JiraClient) {
+    public init(client: JiraClient, sprintFieldID: String? = nil) {
         self.client = client
+        self.sprintFieldID = sprintFieldID
     }
 
     public func fetchAssignedIssues(jql: String) async throws -> FetchResult {
+        // 필드 ID를 모르면 요청 목록에 넣지 않는다 — 존재하지 않는 필드를 요청하면
+        // Jira가 400을 주는 경우가 있어 동기화 전체가 실패할 수 있다.
+        let fields = sprintFieldID.map { baseFields + [$0] } ?? baseFields
+
         var collected: [ObservedIssue] = []
         var failures = 0
         var token: String?
 
         repeat {
             let page = try await client.searchIssues(
-                jql: jql, fields: fields, maxResults: 100, pageToken: token
+                jql: jql, fields: fields, maxResults: 100, pageToken: token,
+                sprintFieldID: sprintFieldID
             )
             collected.append(contentsOf: page.issues.map(ObservedIssue.init))
             failures += page.failures.count

@@ -106,6 +106,7 @@ public final class AppModel {
     private let credentials: any CredentialStore
     private let workflow: any WorkflowStore
     private let accountBinding: any AccountBindingStore
+    private let sprintField: any SprintFieldStore
     private let clientFactory: (any AuthProvider) -> JiraClient
     /// 백필이 쓸 changelog 소스를 만든다. `clientFactory`와 같은 패턴이다 —
     /// 프로덕션은 기본값으로 실제 구현을 쓰고, 테스트만 갈아 끼운다.
@@ -134,6 +135,7 @@ public final class AppModel {
         credentials: any CredentialStore,
         workflow: any WorkflowStore,
         accountBinding: any AccountBindingStore,
+        sprintField: any SprintFieldStore,
         clientFactory: @escaping (any AuthProvider) -> JiraClient,
         clock: @escaping () -> Date,
         calendar: Calendar,
@@ -147,6 +149,7 @@ public final class AppModel {
         self.credentials = credentials
         self.workflow = workflow
         self.accountBinding = accountBinding
+        self.sprintField = sprintField
         self.clientFactory = clientFactory
         self.changelogSourceFactory =
             changelogSourceFactory ?? { JiraChangelogSource(client: $0) }
@@ -226,6 +229,8 @@ public final class AppModel {
         seasonSummary = nil
         myAccountId = nil
         siteHost = nil
+        // 다른 테넌트에는 그 필드가 없다. 남겨두면 존재하지 않는 필드를 계속 요청한다.
+        try? sprintField.clear()
         // 보드 상태도 이 계정의 미러에서 나온 값이다. 남겨두면 다음 로그인이 끝나기
         // 전까지 남의 티켓이 화면에 떠 있다.
         issues = []
@@ -388,7 +393,8 @@ public final class AppModel {
         }
 
         let engine = SyncEngine(
-            source: JiraIssueSource(client: client),
+            source: JiraIssueSource(client: client,
+                                    sprintFieldID: try? sprintField.load()),
             store: store, rules: rules, workflow: effectiveWorkflow(), calendar: calendar,
             // 여기까지 왔다면 validate()가 이미 accountId를 채웠다. 넘기지 않으면 이
             // 경로만 실행자 필터를 건너뛰어, 같은 이벤트가 summary와 lifetimeSummary에서
@@ -686,6 +692,13 @@ public final class AppModel {
         // 티켓 링크를 만들 때 쓴다. APITokenAuth와 같은 정규화를 거쳐야 사용자가 어떻게
         // 입력했든 같은 호스트가 된다.
         siteHost = JiraSite.normalize(creds.site)
+        // 스프린트 필드 ID를 한 번 찾아 저장한다. 실패해도 로그인을 막지 않는다 —
+        // 스프린트를 쓰지 않는 사이트도 있고, 없다는 것은 오류가 아니라 사실이다.
+        // 표시가 빠질 뿐 나머지는 그대로 돈다.
+        if let data = try? await candidate.fields(),
+           let id = try? JiraFieldCatalog.sprintFieldID(in: data) {
+            try? sprintField.save(id)
+        }
         // 이 시점 이전에 시작된 동기화는 더 이상 유효하지 않다 — 이 사용자로(또는 이
         // 사용자가 다른 계정으로) 새로 인증됐으니, 그 전에 날아간 페치가 나중에 끝나도
         // 스토어에 쓰면 안 된다(I4).

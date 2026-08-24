@@ -48,6 +48,15 @@ struct JirarcadeApp: App {
             credentials: KeychainCredentialStore(),
             workflow: workflow,
             accountBinding: UserDefaultsAccountBindingStore(),
+            sprintField: {
+                do { return try FileSprintFieldStore.applicationSupport() }
+                catch {
+                    // 설정 디렉터리를 못 열면 워크플로 저장소도 이미 실패했을 것이다.
+                    // 여기서 앱을 죽이지 않고 메모리 저장소로 degrade한다 — 이월 표시는
+                    // 이번 실행에서만 빠지고 다음 실행에서 다시 시도한다.
+                    return InMemorySprintFieldStore()
+                }
+            }(),
             clientFactory: { auth in JiraClient(auth: auth, http: URLSessionHTTPClient()) },
             clock: { Date() },
             calendar: .current

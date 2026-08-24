@@ -30,6 +30,7 @@ private func modelAfterSync(
         http: {
             ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 200, body: Data("[]".utf8)),   // signIn의 field
                 .init(status: 200, body: Data(issuesJSON.utf8)),
             ])
         },
