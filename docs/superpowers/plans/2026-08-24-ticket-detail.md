@@ -76,16 +76,16 @@
 /// 댓글 한 줄로 정체를 "깨웠다"고 점수를 주면, 앱 안에 댓글 상자를 두는 순간
 /// 한 번 클릭으로 XP를 얻는 버튼이 된다. 정체를 깨우는 신호는 상태 전이뿐이다.
 @Test func touchedEarnsNothingNoMatterHowStagnant() {
-    let awarder = XpAwarder(rules: .default, workflow: .empty, myAccountId: "acc-me",
-                            calendar: utcCalendar)
+    let awarder = XpAwarder(rules: .default, workflow: demoWorkflow,
+                            myAccountId: "acc-me", calendar: utc)
     let event = DomainEvent(
         issueKey: "DEMO-1", kind: .touched, fromStatus: nil, toStatus: nil,
         observedAt: iso("2026-08-24T09:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-05-01T09:00:00Z"), dueDateAtObservation: nil
     )
 
-    let xp = awarder.xp(for: event, issue: nil, statusEnteredAt: nil,
-                        now: iso("2026-08-24T09:00:00Z"))
+    let xp = awarder.baseXP(for: event, issue: nil, statusEnteredAt: nil,
+                            now: iso("2026-08-24T09:00:00Z"))
 
     #expect(xp == 0)
 }
@@ -97,7 +97,7 @@ Run: `cd /Users/bahn/orca/workspaces/jirarcade/task-controlling/Packages/Jirarca
 
 Expected: FAIL. 115일 정체이므로 `wakeXP`가 배수 상한까지 올라간 값을 돌려준다.
 
-**주의:** `XpAwarderTests.swift`에 `utcCalendar`·`iso(_:)` 헬퍼가 이미 있는지 확인한다. 없으면 그 파일이 쓰는 이름을 그대로 쓴다 — `rg "func iso|utcCalendar" Tests/ArcadeCoreTests/`로 찾는다. 헬퍼를 새로 만들지 않는다.
+**확인된 것:** 채점 메서드는 `baseXP(for:issue:statusEnteredAt:now:)`다(`xp(for:)`가 아니다). `XpAwarder.init`은 `(rules:workflow:myAccountId:calendar:)`, `ScoreEngine.init`은 `(rules:workflow:calendar:myAccountId:)`로 **인자 순서가 다르다**. 픽스처 `utc`·`demoWorkflow`·`iso(_:)`·`issue(key:status:)`는 `Tests/ArcadeCoreTests/`에 이미 있다 — 새로 만들지 않는다.
 
 - [ ] **Step 3: 구현한다**
 
@@ -134,8 +134,8 @@ Expected: PASS
 /// touched만 있는 날은 체크인이 아니다. 체크인은 XP가 붙은 날의 집합이고,
 /// touched가 0점이 된 뒤로는 그런 날이 점수에도 연속 기록에도 남지 않는다.
 @Test func aDayWithOnlyTouchedEventsIsNotACheckIn() {
-    let engine = ScoreEngine(rules: .default, workflow: .empty, myAccountId: "acc-me",
-                             calendar: utcCalendar)
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow,
+                             calendar: utc, myAccountId: "acc-me")
     let events = [
         DomainEvent(issueKey: "DEMO-1", kind: .touched, fromStatus: nil, toStatus: nil,
                     observedAt: iso("2026-08-20T09:00:00Z"), actorAccountId: "acc-me",
@@ -150,7 +150,7 @@ Expected: PASS
 }
 ```
 
-**주의:** `PlayerSummary`의 실제 속성 이름을 확인하고 맞춘다 — `rg "public let" Sources/ArcadeCore/Domain/PlayerSummary.swift`. `totalXP`/`streak.currentStreak`이 다른 이름이면 그 이름을 쓴다. 이름을 지어내지 않는다.
+**확인된 것:** `PlayerSummary`는 `ScoreEngine.swift`에 있고 `totalXP: Int`와 `streak: StreakState`를 갖는다. `StreakState`의 필드는 `currentStreak`이다.
 
 - [ ] **Step 6: 전체 테스트를 돌린다**
 
@@ -1033,29 +1033,31 @@ git commit -m "feat: 티켓 상세와 댓글 페이지를 읽는다"
 
 - [ ] **Step 1: 실패하는 테스트를 쓴다**
 
-`Tests/JiraKitTests/JiraClientTests.swift`에 더한다. 그 파일이 쓰는 HTTP 더블과 클라이언트 조립 헬퍼를 먼저 확인한다 — `rg "func makeClient|final class" Tests/JiraKitTests/`. 있는 것을 쓰고 새로 만들지 않는다.
+`Tests/JiraKitTests/JiraClientTests.swift`에 더한다.
+
+**있는 것을 쓴다.** `Tests/JiraKitTests/StubHTTPClient.swift`에 `StubHTTPClient`가 이미 있고 `sentRequests: [URLRequest]`로 보낸 요청을 기록한다. `Tests/JiraKitTests/TestSupport.swift`의 `fixtureAuth()`가 `APITokenAuth`를 만든다. 조립은 `JiraClient(auth: fixtureAuth(), http: stub)` 형태이며 `ChangelogEndpointTests.swift`가 그대로 쓴다. **새 HTTP 더블을 만들지 않는다.**
 
 ```swift
 /// 댓글은 기본이 오래된 순이다. 명시하지 않으면 20건을 받아도 가장 오래된
 /// 20건이 오고, 지금 무슨 일이 벌어지는지는 알 수 없다.
 @Test func commentsAreRequestedNewestFirst() async throws {
-    let http = RecordingHTTP(status: 200, body: #"{"comments":[]}"#)
-    let client = makeClient(http: http)
+    let stub = StubHTTPClient(status: 200, body: #"{"comments":[]}"#)
+    let client = JiraClient(auth: fixtureAuth(), http: stub)
 
     _ = try await client.comments(issueKey: "DEMO-1", limit: 20)
 
-    let url = try #require(http.lastRequest?.url?.absoluteString)
+    let url = try #require(stub.sentRequests.last?.url?.absoluteString)
     #expect(url.contains("orderBy=-created"))
     #expect(url.contains("maxResults=20"))
 }
 
 @Test func updatingSummarySendsPutWithFieldsBody() async throws {
-    let http = RecordingHTTP(status: 204, body: "")
-    let client = makeClient(http: http)
+    let stub = StubHTTPClient(status: 204, body: "")
+    let client = JiraClient(auth: fixtureAuth(), http: stub)
 
     try await client.updateSummary(issueKey: "DEMO-1", summary: "새 제목")
 
-    let request = try #require(http.lastRequest)
+    let request = try #require(stub.sentRequests.last)
     #expect(request.httpMethod == "PUT")
     let body = try #require(request.httpBody)
     let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
@@ -1064,41 +1066,18 @@ git commit -m "feat: 티켓 상세와 댓글 페이지를 읽는다"
 }
 
 @Test func addingCommentSendsPostWithADFBody() async throws {
-    let http = RecordingHTTP(status: 201, body: "{}")
-    let client = makeClient(http: http)
+    let stub = StubHTTPClient(status: 201, body: "{}")
+    let client = JiraClient(auth: fixtureAuth(), http: stub)
     let document = ADFDocument(content: [.init(content: [.init(type: "text", text: "댓글")])])
 
     try await client.addComment(issueKey: "DEMO-1", body: document)
 
-    let request = try #require(http.lastRequest)
+    let request = try #require(stub.sentRequests.last)
     #expect(request.httpMethod == "POST")
     let body = try #require(request.httpBody)
     let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
     let adf = try #require(json["body"] as? [String: Any])
     #expect(adf["type"] as? String == "doc")
-}
-```
-
-**`RecordingHTTP`가 없으면** 같은 파일에 만든다. `ScriptedHTTP`(ArcadeAppTests)는 다른 타깃이라 쓸 수 없다.
-
-```swift
-private final class RecordingHTTP: HTTPClient, @unchecked Sendable {
-    private(set) var lastRequest: URLRequest?
-    private let status: Int
-    private let body: Data
-    private let lock = NSLock()
-
-    init(status: Int, body: String) {
-        self.status = status
-        self.body = Data(body.utf8)
-    }
-
-    func send(_ request: URLRequest) async throws -> (Data, HTTPURLResponse) {
-        lock.withLock { lastRequest = request }
-        let response = HTTPURLResponse(url: request.url!, statusCode: status,
-                                       httpVersion: nil, headerFields: nil)!
-        return (body, response)
-    }
 }
 ```
 
@@ -1255,9 +1234,25 @@ import JiraKit
     #expect(!message.contains("권한이 없습니다"))
 }
 
+/// 시트를 닫으면 받아온 것을 버린다. 남겨두면 다음에 다른 티켓을 열 때
+/// 이전 티켓의 본문이 잠깐 보인다.
 @MainActor
 @Test func closingDetailForgetsWhatWasLoaded() async throws {
-    let model = try makeModel()
+    let detailBody = #"{"key":"DEMO-1","fields":{"summary":"제목","description":null}}"#
+    let model = try makeModel(http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(detailBody.utf8)),
+            .init(status: 200, body: Data(#"{"comments":[]}"#.utf8)),
+        ])
+    })
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    await model.openDetail(issueKey: "DEMO-1")
+    guard case .loaded = model.detailState else {
+        Issue.record("먼저 로드되어야 한다: \(model.detailState)")
+        return
+    }
+
     model.closeDetail()
 
     #expect(model.detailState == .idle)
@@ -1390,6 +1385,8 @@ git commit -m "feat: 시트가 티켓 상세와 최근 댓글을 받아온다"
   - `AppModel.dismissEditFailure(issueKey: String)`
   - `AppModel.editTaskCountForTesting: Int`
 
+**반드시 미러를 채우고 시작한다.** `saveSummary`와 `postComment`는 `issues.contains(where:)`로 시작한다 — 미러에 없는 티켓은 화면에도 없기 때문이다. 테스트가 `model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])`를 부르지 않으면 그 guard에서 조용히 빠져나가고, 테스트는 **틀린 이유로 통과한다**. `seedIssuesForTesting`과 `issue(key:status:)`는 이미 있다(`TransitionTests.swift`가 같은 방식을 쓴다).
+
 **이 태스크가 이 계획에서 가장 위험하다.** 취소 창을 두지 않기로 했지만, **취소 창을 빼는 것과 대기 상태를 안 만드는 것은 다르다.** `AppModel`의 전이 상태는 취소 버튼만을 위한 것이 아니라 진행 중인 비동기 작업의 수명을 계정 경계에 묶는 장치다. 저장은 `await`이고 그 사이에 계정이 바뀔 수 있다.
 
 지난 사이클에 로그아웃 후 대기 중이던 전이가 **다음 계정의 사이트로** 발사된 적이 있다. 같은 모양을 만들지 않는다.
@@ -1415,6 +1412,7 @@ import JiraKit
         ])
     })
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
 
     await model.saveSummary(issueKey: "DEMO-1", summary: "새 제목")
 
@@ -1433,6 +1431,7 @@ import JiraKit
         ])
     })
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
 
     await model.saveSummary(issueKey: "DEMO-1", summary: "새 제목")
 
@@ -1450,6 +1449,7 @@ import JiraKit
         ])
     })
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
     await model.saveSummary(issueKey: "DEMO-1", summary: "새 제목")
     #expect(model.editFailures["DEMO-1"] != nil)
 
@@ -1469,6 +1469,7 @@ import JiraKit
         ])
     })
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
     await model.saveSummary(issueKey: "DEMO-1", summary: "새 제목")
     #expect(model.editFailures["DEMO-1"] != nil)
 
@@ -1491,6 +1492,7 @@ import JiraKit
         ])
     })
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
 
     await model.saveSummary(issueKey: "DEMO-1", summary: "새 제목")
 
@@ -1662,6 +1664,7 @@ git commit -m "feat: 제목을 저장하고 편집 상태를 계정 경계에 �
         ])
     })
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
 
     await model.postComment(issueKey: "DEMO-1", text: "확인했습니다")
 
@@ -1675,6 +1678,7 @@ git commit -m "feat: 제목을 저장하고 편집 상태를 계정 경계에 �
     let http = ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))])
     let model = try makeModel(http: { http })
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
 
     await model.postComment(issueKey: "DEMO-1", text: "   \n  ")
 
