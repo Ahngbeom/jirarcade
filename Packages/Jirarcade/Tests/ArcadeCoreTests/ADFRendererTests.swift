@@ -99,3 +99,39 @@ private func text(_ value: String) -> ADFNode {
 
     #expect(rendered == "하나\n\n둘")
 }
+
+@Test func listItemWithMultipleParagraphsRendersThemOnSeparateLines() {
+    let item = ADFNode(type: "listItem", content: [
+        para(text("첫 문단")),
+        para(text("둘째 문단"))
+    ])
+    let rendered = ADFRenderer.plainText(from: doc(ADFNode(type: "bulletList", content: [item])))
+
+    #expect(rendered == "• 첫 문단\n  둘째 문단")
+}
+
+@Test func listItemWithNestedListRendersTheNestedItemsText() {
+    let nestedItem = { (value: String) in
+        ADFNode(type: "listItem", content: [para(text(value))])
+    }
+    let nested = ADFNode(type: "bulletList", content: [nestedItem("안쪽 첫째"), nestedItem("안쪽 둘째")])
+    let item = ADFNode(type: "listItem", content: [para(text("바깥")), nested])
+    let rendered = ADFRenderer.plainText(from: doc(ADFNode(type: "bulletList", content: [item])))
+
+    #expect(rendered == "• 바깥\n  • 안쪽 첫째\n  • 안쪽 둘째")
+}
+
+@Test func expandAndPanelRenderTheirChildren() {
+    let expand = ADFNode(type: "expand", content: [para(text("펼쳐진 내용"))])
+    let panel = ADFNode(type: "panel", content: [para(text("패널 내용"))])
+
+    #expect(ADFRenderer.plainText(from: doc(expand)) == "펼쳐진 내용")
+    #expect(ADFRenderer.plainText(from: doc(panel)) == "패널 내용")
+}
+
+@Test func genuinelyUnknownBlockTypesStillProducePlaceholder() {
+    let unknown = ADFNode(type: "completelyUnknownType", content: [para(text("손실되어야할내용"))])
+    let rendered = ADFRenderer.plainText(from: doc(unknown))
+
+    #expect(rendered == ADFRenderer.unsupportedPlaceholder)
+}

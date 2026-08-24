@@ -31,13 +31,16 @@ public enum ADFRenderer {
             let inner = node.content.map(block).filter { !$0.isEmpty }.joined(separator: "\n")
             return prefixing(inner, with: "> ")
         case "bulletList":
-            return node.content.map { "• " + inline(listItemInlines($0)) }.joined(separator: "\n")
+            return node.content.map { listItemWithMarker("• ", item: $0) }.joined(separator: "\n")
         case "orderedList":
             return node.content.enumerated()
-                .map { "\($0.offset + 1). " + inline(listItemInlines($0.element)) }
+                .map { listItemWithMarker("\($0.offset + 1). ", item: $0.element) }
                 .joined(separator: "\n")
         case "rule":
             return "———"
+        case "expand", "nestedExpand", "panel":
+            let inner = node.content.map(block).filter { !$0.isEmpty }.joined(separator: "\n\n")
+            return inner
         case "mediaSingle", "mediaGroup", "media":
             return attachmentPlaceholder
         case "table", "tableRow", "tableCell", "tableHeader":
@@ -47,9 +50,37 @@ public enum ADFRenderer {
         }
     }
 
-    /// `listItem`은 문단을 품는다. 항목 하나를 한 줄로 만들기 위해 안쪽 인라인만 모은다.
-    private static func listItemInlines(_ item: ADFNode) -> [ADFNode] {
-        item.content.flatMap { $0.type == "paragraph" ? $0.content : [$0] }
+    /// Render a list item with the given marker (e.g., "• " or "1. ").
+    /// Handles multiple paragraphs and nested blocks, indenting continuation lines
+    /// to align with the marker.
+    private static func listItemWithMarker(_ marker: String, item: ADFNode) -> String {
+        guard item.type == "listItem" else { return "" }
+
+        let indent = String(repeating: " ", count: marker.count)
+        var allLines: [String] = []
+
+        for child in item.content {
+            let rendered: String
+            if child.type == "paragraph" {
+                rendered = inline(child.content)
+            } else {
+                rendered = block(child)
+            }
+
+            guard !rendered.isEmpty else { continue }
+
+            let lines = rendered.components(separatedBy: "\n")
+            allLines.append(contentsOf: lines)
+        }
+
+        guard !allLines.isEmpty else { return "" }
+
+        var result = [marker + allLines[0]]
+        for line in allLines.dropFirst() {
+            result.append(indent + line)
+        }
+
+        return result.joined(separator: "\n")
     }
 
     private static func inline(_ nodes: [ADFNode]) -> String {
