@@ -40,9 +40,18 @@ extension ADFNode: Decodable {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         type = try container.decode(String.self, forKey: .type)
         text = try container.decodeIfPresent(String.self, forKey: .text)
-        content = (try? container.decode([ADFNode].self, forKey: .content)) ?? []
+        content = (try? container.decode([FailableADFNode].self, forKey: .content))?.compactMap(\.value) ?? []
         hasMarks = container.contains(.marks)
         attrs = (try? container.decode(StringAttributes.self, forKey: .attrs))?.values ?? [:]
+    }
+}
+
+/// 배열 원소 하나가 실패해도 나머지를 살리는 래퍼.
+/// 하나 깨진 노드가 있어도 그 배열 전체를 버리지 않도록 한다.
+private struct FailableADFNode: Decodable {
+    let value: ADFNode?
+    init(from decoder: any Decoder) throws {
+        value = try? ADFNode(from: decoder)
     }
 }
 

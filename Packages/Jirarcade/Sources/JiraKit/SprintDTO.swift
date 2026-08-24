@@ -52,26 +52,8 @@ extension JiraSprint: Decodable {
         try JSONDecoder().decode([FailableSprint].self, from: data).compactMap(\.value)
     }
 
-    /// `.withFractionalSeconds`가 켜진 포매터는 소수점이 **없으면 nil을 돌려준다**.
-    /// Jira는 보통 `.000`을 붙이지만 배포·프록시에 따라 빠질 수 있어 두 포매터를 순서대로 쓴다.
-    /// `JiraSearchResponse`가 `updated`에 쓰는 것과 같은 이유다.
-    nonisolated(unsafe) static let timestampFormatters: [ISO8601DateFormatter] = {
-        let variants: [ISO8601DateFormatter.Options] = [
-            [.withInternetDateTime, .withFractionalSeconds],
-            [.withInternetDateTime],
-        ]
-        return variants.map { options in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = options
-            return formatter
-        }
-    }()
-
     static func parseTimestamp(_ text: String) -> Date? {
-        for formatter in timestampFormatters {
-            if let date = formatter.date(from: text) { return date }
-        }
-        return nil
+        JiraTimestamp.parse(text)
     }
 }
 

@@ -53,3 +53,23 @@ import Foundation
     #expect(doc.content[0].content[0].hasMarks)
     #expect(!doc.content[0].content[1].hasMarks)
 }
+
+/// 배열 원소 하나가 디코딩에 실패해도 다른 형제 노드는 보존된다.
+/// 하나 깨진 원소가 있어도 그 배열 전체를 버리면 안 된다.
+@Test func malformedChildDoesNotEraseValidSiblings() throws {
+    let json = #"""
+    {"type":"paragraph","content":[
+      {"type":"text","text":"good"},
+      {"content":[]},
+      {"type":"text","text":"also good"}
+    ]}
+    """#
+
+    let para = try ADFNode.decode(Data(json.utf8))
+
+    #expect(para.content.count == 2)
+    #expect(para.content[0].type == "text")
+    #expect(para.content[0].text == "good")
+    #expect(para.content[1].type == "text")
+    #expect(para.content[1].text == "also good")
+}
