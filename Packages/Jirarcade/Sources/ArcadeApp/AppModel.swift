@@ -86,6 +86,9 @@ public final class AppModel {
     public private(set) var pendingTransitions: [String: PendingTransition] = [:]
     /// 티켓별 마지막 전이 실패 안내. **Jira가 준 사유를 담지 않는다** — 앱이 쓴 문구만 담는다.
     public private(set) var transitionFailures: [String: String] = [:]
+    /// 상세 시트가 지금 보여줄 상태. 시트가 열려 있을 때만 `.idle`이 아니다 —
+    /// 미러에는 들어가지 않는 순전히 화면용 값이다(`IssueDetail.swift` 참고).
+    public private(set) var detailState: IssueDetailState = .idle
 
     /// 대기 중인 타이머. 취소하려면 이걸 취소한다.
     private var transitionTasks: [String: Task<Void, Never>] = [:]
@@ -904,6 +907,65 @@ public final class AppModel {
         // 여느 이벤트와 똑같이 채점한다 — 점수가 관측 로그의 순수 함수라는 불변식을
         // 지키는 유일한 방법이고, 덕분에 AbuseGuard의 왕복 차단도 그대로 적용된다.
         await syncNow(reason: .manual)
+    }
+
+    /// 시트에 그릴 만큼만 받아온다. 더 필요하면 Jira로 보낸다 — 이 앱은 티켓을
+    /// 읽는 도구가 아니라 정체를 재는 도구다.
+    public static let commentPageSize = 20
+
+    public func openDetail(issueKey: String) async {
+        guard let client else { return }
+        detailState = .loading(issueKey: issueKey)
+        let generation = syncGeneration
+
+        do {
+            let detail = try await client.issueDetail(issueKey: issueKey)
+            let comments = try await client.comments(issueKey: issueKey,
+                                                     limit: Self.commentPageSize)
+            // 받아오는 동안 계정이 바뀌었으면 이 결과는 남의 것이다.
+            guard generation == syncGeneration else { return }
+            detailState = .loaded(IssueDetailView(
+                key: detail.key,
+                summary: detail.summary,
+                descriptionText: detail.description.map(ADFRenderer.plainText(from:)) ?? "",
+                comments: comments.map {
+                    CommentView(id: $0.id, authorName: $0.authorName, created: $0.created,
+                                text: $0.body.map(ADFRenderer.plainText(from:)) ?? "")
+                }
+            ))
+        } catch JiraError.unauthorized {
+            guard generation == syncGeneration else { return }
+            phase = .expired
+            detailState = .idle
+        } catch {
+            guard generation == syncGeneration else { return }
+            // 앱이 직접 쓴 문구를 쓴다. `redactedErrorDescription`은 로그와 동기화
+            // 이력을 위한 타입 이름(`JiraError.forbidden` 같은)이라 화면에 놓을 것이 아니다.
+            detailState = .failed(Self.detailFailureMessage(error))
+        }
+    }
+
+    public func closeDetail() {
+        detailState = .idle
+    }
+
+    /// 시트에 띄울 조회 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
+    ///
+    /// 400은 `JiraError.transitionRejected(reason:)`로 들어오고 그 `reason`은 Jira 응답의
+    /// `errorMessages`를 그대로 담는다. 본문에는 이메일이 섞일 수 있다.
+    ///
+    /// 시트 조회는 동기화 경로 밖에서 돌기 때문에 이 처리를 물려받지 못한다 — 여기서 직접 한다.
+    private static func detailFailureMessage(_ error: any Error) -> String {
+        switch error {
+        case JiraError.offline:
+            return "연결되지 않았습니다. 다시 시도해 주세요."
+        case JiraError.forbidden:
+            return "이 티켓을 볼 권한이 없습니다."
+        case JiraError.notFound:
+            return "티켓을 찾을 수 없습니다."
+        default:
+            return "티켓을 불러오지 못했습니다. 다시 시도해 주세요."
+        }
     }
 
     /// 화면에 띄울 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
