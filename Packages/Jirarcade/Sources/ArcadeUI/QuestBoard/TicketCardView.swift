@@ -135,7 +135,7 @@ struct TicketCardView: View {
                     Text("옮길 수 있는 상태가 없습니다")
                 } else {
                     ForEach(transitions, id: \.id) { transition in
-                        Button(transition.name) {
+                        Button(transition.menuLabel) {
                             model.requestTransition(issueKey: slot.issue.key, transition: transition)
                         }
                     }
