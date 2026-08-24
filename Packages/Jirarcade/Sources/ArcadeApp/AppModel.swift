@@ -1017,6 +1017,46 @@ public final class AppModel {
         await task.value
     }
 
+    /// 댓글을 등록한다.
+    ///
+    /// 보내는 ADF는 우리가 처음부터 만든다 — 읽어온 문서를 되돌려 보내지 않으므로
+    /// 왕복 손실이 없다.
+    public func postComment(issueKey: String, text: String) async {
+        guard let client else { return }
+        // 미러에 없는 티켓은 화면에도 없다 — 사용자가 고를 수 있는 상황이 아니다.
+        guard issues.contains(where: { $0.key == issueKey }) else { return }
+        guard !editInFlight.contains(issueKey) else { return }
+        // 공백만 친 뒤 저장을 누른 것은 등록 의사가 아니다 — 상태도 건드리지 않고 그냥 돌아간다.
+        guard let document = ADFBuilder.paragraphs(from: text) else { return }
+
+        editInFlight.insert(issueKey)
+        editFailures[issueKey] = nil
+        let generation = syncGeneration
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.finishEdit(issueKey: issueKey) }
+            do {
+                try await client.addComment(issueKey: issueKey, body: document)
+            } catch JiraError.unauthorized {
+                if generation == self.syncGeneration { self.phase = .expired }
+                return
+            } catch {
+                if generation == self.syncGeneration {
+                    self.editFailures[issueKey] = Self.editFailureMessage(error)
+                }
+                return
+            }
+            // 등록하는 동안 계정이 바뀌었으면 이 결과는 남의 것이다.
+            guard generation == self.syncGeneration else { return }
+            // 댓글은 `updated` 타임스탬프를 움직인다 — 다음 동기화가 `.touched`로
+            // 관측하게 둔다. XP를 직접 주지 않는다.
+            await self.syncNow(reason: .manual)
+        }
+        editTasks[issueKey] = task
+        await task.value
+    }
+
     public func dismissEditFailure(issueKey: String) {
         editFailures[issueKey] = nil
     }

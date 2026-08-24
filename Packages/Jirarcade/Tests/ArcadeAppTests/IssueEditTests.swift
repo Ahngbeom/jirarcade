@@ -111,6 +111,43 @@ private func readySeededWorkflow() -> InMemoryWorkflowStore {
 /// 401은 만료 배너가 이미 같은 사실을 말한다. 시트에도 실패를 띄우면 인증 문제가
 /// 두 번 보이고 사용자는 티켓 문제와 세션 문제를 구분하지 못한다.
 @MainActor
+@Test func postingACommentSucceeds() async throws {
+    let model = try makeModel(
+        workflow: readySeededWorkflow(),
+        http: {
+            ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),   // /myself
+                .init(status: 200, body: Data("[]".utf8)),         // signIn의 field
+                .init(status: 201, body: Data("{}".utf8)),         // POST comment
+                .init(status: 200, body: Data(#"{"issues":[],"isLast":true}"#.utf8)), // 뒤따르는 동기화
+            ])
+        }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    await model.postComment(issueKey: "DEMO-1", text: "확인했습니다")
+
+    #expect(model.editInFlight.isEmpty)
+    #expect(model.editFailures["DEMO-1"] == nil)
+}
+
+/// 빈 댓글은 보내지 않는다. 공백만 친 뒤 저장을 누른 것은 등록 의사가 아니다.
+@MainActor
+@Test func whitespaceOnlyCommentIsNotSent() async throws {
+    let http = ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))])
+    let model = try makeModel(http: { http })
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    await model.postComment(issueKey: "DEMO-1", text: "   \n  ")
+
+    // 큐가 비었으므로 요청이 하나라도 더 나갔다면 URLError로 실패했을 것이다.
+    #expect(model.editFailures["DEMO-1"] == nil)
+    #expect(model.editInFlight.isEmpty)
+}
+
+@MainActor
 @Test func anExpiredTokenMovesToExpiredWithoutAFieldFailure() async throws {
     let model = try makeModel(
         workflow: readySeededWorkflow(),
@@ -237,4 +274,47 @@ private func readySeededWorkflow() -> InMemoryWorkflowStore {
     #expect(model.editFailures.isEmpty)
     #expect(model.editInFlight.isEmpty)
     #expect(model.editTaskCountForTesting == 0)
+}
+
+/// `postComment`도 `saveSummary`와 같은 성공 분기 세대 검사를 쓴다. 단순
+/// 로그아웃만으로는 시험되지 않는다 — `client`가 `nil`이 되어 뒤이은 `syncNow()`가
+/// 그 자체의 `guard let client`에서 막혀 버리기 때문이다(별개의, 이미 있던 방어선).
+/// 그 검사가 실제로 막아야 하는 사고는 로그아웃 **뒤에 다른 계정으로 재로그인**해
+/// `client`가 다시 채워진 상태에서 옛 댓글 등록이 뒤늦게 성공으로 돌아오는 경우다.
+@MainActor
+@Test func lateCommentSuccessAfterSignOutAndReSignInDoesNotSyncTheNewAccount() async throws {
+    let gate = GatedHTTP(leading: [
+        .init(status: 200, body: Data(myselfBody.utf8)),   // 첫 계정 /myself
+        .init(status: 200, body: Data("[]".utf8)),         // 첫 계정 signIn의 field
+    ])
+    let model = try makeModel(workflow: readySeededWorkflow(), http: { gate })
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    let postTask = Task { await model.postComment(issueKey: "DEMO-1", text: "확인했습니다") }
+    await gate.waitUntilEntered()
+    #expect(model.editInFlight.contains("DEMO-1"))
+
+    await model.signOut()
+    // 다른 계정으로 재로그인한다 — `client`가 다시 채워지고 `syncGeneration`이 한 번
+    // 더 오른다. 옛 댓글 등록의 `generation`은 이제 두 세대나 뒤처졌다.
+    await gate.enqueueLeading([
+        .init(status: 200, body: Data(myselfBody.utf8)),   // 둘째 계정 /myself
+        .init(status: 200, body: Data("[]".utf8)),         // 둘째 계정 signIn의 field
+    ])
+    await model.signIn(site: "example.atlassian.net", email: "b@example.com", token: "t2")
+
+    // 첫 계정의 POST가 이제야 성공으로 돌아온다 — 재로그인 전에 이미 날아간
+    // 요청이므로 막을 수 없다. 하지만 그 결과가 둘째 계정의 화면에 쓰이거나
+    // 둘째 계정의 `client`로 동기화를 일으켜서는 안 된다.
+    await gate.release(status: 201, body: Data("{}".utf8))
+    await postTask.value
+
+    #expect(model.editFailures.isEmpty)
+    #expect(model.editInFlight.isEmpty)
+    #expect(model.editTaskCountForTesting == 0)
+    #expect(model.phase != .expired)
+    // myself + field(첫 계정) + POST + myself + field(둘째 계정) = 5. 세대 검사가
+    // 없다면 `syncNow`가 둘째 계정의 `client`로 실제 검색 요청(6번째)을 내보낸다.
+    #expect(await gate.requestCount == 5)
 }
