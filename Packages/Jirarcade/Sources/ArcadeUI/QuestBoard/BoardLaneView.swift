@@ -12,6 +12,7 @@ struct BoardLaneView: View {
     let cardNamespace: Namespace.ID
     /// WIP 한도. `active` 레인에만 표시한다.
     let wipLimit: Int?
+    let onOpenDetail: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
@@ -22,7 +23,8 @@ struct BoardLaneView: View {
                     TicketCardView(
                         slot: slot, metrics: metrics, model: model,
                         pending: model.pendingTransitions[slot.issue.key],
-                        failure: model.transitionFailures[slot.issue.key]
+                        failure: model.transitionFailures[slot.issue.key],
+                        onOpenDetail: onOpenDetail
                     )
                     .offset(x: metrics.x(for: slot.position),
                             y: metrics.y(forRow: slot.row))

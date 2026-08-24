@@ -14,6 +14,7 @@ struct TicketCardView: View {
     let model: AppModel
     let pending: PendingTransition?
     let failure: String?
+    let onOpenDetail: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: 3) {
@@ -27,9 +28,14 @@ struct TicketCardView: View {
                     .foregroundStyle(theme.inkTertiary)
                     .monospacedDigit()
             }
-            Text(slot.issue.key)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
-                .foregroundStyle(theme.inkPrimary)
+            // 카드 전체가 아니라 키만 탭 대상이다. 카드에는 상태 옮기기 메뉴와
+            // 취소·닫기 버튼이 있어, 전체를 제스처로 덮으면 그 클릭을 가로챈다.
+            Button { onOpenDetail(slot.issue.key) } label: {
+                Text(slot.issue.key)
+                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .foregroundStyle(theme.inkPrimary)
+            }
+            .buttonStyle(.plain)
             Text(slot.issue.summary)
                 .font(.system(size: 10))
                 .foregroundStyle(theme.inkSecondary)

@@ -7,6 +7,7 @@ struct QuestBoardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: AppModel
     @Namespace private var cardNamespace
+    @State private var detailTarget: DetailTarget?
 
     /// 동기화 전과 "티켓이 없다"를 구분한다. `ObservationCabinet`이 쓰는 것과 같은
     /// 판정(`lastSync`)이다 — 집계값으로 판정하면 백필이 넣은 이벤트 때문에 이 안내가
@@ -51,7 +52,8 @@ struct QuestBoardView: View {
                                 BoardLaneView(
                                     lane: lane, axis: snapshot.axis, metrics: metrics,
                                     model: model, cardNamespace: cardNamespace,
-                                    wipLimit: lane.stage == .active ? model.wipLimit : nil
+                                    wipLimit: lane.stage == .active ? model.wipLimit : nil,
+                                    onOpenDetail: { key in detailTarget = DetailTarget(id: key) }
                                 )
                             }
                         }
@@ -66,5 +68,14 @@ struct QuestBoardView: View {
                        value: model.pendingTransitions)
         }
         .background(theme.surfaceBase)
+        .sheet(item: $detailTarget) { target in
+            TicketDetailSheet(issueKey: target.id, model: model)
+        }
     }
+}
+
+/// `sheet(item:)`이 `Identifiable`을 요구한다. 티켓 키 자체가 식별자이므로
+/// 얇게 감싸기만 한다.
+private struct DetailTarget: Identifiable {
+    let id: String
 }
