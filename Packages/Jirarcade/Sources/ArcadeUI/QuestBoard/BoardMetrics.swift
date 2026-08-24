@@ -11,7 +11,12 @@ struct BoardMetrics {
     /// 전이 실패 블록(2줄 메시지 + Jira 링크)이 최악의 경우에도 잘리지 않을 높이.
     /// 마감일 줄은 실패가 뜨는 동안 숨는다(`TicketCardView.showsFailureBlock`) — 그래도
     /// 두 상태 모두 이 높이 안에 들어오는지는 `TicketCardView`의 계산에서 확인한다.
-    let cardHeight: Double = 112
+    ///
+    /// 대기·실패가 없는 상태(마감일 + 이월 줄 + 상태 옮기기 메뉴가 모두 뜨는 경우)의
+    /// 콘텐츠 박스는 폰트 메트릭 계산상 정확히 꽉 찬다 — 여유가 0pt다. 이 카드는
+    /// 이전에도 같은 방식으로 잘렸던 적이 있어(전이 실패 블록, 112pt로 올린 이유)
+    /// 여유 없이 배포하지 않는다.
+    let cardHeight: Double = 120
     let rowGap: Double = 8
     /// 카드 사이에 최소로 남길 여백. 이보다 좁아지면 `LanePacker`가 다음 줄로 내린다.
     let cardGap: Double = 10

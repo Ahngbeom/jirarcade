@@ -23,10 +23,16 @@ public struct BoardSlot: Sendable, Equatable, Identifiable {
     /// 관측 이력이 없어 `jiraUpdatedAt`으로 폴백했다.
     public let isApproximate: Bool
     public let dueState: DueState
+    /// 스프린트 이월 횟수. **표시 전용이며 채점에 쓰지 않는다.**
+    public let sprintCarryOvers: Int
+    /// 툴팁이 "A → B" 문장을 만들 때 쓴다. 문장 조립은 뷰의 몫이다.
+    public let firstSprintName: String?
+    public let latestSprintName: String?
 
     public init(
         issue: ObservedIssue, daysStagnant: Int, tier: StagnationTier,
-        position: Double, row: Int, isApproximate: Bool, dueState: DueState
+        position: Double, row: Int, isApproximate: Bool, dueState: DueState,
+        sprintCarryOvers: Int, firstSprintName: String?, latestSprintName: String?
     ) {
         self.issue = issue
         self.daysStagnant = daysStagnant
@@ -35,6 +41,9 @@ public struct BoardSlot: Sendable, Equatable, Identifiable {
         self.row = row
         self.isApproximate = isApproximate
         self.dueState = dueState
+        self.sprintCarryOvers = sprintCarryOvers
+        self.firstSprintName = firstSprintName
+        self.latestSprintName = latestSprintName
     }
 }
 
@@ -108,7 +117,10 @@ public enum BoardLayout {
                 position: BoardAxis.position(forDays: stagnant, rules: rules),
                 row: 0,
                 isApproximate: classifier.isApproximate(statusEnteredAt: entered),
-                dueState: dueState(for: issue, now: now, calendar: calendar)
+                dueState: dueState(for: issue, now: now, calendar: calendar),
+                sprintCarryOvers: issue.sprintCarryOvers,
+                firstSprintName: issue.firstSprintName,
+                latestSprintName: issue.latestSprintName
             ))
         }
 

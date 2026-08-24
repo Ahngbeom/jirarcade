@@ -44,11 +44,19 @@ struct TicketCardView: View {
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(dueColor)
             }
+            // 이월은 대기·실패 블록이 없을 때만 그린다. 그 둘은 그 순간 행동을 요구하는
+            // 정보라 우선하고, 카드 높이 예산이 이미 빠듯하다(실패 상태에서 104pt 중 92pt).
+            if slot.sprintCarryOvers > 0, pending == nil, failure == nil {
+                Text("↻ 스프린트 \(slot.sprintCarryOvers)회")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(theme.inkTertiary)
+                    .help(sprintTooltip)
+            }
             if let pending {
                 // 남은 시간과 대상 상태·취소를 한 줄에 묶는다 — 별도 줄을 더하면(header
-                // + key + summary×2 + due + pending행 + 새 줄) 112pt 카드에서 여유가
-                // 0pt가 된다(아래 예산 계산 참고). 같은 줄에 붙이는 쪽이 실패 블록과
-                // 같은 예산 안에서 안전하게 들어간다.
+                // + key + summary×2 + due + pending행 + 새 줄) 120pt 카드에서 여유가
+                // 8pt로 줄어든다(아래 예산 계산 참고). 같은 줄에 붙이는 쪽이 실패 블록과
+                // 같은 예산 안에서 더 안전하게 들어간다.
                 HStack(spacing: 4) {
                     Text("→ \(pending.toStatusName)")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -222,5 +230,13 @@ struct TicketCardView: View {
         case .overdue:           return theme.danger
         case .dueIn(let days):   return days <= 3 ? theme.accent : theme.inkTertiary
         }
+    }
+
+    /// `ArcadeCore`는 이름 둘을 사실로만 담는다. 문장은 여기서 만든다 —
+    /// `DueState`·`HygieneNextStep`과 같은 경계다.
+    private var sprintTooltip: String {
+        guard let first = slot.firstSprintName, let latest = slot.latestSprintName
+        else { return "" }
+        return first == latest ? first : "\(first) → \(latest)"
     }
 }
