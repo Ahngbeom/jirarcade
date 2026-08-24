@@ -692,13 +692,6 @@ public final class AppModel {
         // 티켓 링크를 만들 때 쓴다. APITokenAuth와 같은 정규화를 거쳐야 사용자가 어떻게
         // 입력했든 같은 호스트가 된다.
         siteHost = JiraSite.normalize(creds.site)
-        // 스프린트 필드 ID를 한 번 찾아 저장한다. 실패해도 로그인을 막지 않는다 —
-        // 스프린트를 쓰지 않는 사이트도 있고, 없다는 것은 오류가 아니라 사실이다.
-        // 표시가 빠질 뿐 나머지는 그대로 돈다.
-        if let data = try? await candidate.fields(),
-           let id = try? JiraFieldCatalog.sprintFieldID(in: data) {
-            try? sprintField.save(id)
-        }
         // 이 시점 이전에 시작된 동기화는 더 이상 유효하지 않다 — 이 사용자로(또는 이
         // 사용자가 다른 계정으로) 새로 인증됐으니, 그 전에 날아간 페치가 나중에 끝나도
         // 스토어에 쓰면 안 된다(I4).
@@ -732,10 +725,37 @@ public final class AppModel {
                 // 매핑과 백필이 추정한 폴백이 남아 `effectiveWorkflow()`에 계속 병합되고,
                 // 새 계정의 전이가 남의 조직 기준으로 채점된다(WorkflowStore.clear 참고).
                 try? workflow.clear()
+                // 다른 테넌트에는 그 필드가 없다. 남겨두면 이전 사이트의 customfield_*를
+                // 새 계정에도 계속 요청하게 되고, 새 사이트에 그 필드가 없으면 검색 요청
+                // 전체가 거부될 수 있다(SyncEngine.swift 참고). 아래 조회가 새 사이트의
+                // 값으로 다시 채운다 — 여기서는 지우기만 한다.
+                try? sprintField.clear()
             }
             try? accountBinding.save(current.rawValue)
         } catch {
             // 미러도 바인딩도 건드리지 않는다. 지우는 쪽도 덮는 쪽도 되돌릴 수 없다.
+        }
+
+        // 스프린트 필드 ID를 한 번 찾아 저장한다. 실패해도 로그인을 막지 않는다 —
+        // 스프린트를 쓰지 않는 사이트도 있고, 없다는 것은 오류가 아니라 사실이다.
+        // 표시가 빠질 뿐 나머지는 그대로 돈다.
+        //
+        // 계정 전환 검사(바로 위) **뒤에** 두는 것이 중요하다: 전환이었다면 그 검사가 이미
+        // sprintField를 지웠으므로 여기서는 새 사이트의 값만 채우면 된다. 앞에 두면 저장이
+        // 먼저 끝난 뒤에야 전환 검사가 돌아 store·workflow만 지우고 sprintField는 그대로
+        // 두게 되어, 이전 사이트의 필드 ID가 새 계정에 남는다(최종 전체 브랜치 리뷰 Finding 1).
+        //
+        // 조회 결과는 있는 그대로 기록한다(authoritative): 필드가 있으면 저장하고, 없으면
+        // 지운다 — "없음"도 이번 조회가 확인한 사실이므로, 저장된 옛 값을 그대로 두면
+        // 관리자가 사이트에서 스프린트 필드를 없앤 경우와 구분되지 않는다. 조회 자체가
+        // 실패하면(네트워크 등) 건드리지 않는다 — 전환이었다면 위에서 이미 지워졌고,
+        // 전환이 아니었다면 지금 저장된 값이 여전히 맞을 가능성이 높다.
+        if let data = try? await candidate.fields() {
+            if let id = try? JiraFieldCatalog.sprintFieldID(in: data) {
+                try? sprintField.save(id)
+            } else {
+                try? sprintField.clear()
+            }
         }
 
         if persistOnSuccess {
