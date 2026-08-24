@@ -130,3 +130,111 @@ private func readySeededWorkflow() -> InMemoryWorkflowStore {
     #expect(model.phase == .expired)
     #expect(model.editFailures["DEMO-1"] == nil)
 }
+
+// MARK: - 로그아웃과 실제로 날아가는 중인 저장의 경합
+//
+// 위 테스트들은 `ScriptedHTTP`가 즉시 응답하기 때문에 `saveSummary`가 이미 끝난
+// **뒤에** `signOut()`을 부른다 — 이 태스크가 존재하는 이유인 "저장이 실제로 대기
+// 중일 때 로그아웃이 오면?"이라는 경합은 하나도 만들지 않는다. `GatedHTTP`로 PUT
+// 응답을 붙잡아 두고 그 사이에 로그아웃을 흘려보낸 뒤에야 풀어준다 — 세 가지 결과
+// (성공/거부/만료)로 각각 풀어서 `saveSummary`의 세 `generation == self.syncGeneration`
+// 검사를 하나씩 겨냥한다.
+
+/// 성공 분기의 세대 검사(`guard generation == self.syncGeneration else { return }`)는
+/// 로그아웃만으로는 실제로 시험되지 않는다 — 로그아웃이 `client`를 `nil`로 만들어
+/// 버리므로, 그 검사를 지워도 뒤이은 `syncNow()`는 `performSync()`의
+/// `guard let client`에서 막힌다(별개의, 이미 있던 방어선). 이 검사가 실제로 막아야
+/// 하는 사고는 사고 보고서 그대로다 — 로그아웃 **뒤에 다른 계정으로 재로그인**해
+/// `client`가 다시 채워진 상태에서 옛 저장이 뒤늦게 성공으로 돌아오는 경우다. 그래서
+/// `signOut()` 다음에 두 번째 `signIn()`을 끼워 넣는다.
+@MainActor
+@Test func lateSuccessAfterSignOutAndReSignInDoesNotSyncTheNewAccount() async throws {
+    let gate = GatedHTTP(leading: [
+        .init(status: 200, body: Data(myselfBody.utf8)),   // 첫 계정 /myself
+        .init(status: 200, body: Data("[]".utf8)),         // 첫 계정 signIn의 field
+    ])
+    let model = try makeModel(workflow: readySeededWorkflow(), http: { gate })
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    let saveTask = Task { await model.saveSummary(issueKey: "DEMO-1", summary: "새 제목") }
+    await gate.waitUntilEntered()
+    #expect(model.editInFlight.contains("DEMO-1"))
+
+    await model.signOut()
+    // 다른 계정으로 재로그인한다 — `client`가 다시 채워지고 `syncGeneration`이 한 번
+    // 더 오른다. 옛 저장의 `generation`은 이제 두 세대나 뒤처졌다.
+    await gate.enqueueLeading([
+        .init(status: 200, body: Data(myselfBody.utf8)),   // 둘째 계정 /myself
+        .init(status: 200, body: Data("[]".utf8)),         // 둘째 계정 signIn의 field
+    ])
+    await model.signIn(site: "example.atlassian.net", email: "b@example.com", token: "t2")
+
+    // 첫 계정의 PUT이 이제야 성공으로 돌아온다 — 재로그인 전에 이미 날아간
+    // 요청이므로 막을 수 없다. 하지만 그 결과가 둘째 계정의 화면에 쓰이거나
+    // 둘째 계정의 `client`로 동기화를 일으켜서는 안 된다.
+    await gate.release(status: 204, body: Data())
+    await saveTask.value
+
+    #expect(model.editFailures.isEmpty)
+    #expect(model.editInFlight.isEmpty)
+    #expect(model.editTaskCountForTesting == 0)
+    #expect(model.phase != .expired)
+    // myself + field(첫 계정) + PUT + myself + field(둘째 계정) = 5. 세대 검사가
+    // 없다면 `syncNow`가 둘째 계정의 `client`로 실제 검색 요청(6번째)을 내보낸다 —
+    // `GatedHTTP`는 게이트를 지난 뒤의 호출을 매달아 두지 않고 즉시 에러로
+    // 되돌리므로(정확히 한 번만 멈추는 스텁), 테스트가 멈추지 않고 이 카운트로
+    // 곧바로 드러난다.
+    #expect(await gate.requestCount == 5)
+}
+
+@MainActor
+@Test func lateRejectionAfterSignOutDoesNotSurfaceAFailure() async throws {
+    let gate = GatedHTTP(leading: [
+        .init(status: 200, body: Data(myselfBody.utf8)),
+        .init(status: 200, body: Data("[]".utf8)),
+    ])
+    let model = try makeModel(workflow: readySeededWorkflow(), http: { gate })
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    let saveTask = Task { await model.saveSummary(issueKey: "DEMO-1", summary: "새 제목") }
+    await gate.waitUntilEntered()
+
+    await model.signOut()
+    // 400이 이제야 도착한다. 일반 실패 분기의 세대 검사가 없으면 이미 로그아웃해
+    // 빈 화면인 이 모델에 남의 실패 문구가 쓰인다.
+    await gate.release(status: 400, body: Data("{}".utf8))
+    await saveTask.value
+
+    #expect(model.editFailures.isEmpty)
+    #expect(model.editInFlight.isEmpty)
+    #expect(model.editTaskCountForTesting == 0)
+    #expect(model.detailState == .idle)
+}
+
+@MainActor
+@Test func lateUnauthorizedAfterSignOutDoesNotExpireTheNewSession() async throws {
+    let gate = GatedHTTP(leading: [
+        .init(status: 200, body: Data(myselfBody.utf8)),
+        .init(status: 200, body: Data("[]".utf8)),
+    ])
+    let model = try makeModel(workflow: readySeededWorkflow(), http: { gate })
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    let saveTask = Task { await model.saveSummary(issueKey: "DEMO-1", summary: "새 제목") }
+    await gate.waitUntilEntered()
+
+    await model.signOut()
+    // 401이 이제야 도착한다. 만료 분기의 세대 검사가 없으면 이미 로그아웃해
+    // `.signedOut`으로 넘어간 phase가 `.expired`로 다시 덧씌워진다 — 사용자는 방금
+    // 로그아웃했는데 세션이 만료됐다는 배너를 본다.
+    await gate.release(status: 401, body: Data("{}".utf8))
+    await saveTask.value
+
+    #expect(model.phase != .expired)
+    #expect(model.editFailures.isEmpty)
+    #expect(model.editInFlight.isEmpty)
+    #expect(model.editTaskCountForTesting == 0)
+}
