@@ -150,7 +150,8 @@ private func swiftFiles(in directory: URL) -> [URL] {
 }
 
 /// 보드는 시트가 아니라 전체 화면으로 열려야 한다. 매일 여러 번 여는 화면이고
-/// 시트(minWidth 420)로는 레인 네 개와 축이 들어가지 않는다.
+/// 시트 최소 폭(`LayoutTokens.SizeToken.sheetMinWidth`)으로는 레인 네 개와 축이
+/// 들어가지 않는다.
 @Test func theQuestBoardOpensFullScreen() throws {
     let file = sourcesDirectory()
         .appendingPathComponent("ArcadeUI")
@@ -202,4 +203,150 @@ private func swiftFiles(in directory: URL) -> [URL] {
 
     #expect(text.contains("reopenMapping"),
             "매핑되지 않은 레인에 마법사로 가는 길이 없다")
+}
+
+/// 활자 크기는 `ArcadeMetrics`를 통해서만 정한다.
+///
+/// 색 리터럴 검사와 같은 이유다: 하드코딩된 pt 값은 **좁은 창에서만** 맞다.
+/// 하나라도 남으면 넓은 화면에서 그 자리만 작게 남는데, 그건 눈으로 훑어서는
+/// 잡히지 않는다(개편 전 이 저장소에 9~13pt가 40군데 넘게 흩어져 있었다).
+///
+/// `ArcadeMetrics.swift`는 토큰을 `Font`로 바꾸는 유일한 곳이라 예외다.
+@Test func viewsUseTheTypeScaleRatherThanHardcodedFontSizes() throws {
+    let files = swiftFiles(in: sourcesDirectory().appendingPathComponent("ArcadeUI"))
+    #expect(!files.isEmpty)
+
+    // `.system(size:`는 명시적 pt, `.font(`는 `.callout`/`.caption` 같은 시스템
+    // 스타일까지 잡는다. 후자도 밀도를 모르므로 넓은 화면에서 함께 자라지 않는다.
+    let bannedSizing = /\.system\s*\(\s*size\s*:/
+    let bannedFontModifier = /\.font\s*\(/
+
+    for file in files where file.lastPathComponent != "ArcadeMetrics.swift" {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(!text.contains(bannedSizing),
+                "\(file.lastPathComponent)에 하드코딩된 폰트 크기가 있다 — 넓은 화면에서 그 자리만 작게 남는다")
+        #expect(!text.contains(bannedFontModifier),
+                "\(file.lastPathComponent)이 .font()를 직접 쓴다 — arcadeType(_:_:)로 밀도를 반영해야 한다")
+    }
+}
+
+/// 시트는 환경을 물려받지 않는다. 테마만 다시 주입하고 밀도를 빠뜨리면 시트 안쪽만
+/// 최소 밀도(compact)로 떨어져, 같은 라벨이 본문과 시트에서 다른 크기로 보인다.
+@Test func everySheetReinjectsBothTheThemeAndTheMetrics() throws {
+    let files = swiftFiles(in: sourcesDirectory().appendingPathComponent("ArcadeUI"))
+    #expect(!files.isEmpty)
+
+    var checked = 0
+    for file in files {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        guard text.contains(".sheet(") else { continue }
+        checked += 1
+        #expect(text.contains("environment(\\.arcadeTheme"),
+                "\(file.lastPathComponent)의 시트가 테마를 다시 주입하지 않는다")
+        #expect(text.contains("environment(\\.arcadeMetrics"),
+                "\(file.lastPathComponent)의 시트가 밀도를 다시 주입하지 않는다")
+    }
+    #expect(checked > 0, "시트를 쓰는 파일을 하나도 못 찾았다 — 검사가 무의미해졌다")
+}
+
+/// 만료 배너에서 **로그아웃하지 않고** 토큰만 갱신할 수 있어야 한다.
+///
+/// 로그아웃은 자격증명 항목을 통째로 지우므로(`CredentialStore.clear`) 사이트 주소와
+/// 이메일까지 함께 사라진다 — 바뀐 것은 토큰 하나뿐인데 셋을 다시 입력하게 된다.
+/// 갱신 경로가 사라지면 그 막다른 길로 되돌아간다.
+@Test func theExpiredBannerOffersTokenRenewalWithoutSigningOut() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("ArcadeUI")
+        .appendingPathComponent("RootView.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    let marker = "private var expiredBanner"
+    let start = try #require(text.range(of: marker),
+                             "expiredBanner를 찾지 못했다 — 이름이 바뀌었나?")
+    let rest = text[start.upperBound...]
+    let end = rest.range(of: "\n    private ")?.lowerBound ?? rest.endIndex
+    let banner = String(rest[..<end])
+
+    #expect(banner.contains("TokenRenewalView"),
+            "만료 배너에서 토큰 갱신 시트를 열 수 없다 — 로그아웃이 유일한 출구로 돌아간다")
+}
+
+/// 로그인 화면은 기억한 연결을 읽어 '토큰만 갱신' 모드로 떠야 한다.
+/// 이 배선이 끊기면 Keychain 항목이 유실된 사용자가 빈 폼을 다시 만난다.
+@Test func theSignInScreenReadsTheRememberedConnection() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("ArcadeUI")
+        .appendingPathComponent("SignInView.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    #expect(text.contains("model.signInHint"),
+            "로그인 화면이 기억한 연결을 읽지 않는다 — 유실 시 빈 폼으로 돌아간다")
+    #expect(text.contains("forgetAccount"),
+            "'다른 계정으로 연결'이 없으면 기억한 연결에서 빠져나올 길이 없다")
+}
+
+/// 제품 이름을 화면에서 직접 쓰지 않는다.
+///
+/// 이름은 두 단어가 한 글자를 겹쳐 만들어졌고, 워드마크는 그 경첩 글자만 강조색으로
+/// 칠해 그 사실을 보여준다(`ArcadeCore.Wordmark`). 어느 뷰든 이름을 문자열로 직접
+/// 쓰는 순간 경첩 강조가 빠진 두 번째 워드마크가 생겨, 같은 이름이 화면마다 다르게
+/// 보인다. 조립하는 곳은 `JirarcadeWordmark.swift` 하나여야 한다
+/// (색 리터럴 검사가 `ArcadeTheme.swift`를 예외로 두는 것과 같은 방식이다).
+@Test func noViewSpellsTheProductNameItself() throws {
+    let files = swiftFiles(in: sourcesDirectory().appendingPathComponent("ArcadeUI"))
+    #expect(!files.isEmpty)
+
+    var holders: [String] = []
+    for file in files where file.lastPathComponent != "JirarcadeWordmark.swift" {
+        if try String(contentsOf: file, encoding: .utf8).contains("JIRARCADE") {
+            holders.append(file.lastPathComponent)
+        }
+    }
+    #expect(holders.isEmpty,
+            "제품 이름을 직접 쓰는 뷰가 있다: \(holders.sorted()) — JirarcadeWordmark를 쓸 것")
+}
+
+/// 워드마크는 플로어 간판과 로그인 화면 **두 곳**에 뜬다.
+///
+/// 로그인 화면에서 빠지면 사용자가 이 앱에서 처음 보는 화면에만 워드마크가 없고,
+/// 플로어에서 빠지면 매일 여는 화면에 제품 이름이 없다.
+@Test func theWordmarkAppearsOnBothTheFloorAndTheSignInScreen() throws {
+    for name in ["ArcadeFloorView.swift", "SignInView.swift"] {
+        let file = sourcesDirectory().appendingPathComponent("ArcadeUI").appendingPathComponent(name)
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(text.contains("JirarcadeWordmark"), "\(name)에 워드마크가 없다")
+    }
+}
+
+/// 아이콘 생성기도 색을 팔레트에서만 받는다.
+///
+/// `ArcadeUI`에 거는 것과 같은 규칙이다. 아이콘은 눈으로만 확인할 수 있는 산출물이라
+/// 어긋남이 더 오래 숨는다 — hex를 하나 박아 두면 팔레트를 고쳐도 Dock의 아이콘만
+/// 옛 색으로 남고, 누군가 앱을 열어보기 전까지 아무도 모른다.
+@Test func theIconForgeTakesItsColorsFromThePaletteOnly() throws {
+    let files = swiftFiles(in: sourcesDirectory().appendingPathComponent("IconForge"))
+    #expect(!files.isEmpty, "IconForge 소스를 찾지 못했다 — 경로가 바뀌었나?")
+
+    let hexLiteral = /#[0-9A-Fa-f]{6}\b/
+    for file in files {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(!text.contains(hexLiteral),
+                "\(file.lastPathComponent)에 하드코딩된 hex 색상이 있다 — PaletteTokens를 거칠 것")
+        #expect(text.contains("PaletteTokens"),
+                "\(file.lastPathComponent)이 팔레트를 읽지 않는다")
+    }
+}
+
+/// 아이콘의 글자도 `Wordmark`에서 온다.
+///
+/// `"A"`를 직접 쓰면 이름이 바뀌었을 때 아이콘만 옛 글자를 들고 남는다.
+/// 워드마크 조각이 이름을 이룬다는 것은 `WordmarkTests`가 이미 지키고 있다.
+@Test func theIconLetterComesFromTheWordmark() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("IconForge")
+        .appendingPathComponent("IconForge.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    #expect(text.contains("Wordmark.hinge"),
+            "아이콘이 경첩 글자를 직접 적고 있다 — Wordmark.hinge를 쓸 것")
 }

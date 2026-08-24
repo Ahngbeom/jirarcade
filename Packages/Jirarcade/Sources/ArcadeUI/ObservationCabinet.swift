@@ -36,12 +36,13 @@ struct ObservationCabinet: Cabinet {
 
 private struct ObservationDetailView: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var metrics
     let model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: metrics.rowGap) {
             Text("OBSERVATION")
-                .font(.system(size: 20, weight: .heavy, design: .rounded))
+                .arcadeType(.marquee, .m)
                 .foregroundStyle(theme.good)
 
             stat("관측", "\(model.observationDays)일차")
@@ -54,29 +55,32 @@ private struct ObservationDetailView: View {
             // 숫자는 이미 쌓인 이벤트에서 나왔고, 지금 티켓의 변화는 아직 안 봤다.
             if model.lastSync == nil {
                 Text("아직 동기화 전입니다. 첫 동기화가 끝나면 지금 티켓의 변화도 반영됩니다.")
-                    .font(.callout)
+                    .arcadeType(.prose, .m)
                     .foregroundStyle(theme.inkTertiary)
             }
             if let sync = model.lastSync {
                 stat("마지막 동기화 티켓", "\(sync.observedIssueCount)건")
                 if let note = sync.note {
-                    Text(note).font(.callout).foregroundStyle(theme.inkTertiary)
+                    Text(note).arcadeType(.prose, .m).foregroundStyle(theme.inkTertiary)
                 }
             }
             if !model.unmappedStatuses.isEmpty {
                 Text("매핑되지 않은 상태: \(model.unmappedStatuses.joined(separator: ", "))")
-                    .font(.callout)
+                    .arcadeType(.prose, .m)
                     .foregroundStyle(theme.danger)
             }
+            Spacer(minLength: 0)
         }
-        .padding(24)
+        .frame(maxWidth: metrics.size(.formMaxWidth), alignment: .leading)
+        .padding(metrics.gutter)
     }
 
+    /// 라벨과 값이 좌우로 갈리는 한 줄. 값은 스코어보드(readout), 라벨은 문장이다.
     private func stat(_ label: String, _ value: String) -> some View {
         HStack {
-            Text(label).foregroundStyle(theme.inkSecondary)
+            Text(label).arcadeType(.prose, .m).foregroundStyle(theme.inkSecondary)
             Spacer()
-            Text(value).foregroundStyle(theme.inkPrimary).monospacedDigit()
+            Text(value).arcadeType(.readout, .m).foregroundStyle(theme.inkPrimary).monospacedDigit()
         }
     }
 }

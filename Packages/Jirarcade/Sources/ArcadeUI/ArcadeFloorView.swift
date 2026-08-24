@@ -1,9 +1,11 @@
 import SwiftUI
 import AppKit
 import ArcadeApp
+import ArcadeCore
 
 struct ArcadeFloorView: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var metrics
     let model: AppModel
 
     @State private var openCabinetID: String?
@@ -32,12 +34,11 @@ struct ArcadeFloorView: View {
         }
     }
 
-    /// 기존 플로어 화면. 이전 `body`의 내용을 그대로 옮긴 것이다.
     private var floor: some View {
         VStack(spacing: 0) {
             marquee
-            Divider().overlay(theme.line)
-            cabinetRow
+            MarqueeBulbRail()
+            cabinetFloor
             Divider().overlay(theme.line)
             statusBar
         }
@@ -45,147 +46,212 @@ struct ArcadeFloorView: View {
             get: { openCabinetID.map(OpenCabinet.init) },
             set: { openCabinetID = $0?.id }
         )) { open in
-            VStack {
+            VStack(spacing: 0) {
                 HStack {
                     Spacer()
                     Button("닫기") { openCabinetID = nil }.keyboardShortcut(.cancelAction)
                 }
-                .padding()
+                .padding(metrics.sectionGap)
                 if let cabinet = cabinets.first(where: { $0.id == open.id }) {
                     cabinet.makeView()
                 } else {
                     // id가 가리키는 캐비닛이 더 이상 없다 — 강제 언래핑 대신 빈 안내로 넘긴다.
-                    Text("캐비닛을 찾을 수 없습니다").foregroundStyle(theme.inkTertiary)
+                    Text("캐비닛을 찾을 수 없습니다")
+                        .arcadeType(.prose, .m)
+                        .foregroundStyle(theme.inkTertiary)
                 }
-                Spacer()
+                Spacer(minLength: 0)
             }
-            .frame(minWidth: 420, minHeight: 320)
+            .frame(minWidth: metrics.size(.sheetMinWidth),
+                   minHeight: metrics.size(.sheetMinHeight))
             .background(theme.surfaceBase)
+            // 시트는 환경을 물려받지 않는다. 테마와 밀도를 **함께** 다시 주입해야
+            // 시트 안팎의 글자 크기가 같아진다 — 하나만 넘기면 시트만 최소 밀도로 떨어진다.
             .environment(\.arcadeTheme, theme)
+            .environment(\.arcadeMetrics, metrics)
         }
     }
 
     /// 전체 화면 캐비닛. 상단 줄이 플로어로 돌아가는 유일한 길이다.
     private func fullScreen(_ cabinet: any Cabinet) -> some View {
         VStack(spacing: 0) {
-            HStack(spacing: 12) {
+            HStack(spacing: metrics.sectionGap) {
                 Button("◂ FLOOR") { fullScreenCabinetID = nil }
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .arcadeType(.readout, .m, weight: .bold)
                     .buttonStyle(.plain)
                     .foregroundStyle(theme.accent)
                     .keyboardShortcut(.cancelAction)
                 Text(cabinet.title)
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .arcadeType(.readout, .m, weight: .bold)
                     .foregroundStyle(theme.inkSecondary)
                 Spacer()
             }
-            .padding(.horizontal, 20)
-            .padding(.vertical, 10)
+            .padding(.horizontal, metrics.gutter)
+            .padding(.vertical, metrics.rowGap)
             Divider().overlay(theme.line)
             cabinet.makeView()
         }
     }
 
+    /// 플로어의 간판. 제품 이름이 주인공이고 화면 이름은 그 아래 작게 붙는다 —
+    /// 실제 아케이드 캐비닛의 마퀴가 게임 이름을 크게, 부제를 작게 다는 것과 같다.
+    ///
+    /// `▨` 장식을 뗀 이유: 워드마크가 들어온 자리에서 그 기호는 아무것도 말하지 않는다.
     private var marquee: some View {
-        HStack(spacing: 12) {
-            Text("▨ ARCADE FLOOR ▨")
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
-                .foregroundStyle(theme.accent)
+        HStack(alignment: .firstTextBaseline, spacing: metrics.sectionGap) {
+            VStack(alignment: .leading, spacing: metrics.tightGap) {
+                JirarcadeWordmark(step: .l)
+                Text("ARCADE FLOOR")
+                    .arcadeType(.readout, .s, weight: .bold)
+                    .foregroundStyle(theme.inkTertiary)
+            }
             Spacer()
             if !model.unmappedStatuses.isEmpty {
                 Text("⚠ 매핑되지 않은 상태 \(model.unmappedStatuses.count)개")
-                    .font(.system(size: 12, design: .monospaced))
+                    .arcadeType(.readout, .m)
                     .foregroundStyle(theme.danger)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 12)
+        .padding(.horizontal, metrics.gutter)
+        // 간판에는 위아래로 여유가 필요하다. 다른 줄과 같은 `rowGap`을 주면 워드마크가
+        // 제목 표시줄에 붙어 헤더가 아니라 잘린 첫 줄처럼 보인다.
+        .padding(.vertical, metrics.sectionGap)
     }
 
-    private var cabinetRow: some View {
-        HStack(spacing: 16) {
-            ForEach(cabinets, id: \.id) { cabinet in
-                cabinetCard(cabinet)
+    /// 캐비닛은 **폭이 고정**이고 넘치면 다음 줄로 접힌다. 폭을 늘려 화면을 채우면
+    /// 1600pt에서 세 장이 납작하게 늘어나 업라이트 캐비닛으로 보이지 않는다 —
+    /// 넓어질 때 늘어나는 것은 캐비닛이 아니라 캐비닛이 **몇 대 들어가는가**여야 한다.
+    ///
+    /// 위쪽 정렬인 이유: 남는 세로 공간은 "아직 빈 자리"라는 사실 그대로다.
+    /// 가운데 정렬하면 캐비닛 두 대가 화면 한가운데 떠 있는 그림이 된다.
+    private var cabinetFloor: some View {
+        GeometryReader { proxy in
+            ScrollView {
+                LazyVGrid(
+                    columns: [GridItem(
+                        .adaptive(minimum: metrics.size(.cabinetWidth),
+                                  maximum: metrics.size(.cabinetWidth)),
+                        spacing: metrics.sectionGap,
+                        alignment: .top
+                    )],
+                    alignment: .center,
+                    spacing: metrics.sectionGap
+                ) {
+                    ForEach(cabinets, id: \.id) { cabinet in
+                        cabinetCard(cabinet)
+                    }
+                    comingSoon()
+                }
+                .padding(metrics.gutter)
+                // 캐비닛 줄을 플로어 한가운데에 세운다. 위쪽에 붙이면 1600×960에서
+                // 아래로 500pt 넘는 검은 공백이 남아 "빈 자리"가 아니라 잘린 화면으로
+                // 보인다. 위아래 간판(마퀴·스코어보드 레일)이 화면 끝을 잡고 있으므로,
+                // 그 사이에 기계가 늘어선 구성이 실제 아케이드 플로어에 가깝다.
+                //
+                // 캐비닛이 늘어 화면을 넘기면 `minHeight`가 무력해지고 그대로 스크롤된다.
+                .frame(minHeight: proxy.size.height, alignment: .center)
+                .frame(maxWidth: .infinity)
             }
-            comingSoon()
         }
-        .padding(20)
+        .frame(maxHeight: .infinity)
     }
 
+    /// 업라이트 캐비닛 세 밴드: 마퀴(간판) · 어트랙트 스크린 · 컨트롤 패널.
+    ///
+    /// 스크린 밴드에 `surfaceBase`를 쓰는 이유: 두 테마 모두에서 `surfaceRaised`보다
+    /// 어두워, 색을 더 쓰지 않고도 "패인 화면"으로 읽힌다.
     private func cabinetCard(_ cabinet: any Cabinet) -> some View {
         VStack(spacing: 0) {
             Text(cabinet.title)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .arcadeType(.readout, .m, weight: .bold)
                 .foregroundStyle(theme.surfaceBase)
                 .frame(maxWidth: .infinity)
-                .padding(.vertical, 8)
+                .padding(.vertical, metrics.rowGap)
                 .background(theme.color(forToken: cabinet.accentToken))
 
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: metrics.rowGap) {
                 ForEach(cabinet.marqueeLines, id: \.self) { line in
                     Text(line)
-                        .font(.system(size: 11, design: .monospaced))
+                        .arcadeType(.readout, .m)
                         .foregroundStyle(theme.inkSecondary)
                         .lineLimit(1)
                 }
-                Spacer()
+            }
+            .padding(metrics.rowGap)
+            // 줄을 화면 밴드 **한가운데**에 놓는다. 위에 붙이면 캐비닛이 세로로 서는
+            // 만큼 아래로 300pt 가까운 빈 칸이 남아, 잘려 나간 목록처럼 보인다.
+            // 가운데에 두면 같은 여백이 화면 베젤로 읽힌다.
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+            .background(theme.surfaceBase)
+            .padding(metrics.tightGap)
+
+            Divider().overlay(theme.line)
+
+            HStack {
                 Button("▶ OPEN") {
                     switch cabinet.presentation {
                     case .sheet:      openCabinetID = cabinet.id
                     case .fullScreen: fullScreenCabinetID = cabinet.id
                     }
                 }
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
-                    .buttonStyle(.plain)
-                    .foregroundStyle(theme.accent)
+                .arcadeType(.readout, .m, weight: .bold)
+                .buttonStyle(.plain)
+                .foregroundStyle(theme.accent)
+                Spacer()
             }
-            .padding(12)
-            .frame(maxWidth: .infinity, alignment: .leading)
+            .padding(.horizontal, metrics.rowGap)
+            .padding(.vertical, metrics.rowGap)
         }
-        .frame(height: 180)
+        .frame(width: metrics.size(.cabinetWidth), height: metrics.size(.cabinetHeight))
         .background(theme.surfaceRaised)
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.line))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    /// 빈 자리도 캐비닛과 같은 실루엣을 갖는다 — 크기가 다르면 "자리"가 아니라
+    /// 레이아웃 사고처럼 보인다.
     private func comingSoon() -> some View {
         VStack {
             Spacer()
             Text("COMING SOON")
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .arcadeType(.readout, .m, weight: .bold)
                 .foregroundStyle(theme.inkTertiary)
             Spacer()
         }
-        .frame(maxWidth: .infinity)
-        .frame(height: 180)
+        .frame(width: metrics.size(.cabinetWidth), height: metrics.size(.cabinetHeight))
         .background(theme.surfaceRaised.opacity(0.4))
         .overlay(RoundedRectangle(cornerRadius: 8).stroke(theme.line))
         .clipShape(RoundedRectangle(cornerRadius: 8))
     }
 
+    /// 하단 스코어보드 레일. 최소 창(1120pt)에서도 한 줄에 들어가므로 밀도로 갈라
+    /// 두 줄로 접지 않는다 — 같은 정보가 창 크기에 따라 다른 자리에 있으면
+    /// 매일 여는 화면에서 눈이 매번 다시 찾아야 한다.
     private var statusBar: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: metrics.rowGap) {
             backfillProgressRow
-            levelRow
-            HStack {
-                Text(syncText)
-                    .font(.system(size: 11, design: .monospaced))
-                    .foregroundStyle(theme.inkTertiary)
+            HStack(spacing: metrics.sectionGap) {
+                levelReadout
                 Spacer()
+                Text(syncText)
+                    .arcadeType(.readout, .s)
+                    .foregroundStyle(theme.inkTertiary)
                 Button("설정") { showingSettings = true }
-                    .font(.system(size: 11, design: .monospaced))
+                    .arcadeType(.readout, .s)
                 Button("새로고침") { Task { await model.syncNow() } }
-                    .font(.system(size: 11, design: .monospaced))
+                    .arcadeType(.readout, .s)
             }
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.horizontal, metrics.gutter)
+        .padding(.vertical, metrics.rowGap)
         // 캐비닛 시트와 같은 뷰에 시트를 두 개 붙이지 않는다 — 상태 표시줄에 붙여
-        // 각자 하나씩 갖게 한다. 시트는 환경을 물려받지 않으므로 테마를 다시 주입한다.
+        // 각자 하나씩 갖게 한다. 시트는 환경을 물려받지 않으므로 다시 주입한다.
         .sheet(isPresented: $showingSettings) {
             SettingsView(model: model)
-                .frame(minWidth: 460, minHeight: 300)
+                .frame(minWidth: metrics.size(.sheetMinWidth),
+                       minHeight: metrics.size(.sheetMinHeight))
                 .environment(\.arcadeTheme, theme)
+                .environment(\.arcadeMetrics, metrics)
         }
     }
 
@@ -196,13 +262,13 @@ struct ArcadeFloorView: View {
         // 설정 화면과 같은 이유로 `isBackfilling`으로 판정한다 — 진행률은 첫 페이지를
         // 다 처리한 뒤에야 오므로, 그때까지 아무것도 안 뜨면 시작한 티가 나지 않는다.
         if model.isBackfilling {
-            HStack(spacing: 8) {
+            HStack(spacing: metrics.tightGap) {
                 // nil을 넘기면 불확정 바가 된다 — 총계를 모르는 동안 쓰는 표시다.
                 ProgressView(value: backfillFraction)
                     .tint(theme.accent)
-                    .frame(width: 120)
+                    .frame(width: metrics.size(.progressBarWidth))
                 Text(backfillProgressText)
-                    .font(.caption)
+                    .arcadeType(.readout, .s)
                     .foregroundStyle(theme.inkSecondary)
             }
         }
@@ -225,21 +291,27 @@ struct ArcadeFloorView: View {
     }
 
     @ViewBuilder
-    private var levelRow: some View {
+    private var levelReadout: some View {
         if let season = model.seasonSummary, let lifetime = model.lifetimeSummary {
-            HStack(spacing: 12) {
+            HStack(spacing: metrics.tightGap) {
                 // HUD는 시즌을 보여준다 — 오늘 하나 처리한 것이 움직여야 하기 때문이다.
                 Text("시즌 LV.\(season.level)")
-                    .font(.callout.bold())
+                    .arcadeType(.readout, .l, weight: .bold)
                     .foregroundStyle(theme.accent)
+                    .monospacedDigit()
                 ProgressView(value: Double(season.xpIntoLevel),
                              total: Double(max(season.xpForNextLevel, 1)))
                     .tint(theme.accent)
-                    .frame(width: 140)
+                    .frame(width: metrics.size(.progressBarWidth))
+                Text("\(season.xpIntoLevel)/\(season.xpForNextLevel)")
+                    .arcadeType(.readout, .s)
+                    .foregroundStyle(theme.inkSecondary)
+                    .monospacedDigit()
                 // 통산은 옆에 조용히 둔다.
                 Text("통산 LV.\(lifetime.level)")
-                    .font(.caption)
+                    .arcadeType(.readout, .s)
                     .foregroundStyle(theme.inkTertiary)
+                    .monospacedDigit()
             }
         }
     }

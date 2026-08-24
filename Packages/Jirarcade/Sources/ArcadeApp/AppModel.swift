@@ -12,6 +12,14 @@ public final class AppModel {
     /// 로그인은 성공했지만 자격증명을 저장하지 못했을 때 세팅된다. `phase`는 `.ready`로 계속
     /// 진행한다 — 사용자는 이미 인증됐으니 되돌려보내지 않되, 다음 실행에서 다시 로그인해야
     /// 할 수 있다는 사실을 화면이 보여줄 수 있게 한다.
+    /// 다시 연결할 때 사이트·이메일을 채워 넣기 위해 기억해 둔 값.
+    /// 로그인 화면이 '첫 연결'과 '토큰만 갱신' 중 어느 모드로 뜰지도 이 값이 정한다.
+    public private(set) var signInHint: SignInHint?
+
+    /// 토큰 갱신이 거부됐을 때의 사유. `phase`를 건드리지 않는 이유는
+    /// `ValidationFailureRouting.renewalSheet`에 적어 두었다.
+    public private(set) var tokenRenewalMessage: String?
+
     public private(set) var credentialSaveWarning: String?
     /// 매핑은 성공했지만 저장하지 못했을 때 세팅된다. `credentialSaveWarning`과 같은 이유로
     /// 조용히 삼키지 않는다 — 그러지 않으면 모든 동기화가 영구히 무동작(I1)이 되는데
@@ -107,6 +115,7 @@ public final class AppModel {
     private let workflow: any WorkflowStore
     private let accountBinding: any AccountBindingStore
     private let sprintField: any SprintFieldStore
+    private let signInHintStore: any SignInHintStore
     private let clientFactory: (any AuthProvider) -> JiraClient
     /// 백필이 쓸 changelog 소스를 만든다. `clientFactory`와 같은 패턴이다 —
     /// 프로덕션은 기본값으로 실제 구현을 쓰고, 테스트만 갈아 끼운다.
@@ -136,6 +145,7 @@ public final class AppModel {
         workflow: any WorkflowStore,
         accountBinding: any AccountBindingStore,
         sprintField: any SprintFieldStore,
+        signInHint: any SignInHintStore = UserDefaultsSignInHintStore(),
         clientFactory: @escaping (any AuthProvider) -> JiraClient,
         clock: @escaping () -> Date,
         calendar: Calendar,
@@ -150,6 +160,7 @@ public final class AppModel {
         self.workflow = workflow
         self.accountBinding = accountBinding
         self.sprintField = sprintField
+        self.signInHintStore = signInHint
         self.clientFactory = clientFactory
         self.changelogSourceFactory =
             changelogSourceFactory ?? { JiraChangelogSource(client: $0) }
@@ -162,6 +173,10 @@ public final class AppModel {
            let saved = AppearancePreference(rawValue: raw) {
             self.appearancePreference = saved
         }
+        // 힌트는 `start()`보다 먼저 필요하다 — 자격증명이 아예 없는 첫 화면이
+        // '토큰만 갱신' 모드로 떠야 하는지를 로그인 화면이 이 값으로 판단한다.
+        // 읽지 못하면 nil, 즉 '첫 연결' 모드다.
+        self.signInHint = (try? signInHint.load()).flatMap(SignInHint.init(rawValue:))
     }
 
     /// 앱 시작. 저장된 자격증명이 있으면 확인하고 적절한 단계로 보낸다.
@@ -180,14 +195,19 @@ public final class AppModel {
             phase = .signedOut(message: nil)
             return
         }
-        await validate(saved, persistOnSuccess: false)
+        // 검증 **전에** 채운다. 이 기능이 생기기 전부터 쓰던 사용자는 힌트 저장소가
+        // 비어 있고 Keychain에만 값이 있는데, 그 사용자가 맞이하는 첫 화면이 바로
+        // 만료 배너다 — 검증 성공을 기다리면 정작 갱신이 필요한 순간에 힌트가 없다.
+        rememberSignInHint(site: saved.site, email: saved.email)
+        await validate(saved, persistOnSuccess: false, failureRouting: .expiredBanner)
     }
 
     /// 로그인 화면에서 호출한다.
     public func signIn(site: String, email: String, token: String) async {
         phase = .validating
         credentialSaveWarning = nil
-        await validate(Credentials(site: site, email: email, token: token), persistOnSuccess: true)
+        await validate(Credentials(site: site, email: email, token: token),
+                       persistOnSuccess: true, failureRouting: .signInScreen)
     }
 
     public func signOut() async {
@@ -251,7 +271,60 @@ public final class AppModel {
         lastSync = nil
         credentialSaveWarning = nil
         workflowSaveWarning = nil
+        // 갱신 시트의 실패 문구도 이 계정의 것이다. `signInHint`는 **지우지 않는다** —
+        // 로그아웃은 "Jira와 더 이상 말하지 않는다"이지 "나를 잊어라"가 아니다.
+        // 잊는 것은 `forgetAccount()` 하나뿐이다.
+        tokenRenewalMessage = nil
         phase = .signedOut(message: nil)
+    }
+
+    /// 사이트·이메일은 기억한 것을 그대로 쓰고 **토큰만** 새것으로 바꾼다.
+    ///
+    /// 만료 배너의 갱신 시트와 로그인 화면의 '토큰 갱신' 모드가 함께 부른다.
+    /// 실패해도 `phase`를 건드리지 않으므로(`ValidationFailureRouting.renewalSheet`)
+    /// 사용자가 보고 있던 미러가 그대로 남는다.
+    ///
+    /// - Returns: 갱신에 성공했는가. 실패 사유는 `tokenRenewalMessage`에 담긴다.
+    @discardableResult
+    public func renewToken(_ token: String) async -> Bool {
+        tokenRenewalMessage = nil
+        guard let hint = signInHint else {
+            tokenRenewalMessage =
+                "기억된 연결 정보가 없습니다. 로그아웃한 뒤 사이트 주소와 이메일부터 입력해 주세요."
+            return false
+        }
+        // `Credentials.init`이 앞뒤 공백을 떼므로 공백만 붙여넣은 경우도 여기서 걸린다.
+        // 서버에 물어볼 것이 없는 입력으로 요청을 보내지 않는다.
+        let creds = Credentials(site: hint.site, email: hint.email, token: token)
+        guard !creds.token.isEmpty else {
+            tokenRenewalMessage = "새 API 토큰을 입력해 주세요."
+            return false
+        }
+
+        guard await validate(creds, persistOnSuccess: true, failureRouting: .renewalSheet)
+        else { return false }
+
+        // 동기화 루프를 여기서 직접 건다. `RootView`는 `.expired → .ready` 전이에서
+        // 루프를 걸지 않는데(`performSync()`가 재인증 없이 스스로 회복한 경우 타이머를
+        // 두 번 만들지 않기 위한 가드다), 시작 시점에 만료였다면 루프는 **한 번도**
+        // 돈 적이 없다. 그 경우 갱신에 성공하고도 영영 동기화되지 않는다.
+        //
+        // 이미 돌고 있던 루프를 다시 거는 것도 여기서는 옳다 — 방금 인증 문제가
+        // 해소됐으므로 쌓인 백오프를 리셋하고 즉시 한 번 받아오는 것이 사용자가
+        // 기대하는 동작이다.
+        if phase == .ready {
+            startSyncing()
+            await syncNow(reason: .manual)
+        }
+        return true
+    }
+
+    /// 로그아웃하고 기억한 사이트·이메일까지 버린다. 로그인 화면의
+    /// "다른 계정으로 연결"이 부르는 유일한 경로다.
+    public func forgetAccount() async {
+        await signOut()
+        signInHint = nil
+        try? signInHintStore.clear()
     }
 
     /// 매핑 마법사에서 "시작하기"를 눌렀을 때. 매핑은 강제하지 않으므로
@@ -644,13 +717,44 @@ public final class AppModel {
 
     // MARK: - 내부
 
-    private func validate(_ creds: Credentials, persistOnSuccess: Bool) async {
+    /// 검증이 실패했을 때 그 사실을 **어디에** 내놓을 것인가.
+    ///
+    /// 예전에는 `persistOnSuccess`가 이 판단까지 겸했다(참이면 로그인 화면, 거짓이면
+    /// 만료 배너). 토큰 갱신은 그 두 조합 어디에도 들어가지 않는다 — 저장은 하지만
+    /// phase는 건드리면 안 된다. `.expired`는 미러를 보여주는 단계라(`Phase.showsMirror`)
+    /// 실패를 로그인 화면으로 옮기면 사용자가 보고 있던 보드가 통째로 사라진다.
+    private enum ValidationFailureRouting {
+        /// 로그인 화면으로 보내고 사유를 폼에 띄운다.
+        case signInScreen
+        /// 만료 배너를 띄운 채 미러를 계속 보여준다.
+        case expiredBanner
+        /// phase를 그대로 두고 사유만 `tokenRenewalMessage`에 담는다.
+        case renewalSheet
+    }
+
+    /// 검증 실패를 라우팅이 정한 자리에 내려놓는다.
+    private func reportValidationFailure(
+        _ message: String, routing: ValidationFailureRouting
+    ) {
+        switch routing {
+        case .signInScreen:  phase = .signedOut(message: message)
+        case .expiredBanner: phase = .expired
+        case .renewalSheet:  tokenRenewalMessage = message
+        }
+    }
+
+    @discardableResult
+    private func validate(
+        _ creds: Credentials,
+        persistOnSuccess: Bool,
+        failureRouting: ValidationFailureRouting
+    ) async -> Bool {
         let auth: APITokenAuth
         do {
             auth = try APITokenAuth(site: creds.site, email: creds.email, token: creds.token)
         } catch {
-            phase = .signedOut(message: "사이트 주소를 확인해 주세요.")
-            return
+            reportValidationFailure("사이트 주소를 확인해 주세요.", routing: failureRouting)
+            return false
         }
 
         var candidate = clientFactory(auth)
@@ -673,16 +777,17 @@ public final class AppModel {
             // 재시도)를 쓴다. 로그인과 시작 시 한 번뿐이라 이 비용은 감당할 수 있다.
             guard let recovered = await retryOverCloudIdPath(creds, using: candidate) else {
                 // 두 경로 모두 거부됐다 — 이제는 진짜 자격증명 문제로 본다.
-                phase = persistOnSuccess
-                    ? .signedOut(message: "이메일 또는 토큰이 올바르지 않습니다.")
-                    : .expired
-                return
+                reportValidationFailure("이메일 또는 토큰이 올바르지 않습니다.",
+                                        routing: failureRouting)
+                return false
             }
             candidate = recovered.client
             me = recovered.user
         } catch {
-            phase = .signedOut(message: "Jira에 연결하지 못했습니다.")
-            return
+            // 연결 자체가 안 된 것은 자격증명 문제가 아니다. 만료 배너로 라우팅된
+            // 경로(시작 시 검증)에서도 결론은 같다 — 어느 쪽이든 지금은 쓸 수 없다.
+            reportValidationFailure("Jira에 연결하지 못했습니다.", routing: failureRouting)
+            return false
         }
 
         client = candidate
@@ -692,6 +797,9 @@ public final class AppModel {
         // 티켓 링크를 만들 때 쓴다. APITokenAuth와 같은 정규화를 거쳐야 사용자가 어떻게
         // 입력했든 같은 호스트가 된다.
         siteHost = JiraSite.normalize(creds.site)
+        // 방금 인증에 성공한 값이므로 힌트로 삼기에 가장 확실하다. 시작 시 채운 값이
+        // 있어도 덮는다 — 계정을 바꿔 로그인한 경우 옛 이메일이 남으면 안 된다.
+        rememberSignInHint(site: creds.site, email: creds.email)
         // 이 시점 이전에 시작된 동기화는 더 이상 유효하지 않다 — 이 사용자로(또는 이
         // 사용자가 다른 계정으로) 새로 인증됐으니, 그 전에 날아간 페치가 나중에 끝나도
         // 스토어에 쓰면 안 된다(I4).
@@ -773,6 +881,16 @@ public final class AppModel {
         // 이벤트로 계산된 값을 봐야 한다. 계정 전환 시 미러를 버리는 처리(위)가 끝난
         // **뒤**에 부르는 것이 중요하다: 먼저 부르면 이전 계정의 숫자가 잡힌다.
         await refreshDerivedState()
+        return true
+    }
+
+    /// 힌트를 기억한다. 저장에 실패해도 조용히 넘어간다 — 힌트는 입력을 줄여 주는
+    /// 편의일 뿐이고, 인증은 이미 성공했거나 진행 중이다. 실패를 화면에 올리면
+    /// 사용자가 할 수 있는 일도 없이 경고만 늘어난다.
+    private func rememberSignInHint(site: String, email: String) {
+        let hint = SignInHint(site: site, email: email)
+        signInHint = hint
+        try? signInHintStore.save(hint.rawValue)
     }
 
     /// 사이트 직접 경로가 401을 돌려줬을 때, 스코프 토큰용 cloudId 경로로 한 번 더 시도한다.
