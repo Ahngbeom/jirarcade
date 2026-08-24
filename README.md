@@ -1,3 +1,5 @@
+<img src="docs/icon-128.png" width="128" height="128" alt="Jirarcade 아이콘 — 어트랙트 화면에 A가 뜬 업라이트 아케이드 캐비닛">
+
 # Jirarcade
 
 Jira 업무 티켓을 아케이드 게임으로 보여주는 macOS 앱.

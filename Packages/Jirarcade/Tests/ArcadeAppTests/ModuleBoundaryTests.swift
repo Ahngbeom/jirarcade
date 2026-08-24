@@ -317,3 +317,36 @@ private func swiftFiles(in directory: URL) -> [URL] {
         #expect(text.contains("JirarcadeWordmark"), "\(name)에 워드마크가 없다")
     }
 }
+
+/// 아이콘 생성기도 색을 팔레트에서만 받는다.
+///
+/// `ArcadeUI`에 거는 것과 같은 규칙이다. 아이콘은 눈으로만 확인할 수 있는 산출물이라
+/// 어긋남이 더 오래 숨는다 — hex를 하나 박아 두면 팔레트를 고쳐도 Dock의 아이콘만
+/// 옛 색으로 남고, 누군가 앱을 열어보기 전까지 아무도 모른다.
+@Test func theIconForgeTakesItsColorsFromThePaletteOnly() throws {
+    let files = swiftFiles(in: sourcesDirectory().appendingPathComponent("IconForge"))
+    #expect(!files.isEmpty, "IconForge 소스를 찾지 못했다 — 경로가 바뀌었나?")
+
+    let hexLiteral = /#[0-9A-Fa-f]{6}\b/
+    for file in files {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        #expect(!text.contains(hexLiteral),
+                "\(file.lastPathComponent)에 하드코딩된 hex 색상이 있다 — PaletteTokens를 거칠 것")
+        #expect(text.contains("PaletteTokens"),
+                "\(file.lastPathComponent)이 팔레트를 읽지 않는다")
+    }
+}
+
+/// 아이콘의 글자도 `Wordmark`에서 온다.
+///
+/// `"A"`를 직접 쓰면 이름이 바뀌었을 때 아이콘만 옛 글자를 들고 남는다.
+/// 워드마크 조각이 이름을 이룬다는 것은 `WordmarkTests`가 이미 지키고 있다.
+@Test func theIconLetterComesFromTheWordmark() throws {
+    let file = sourcesDirectory()
+        .appendingPathComponent("IconForge")
+        .appendingPathComponent("IconForge.swift")
+    let text = try String(contentsOf: file, encoding: .utf8)
+
+    #expect(text.contains("Wordmark.hinge"),
+            "아이콘이 경첩 글자를 직접 적고 있다 — Wordmark.hinge를 쓸 것")
+}

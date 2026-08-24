@@ -24,7 +24,9 @@
 # 버전을, 워크플로 실행 번호에서 빌드 번호를 받는다.
 set -euo pipefail
 
-cd "$(dirname "$0")/../Packages/Jirarcade"
+# cd 하기 **전에** 잡는다. 상대 경로로 호출된 경우 cd 뒤의 $0은 더 이상 유효하지 않다.
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+cd "$SCRIPT_DIR/../Packages/Jirarcade"
 
 VERSION="0.0.0"
 BUILD="0"
@@ -103,12 +105,20 @@ cat > "$APP/Contents/Info.plist" <<PLIST
        Edit 메뉴가 사라지고 ⌘C/⌘V·텍스트 입력이 동작하지 않는다. -->
   <key>NSPrincipalClass</key><string>NSApplication</string>
 
+  <!-- 확장자는 붙이지 않는다 — macOS가 Resources/ 아래에서 .icns를 찾는다. -->
+  <key>CFBundleIconFile</key><string>Jirarcade</string>
+
   <key>NSHighResolutionCapable</key><true/>
   <key>LSMinimumSystemVersion</key><string>15.0</string>
   <key>LSApplicationCategoryType</key><string>public.app-category.productivity</string>
 </dict>
 </plist>
 PLIST
+
+# 서명 **전에** 넣어야 한다. codesign은 번들 전체를 봉인하므로, 뒤에 파일을 더하면
+# 서명이 깨지고 받는 쪽에서 "손상됨"으로 차단된다.
+echo "▸ 아이콘 생성 중…"
+"$SCRIPT_DIR/make-icon.sh" "$APP/Contents/Resources/Jirarcade.icns"
 
 # 번들에 서명이 없으면 Keychain 접근이 매 실행마다 새 앱으로 취급돼
 # 저장한 자격증명을 다시 묻는다. ad-hoc 서명으로 동일 identity를 유지한다.
