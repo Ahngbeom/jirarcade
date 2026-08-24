@@ -53,6 +53,12 @@ public struct OrbitSnapshot: Sendable, Equatable {
     public let rings: [OrbitRing]
     /// 0이면 `Stage` 넷으로 뭉쳐 보이고 1이면 상태별로 갈라진다.
     public let zoomProgress: Double
+    /// 이 스냅샷이 쓴 `Stage` 중심 간 거리.
+    public let stageSpacing: Double
+    /// 성계 전체가 들어가는 반지름. 뷰가 "전체가 보이는 배율"을 정할 때 쓴다.
+    /// **떠돌이 고리는 넣지 않는다** — 미매핑 상태가 없는 것이 정상이고, 있을 때를
+    /// 기준으로 배율을 잡으면 평소에 성계가 화면 한가운데 작게 뭉친다.
+    public let extent: Double
 }
 
 /// 미러와 워크플로를 궤도 좌표로 옮긴다. 순수 함수이며 화면을 모른다.
@@ -66,20 +72,43 @@ public enum OrbitLayout {
     /// `OrbitPacker`가 곧바로 반경을 밀어내기 시작한다.
     public static let minimumRadius = 0.15
 
-    /// `Stage` 중심 사이의 거리.
+    /// 같은 `Stage`의 이웃 태양 사이에 남겨야 할 최소 거리.
+    /// 궤도 지름 2.0에 여유 0.2를 더한 값이다.
+    public static let systemClearance = 2.2
+
+    /// 상태 태양이 소속 `Stage` 중심에서 떨어지는 거리.
     ///
-    /// 줌인했을 때 한 성계가 차지하는 외곽 반경은 `statusOrbit`(1.5) + 궤도 최대(1.0)
-    /// = 2.5다. 이웃한 두 성계가 닿지 않으려면 중심 간 거리가 5.0을 넘어야 하고,
-    /// 여유 1.0을 더해 6.0으로 잡는다. **비교 대상은 궤도 반경이 아니라 성계의 외곽
-    /// 반경이다** — 이걸 혼동하면 줌인에서 이웃 `Stage`의 행성끼리 겹친다.
-    public static let stageSpacing = 6.0
+    /// n개를 반경 R의 원에 균등 배치하면 이웃 간 거리는 `2R·sin(π/n)`이다. 그것이
+    /// `systemClearance` 이상이어야 하므로 `R ≥ clearance / (2·sin(π/n))`이다.
+    ///
+    /// **상수로 고정하면 안 되는 이유:** 1.5로 두면 n=5에서 이웃 거리가 1.763이 되어
+    /// 궤도 지름 2.0을 밑돈다. 실측 조직의 `active`에는 상태가 여덟 개 있고 그때는
+    /// 1.148까지 떨어진다 — 이 화면이 존재하는 이유가 바로 그 여덟을 펼치는 것이므로,
+    /// 고정 반경은 목적이 달성되는 순간 화면을 무너뜨린다.
+    ///
+    /// 혼자면 0이다. 갈라질 상대가 없는데 옆으로 밀려나면 줌할 때 이유 없이 흔들린다.
+    public static func statusOrbit(count: Int) -> Double {
+        guard count > 1 else { return 0 }
+        return max(1.5, systemClearance / (2 * sin(.pi / Double(count))))
+    }
 
-    /// 상태 태양이 소속 `Stage` 중심에서 떨어지는 거리(줌 100% 기준).
-    public static let statusOrbit = 1.5
+    /// 성계 하나가 차지하는 외곽 반경. 태양 오프셋에 궤도 최대 반경을 더한 것이다.
+    public static func systemExtent(count: Int) -> Double {
+        statusOrbit(count: count) + 1.0
+    }
 
-    /// 떠돌이 고리의 반경. `Stage` 중심의 대각 거리(3√2 ≈ 4.24)에 외곽 반경 2.5를
-    /// 더한 6.74보다 바깥이어야 성계 위를 지나가지 않는다.
-    public static let driftOrbit = 8.0
+    /// `Stage` 중심 사이의 거리. **가장 붐비는 `Stage`를 기준으로 잡는다** —
+    /// 한 쌍이라도 겹치면 안 되기 때문이다. 상태가 적은 `Stage` 사이가 필요 이상으로
+    /// 벌어지지만, 팬·줌 캔버스이므로 그것은 비용이 아니다.
+    public static func stageSpacing(maxStatusCount: Int) -> Double {
+        2 * systemExtent(count: maxStatusCount) + 1.0
+    }
+
+    /// 떠돌이 고리. 대각으로 가장 먼 성계보다 바깥이어야 성계 위를 지나가지 않는다.
+    public static func driftOrbit(maxStatusCount: Int) -> Double {
+        stageSpacing(maxStatusCount: maxStatusCount) / 2 * 2.0.squareRoot()
+            + systemExtent(count: maxStatusCount) + 1.0
+    }
 
     /// 행성 하나가 차지하는 호 길이(논리 단위). **줌과 무관한 상수다** —
     /// 줌에 따라 달라지면 확대할 때마다 배치가 다시 계산돼 행성이 미끄러진다.
@@ -87,8 +116,10 @@ public enum OrbitLayout {
 
     /// `Stage` 넷의 2×2 배치. 순서는 `BoardLayout.visibleStages`와 같아서
     /// 레인에서 궤도로 전환할 때 위아래 순서가 유지된다.
-    public static func stageCenter(_ stage: Stage) -> OrbitPoint {
-        let half = stageSpacing / 2
+    ///
+    /// - Parameter spacing: `stageSpacing(maxStatusCount:)`가 정한, 이 스냅샷의 중심 간 거리.
+    public static func stageCenter(_ stage: Stage, spacing: Double) -> OrbitPoint {
+        let half = spacing / 2
         return switch stage {
         case .backlog: OrbitPoint(x: -half, y: -half)
         case .active:  OrbitPoint(x:  half, y: -half)
@@ -158,6 +189,14 @@ public enum OrbitLayout {
             stageOf[issue.statusName] = stage
         }
 
+        // 가장 붐비는 `Stage`의 상태 수로 이 스냅샷의 전체 축척을 정한다 — 형제
+        // 성계끼리 겹치지 않으려면 한 쌍이라도 겹치는 배치를 허용할 수 없다.
+        let maxStatusCount = BoardLayout.visibleStages
+            .map { stage in byStatus.keys.filter { stageOf[$0] == stage }.count }
+            .max() ?? 0
+        let spacing = stageSpacing(maxStatusCount: maxStatusCount)
+        let extent = spacing / 2 + systemExtent(count: maxStatusCount)
+
         // 상태명 오름차순으로 태양을 늘어놓는다. 딕셔너리 순회 순서를 쓰면
         // 같은 데이터가 실행마다 다른 배치를 낳는다.
         var systems: [OrbitSystem] = []
@@ -165,7 +204,7 @@ public enum OrbitLayout {
             let names = byStatus.keys.filter { stageOf[$0] == stage }.sorted()
             for (index, name) in names.enumerated() {
                 let center = statusCentre(
-                    stage: stage, index: index, count: names.count, zoom: zoom
+                    stage: stage, index: index, count: names.count, zoom: zoom, spacing: spacing
                 )
                 let seats = OrbitPacker.pack(
                     (byStatus[name] ?? []).map { issue in
@@ -199,7 +238,7 @@ public enum OrbitLayout {
 
         let driftSeats = OrbitPacker.pack(
             unmapped.map {
-                OrbitSeat(key: $0.key, radius: driftOrbit,
+                OrbitSeat(key: $0.key, radius: driftOrbit(maxStatusCount: maxStatusCount),
                           angle: OrbitGeometry.angle(forKey: $0.key))
             },
             planetArc: planetArc
@@ -216,7 +255,9 @@ public enum OrbitLayout {
                           radius: minimumRadius + (1 - minimumRadius) * $0.position,
                           isTerminal: $0.isTerminal)
             },
-            zoomProgress: zoom
+            zoomProgress: zoom,
+            stageSpacing: spacing,
+            extent: extent
         )
     }
 
@@ -225,14 +266,15 @@ public enum OrbitLayout {
     /// 혼자면 오프셋이 0이다 — 갈라질 상대가 없는데 옆으로 밀려나면 줌할 때
     /// 이유 없이 흔들린다.
     private static func statusCentre(
-        stage: Stage, index: Int, count: Int, zoom: Double
+        stage: Stage, index: Int, count: Int, zoom: Double, spacing: Double
     ) -> OrbitPoint {
-        let base = stageCenter(stage)
+        let base = stageCenter(stage, spacing: spacing)
         guard count > 1 else { return base }
+        let orbit = statusOrbit(count: count)
         let angle = 2 * Double.pi * Double(index) / Double(count)
         return OrbitPoint(
-            x: base.x + statusOrbit * cos(angle) * zoom,
-            y: base.y + statusOrbit * sin(angle) * zoom
+            x: base.x + orbit * cos(angle) * zoom,
+            y: base.y + orbit * sin(angle) * zoom
         )
     }
 }

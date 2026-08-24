@@ -88,7 +88,8 @@ private func system(_ result: OrbitSnapshot, _ statusName: String) -> OrbitSyste
 @Test func putsDriftersOnTheOutermostRing() {
     let result = snapshot([issue(key: "DEMO-9", status: "Blocked")])
 
-    #expect(result.drifters.first?.radius == OrbitLayout.driftOrbit)
+    // 이 입력에는 매핑된 상태가 하나도 없어 `maxStatusCount`가 0이다.
+    #expect(result.drifters.first?.radius == OrbitLayout.driftOrbit(maxStatusCount: 0))
 }
 
 // MARK: - 계층 줌
@@ -103,7 +104,7 @@ private func system(_ result: OrbitSnapshot, _ statusName: String) -> OrbitSyste
     ], zoom: 0)
 
     let centers = result.systems.map(\.center)
-    #expect(centers.allSatisfy { $0 == OrbitLayout.stageCenter(.active) })
+    #expect(centers.allSatisfy { $0 == OrbitLayout.stageCenter(.active, spacing: result.stageSpacing) })
 }
 
 /// 줌인하면 갈라진다. 갈라진 태양들은 서로 궤도가 닿지 않을 만큼 떨어져야 한다.
@@ -124,15 +125,19 @@ private func system(_ result: OrbitSnapshot, _ statusName: String) -> OrbitSyste
     }
 }
 
-/// 이웃한 `Stage`의 성계끼리도 닿으면 안 된다. 성계 하나의 외곽 반경은
-/// 태양 오프셋 1.5 + 궤도 최대 1.0 = 2.5이므로 중심 간 거리가 5.0을 넘어야 한다.
+/// 이웃한 `Stage`의 성계끼리 닿으면 안 된다. 성계 하나의 외곽 반경은
+/// 태양 오프셋 + 궤도 최대 1.0이므로 중심 간 거리가 그 두 배를 넘어야 한다.
 @Test func keepsNeighbouringStagesFromOverlapping() {
-    let backlog = OrbitLayout.stageCenter(.backlog)
-    let active = OrbitLayout.stageCenter(.active)
-    let dx = backlog.x - active.x
-    let dy = backlog.y - active.y
-
-    #expect((dx * dx + dy * dy).squareRoot() > 5.0)
+    for count in 1...10 {
+        let spacing = OrbitLayout.stageSpacing(maxStatusCount: count)
+        let backlog = OrbitLayout.stageCenter(.backlog, spacing: spacing)
+        let active = OrbitLayout.stageCenter(.active, spacing: spacing)
+        let dx = backlog.x - active.x
+        let dy = backlog.y - active.y
+        #expect((dx * dx + dy * dy).squareRoot()
+                > 2 * OrbitLayout.systemExtent(count: count),
+                "상태 \(count)개에서 이웃 Stage의 성계가 닿는다")
+    }
 }
 
 /// 혼자인 상태는 줌과 무관하게 `Stage` 중심에 있다. 갈라질 상대가 없는데
@@ -140,7 +145,8 @@ private func system(_ result: OrbitSnapshot, _ statusName: String) -> OrbitSyste
 @Test func leavesALoneSystemAtItsStageCentre() {
     let result = snapshot([issue(key: "DEMO-1", status: "To Do")], zoom: 1)
 
-    #expect(system(result, "To Do")?.center == OrbitLayout.stageCenter(.backlog))
+    #expect(system(result, "To Do")?.center
+            == OrbitLayout.stageCenter(.backlog, spacing: result.stageSpacing))
 }
 
 @Test func clampsZoomProgressToTheUnitRange() {
@@ -273,4 +279,44 @@ private func system(_ result: OrbitSnapshot, _ statusName: String) -> OrbitSyste
                           enteredAt: ["DEMO-1": now.addingTimeInterval(-days(3))])
 
     #expect(system(result, "Dev")?.planets.first?.isApproximate == false)
+}
+
+// MARK: - 형제 성계가 겹치지 않는다 (수정 라운드 1 회귀 가드)
+
+/// n=5부터 겹치기 시작하던 결함의 회귀 가드. 실측 조직의 active에는 상태가
+/// 여덟 개 있으므로 이 구간이 이 화면의 정상 동작 범위다.
+@Test func keepsSiblingSystemsApartAtEveryStatusCount() {
+    for count in 2...12 {
+        let orbit = OrbitLayout.statusOrbit(count: count)
+        let neighbourDistance = 2 * orbit * sin(.pi / Double(count))
+        #expect(neighbourDistance >= 2.0,
+                "상태 \(count)개에서 이웃 태양이 \(neighbourDistance) 떨어져 궤도가 겹친다")
+    }
+}
+
+/// 한 Stage에 여덟 상태가 접힌 실물 형태. 스펙 §1이 적은 그 조직의 active다.
+@Test func spreadsEightStatusesOfOneStageWithoutOverlap() {
+    let statuses = ["S1", "S2", "S3", "S4", "S5", "S6", "S7", "S8"]
+    let crowded = WorkflowMap(statusToStage: Dictionary(
+        uniqueKeysWithValues: statuses.map { ($0, Stage.active) }
+    ))
+    let result = snapshot(
+        statuses.enumerated().map { issue(key: "DEMO-\($0.offset)", status: $0.element) },
+        workflow: crowded, zoom: 1
+    )
+
+    #expect(result.systems.count == 8)
+    for outer in result.systems {
+        for inner in result.systems where inner.statusName != outer.statusName {
+            let dx = outer.center.x - inner.center.x
+            let dy = outer.center.y - inner.center.y
+            #expect((dx * dx + dy * dy).squareRoot() >= 2.0,
+                    "\(outer.statusName)과 \(inner.statusName)의 궤도가 겹친다")
+        }
+    }
+}
+
+/// 혼자인 상태는 여전히 Stage 중심에 있다 — 동적 반경이 그 성질을 깨지 않아야 한다.
+@Test func stillLeavesALoneSystemAtItsStageCentre() {
+    #expect(OrbitLayout.statusOrbit(count: 1) == 0)
 }
