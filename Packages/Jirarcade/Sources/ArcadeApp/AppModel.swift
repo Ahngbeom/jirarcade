@@ -560,7 +560,13 @@ public final class AppModel {
                 statusName: pending.toStatusName, issueType: issue.issueType,
                 priority: issue.priority, assigneeAccountId: issue.assigneeAccountId,
                 assigneeName: issue.assigneeName, dueDate: issue.dueDate,
-                jiraUpdatedAt: issue.jiraUpdatedAt
+                jiraUpdatedAt: issue.jiraUpdatedAt,
+                // 이 셋을 넘기지 않으면 `init`의 기본값(0/nil)이 들어가, 전이를 기다리는
+                // 5초 동안 카드에서 이월 줄이 사라졌다가 돌아온다. 상태만 바꾼 사본이므로
+                // 스프린트 이력은 원본 그대로여야 한다.
+                sprintCarryOvers: issue.sprintCarryOvers,
+                firstSprintName: issue.firstSprintName,
+                latestSprintName: issue.latestSprintName
             )
         }
     }
