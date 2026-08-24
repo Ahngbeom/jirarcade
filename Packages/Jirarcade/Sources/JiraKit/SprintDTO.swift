@@ -27,8 +27,17 @@ extension JiraSprint: Decodable {
     public init(from decoder: any Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
         id = try container.decode(Int.self, forKey: .id)
-        name = try container.decode(String.self, forKey: .name)
-        state = try container.decode(String.self, forKey: .state)
+        // `name`이 없는 원소를 필수 실패로 드롭하면 `SprintHistory.summarize`가 세는
+        // `ordered.count`가 그만큼 줄어든다 — `name`은 표시에만 쓰이는 값이 아니라
+        // 이월 횟수 자체의 입력이다(카운트는 이름이 아니라 원소 존재 여부로 매긴다).
+        // `state`와 같은 이유로 필수 해제한다 — 아래 참고.
+        name = try container.decodeIfPresent(String.self, forKey: .name) ?? ""
+        // 값을 읽는 곳이 지금은 없지만(위 doc-comment 참고) 그렇다고 없는 것과 같은
+        // 취급을 하면 안 된다: 필수로 두면 `state`가 빠진 원소 하나 때문에 스프린트
+        // 전체가 `FailableSprint`에서 조용히 드롭되고, 이월 횟수가 실제보다 낮게 뜬다 —
+        // "↻ 스프린트 5회"가 사실은 6회일 수 있다는 뜻이다. 아무것도 안 보여주는 것보다
+        // 나쁘다: 숫자가 있으니 사용자는 그것이 정확하다고 믿는다.
+        state = try container.decodeIfPresent(String.self, forKey: .state) ?? ""
         if let raw = try container.decodeIfPresent(String.self, forKey: .startDate) {
             startDate = JiraSprint.parseTimestamp(raw)
         } else {

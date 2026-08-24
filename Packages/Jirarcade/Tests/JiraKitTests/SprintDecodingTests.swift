@@ -44,6 +44,34 @@ private let threeSprints = """
     #expect(sprints[0].startDate == nil)
 }
 
+/// 최종 전체 브랜치 리뷰 Finding 4. `state`는 지금 아무도 읽지 않지만, 없다고 그 원소를
+/// 통째로 드롭하면 `SprintHistory.summarize`가 세는 이월 횟수가 실제보다 낮게 나온다 —
+/// "↻ 스프린트 5회"가 사실은 6회일 수 있다. `startDate`처럼 이 원소도 살아남아야 한다.
+@Test func toleratesAMissingState() throws {
+    let body = """
+    [{"id":1,"name":"DEMO 스프린트 (1)","startDate":"2026-05-14T10:00:00.000Z"}]
+    """
+
+    let sprints = try JiraSprint.decodeList(Data(body.utf8))
+
+    #expect(sprints.count == 1, "state가 없다고 원소가 드롭되면 이월 횟수가 실제보다 낮게 뜬다")
+    #expect(sprints[0].state == "")
+}
+
+/// `name`도 같은 함정이 있다: 표시에만 쓰이는 값이 아니라, `SprintHistory.summarize`가
+/// 세는 `ordered.count` 자체의 입력이다. 이름이 없다고 드롭하면 `state`와 똑같이
+/// 이월 횟수가 실제보다 낮게 뜬다.
+@Test func toleratesAMissingName() throws {
+    let body = """
+    [{"id":1,"state":"closed","startDate":"2026-05-14T10:00:00.000Z"}]
+    """
+
+    let sprints = try JiraSprint.decodeList(Data(body.utf8))
+
+    #expect(sprints.count == 1, "name이 없다고 원소가 드롭되면 이월 횟수가 실제보다 낮게 뜬다")
+    #expect(sprints[0].name == "")
+}
+
 /// 원소 하나가 깨져도 배열 전체를 버리지 않는다 — `JiraSearchResponse`가 이슈 단위로
 /// 이미 쓰는 방식이다. 스프린트 하나 때문에 티켓의 이월 정보를 전부 잃으면 안 된다.
 @Test func skipsABrokenElementRatherThanFailingTheWholeArray() throws {
