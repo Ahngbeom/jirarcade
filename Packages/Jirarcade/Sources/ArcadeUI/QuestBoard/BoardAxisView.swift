@@ -21,7 +21,7 @@ struct BoardAxisView: View {
                         .frame(width: index >= emphasisIndex ? 2 : 1)
                         .frame(maxHeight: .infinity)
                     Text(tick.isTerminal ? "\(tick.days)d+" : "\(tick.days)d")
-                        .font(.system(size: 9, design: .monospaced))
+                        .arcadeType(.readout, .xs)
                         .foregroundStyle(theme.inkTertiary)
                         .fixedSize()
                 }

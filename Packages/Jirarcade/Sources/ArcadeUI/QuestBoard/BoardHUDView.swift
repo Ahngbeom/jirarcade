@@ -7,46 +7,50 @@ import ArcadeCore
 /// 시즌을 보여주는 이유는 `ArcadeFloorView`와 같다: 오늘 하나 처리한 것이 움직여야 한다.
 struct BoardHUDView: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var metrics
     let model: AppModel
 
     var body: some View {
-        HStack(spacing: 16) {
+        HStack(spacing: metrics.sectionGap) {
             if let season = model.seasonSummary {
                 Text("LV.\(season.level)")
-                    .font(.system(size: 12, weight: .bold, design: .monospaced))
+                    .arcadeType(.readout, .l, weight: .bold)
                     .foregroundStyle(theme.accent)
+                    .monospacedDigit()
                 ProgressView(value: Double(season.xpIntoLevel),
                              total: Double(max(season.xpForNextLevel, 1)))
                     .tint(theme.accent)
-                    .frame(width: 110)
+                    .frame(width: metrics.size(.progressBarWidth))
                 Text("\(season.xpIntoLevel)/\(season.xpForNextLevel)")
-                    .font(.system(size: 10, design: .monospaced))
+                    .arcadeType(.readout, .s)
                     .foregroundStyle(theme.inkTertiary)
                     .monospacedDigit()
                 Text("연속 \(season.streak.currentStreak)일")
-                    .font(.system(size: 10, design: .monospaced))
+                    .arcadeType(.readout, .s)
                     .foregroundStyle(theme.inkSecondary)
                     .monospacedDigit()
             }
             if let hygiene = model.hygiene {
                 Text(hpLabel(hygiene.hp))
-                    .font(.system(size: 10, design: .monospaced))
+                    .arcadeType(.readout, .m)
                     .foregroundStyle(hygiene.hp == 0 ? theme.danger : theme.good)
                 Text("위생 \(hygiene.score)")
-                    .font(.system(size: 10, design: .monospaced))
+                    .arcadeType(.readout, .s)
                     .foregroundStyle(theme.inkSecondary)
                     .monospacedDigit()
                 if let step = hygiene.nextStep {
+                    // 다음 한 걸음은 지시문이지 수치가 아니다 — 모노가 아니라 본문 서체로
+                    // 읽혀야 옆의 스코어보드 수치와 역할이 구분된다.
                     Text(nextStepLabel(step))
-                        .font(.system(size: 10))
+                        .arcadeType(.prose, .s)
                         .foregroundStyle(theme.inkTertiary)
                         .lineLimit(1)
                 }
             }
             Spacer()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.horizontal, metrics.gutter)
+        .padding(.vertical, metrics.rowGap)
     }
 
     private func hpLabel(_ hp: Int) -> String {

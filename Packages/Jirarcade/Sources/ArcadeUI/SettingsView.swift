@@ -9,14 +9,15 @@ import ArcadeApp
 /// 여기 있는 "매핑 수정하기"가 백필이 발견한 과거 상태를 바로잡을 유일한 입구다.
 struct SettingsView: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var metrics
     @Environment(\.dismiss) private var dismiss
     let model: AppModel
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
+        VStack(alignment: .leading, spacing: metrics.sectionGap) {
             HStack {
                 Text("설정")
-                    .font(.system(size: 20, weight: .heavy, design: .rounded))
+                    .arcadeType(.marquee, .m)
                     .foregroundStyle(theme.accent)
                 Spacer()
                 Button("닫기") { dismiss() }.keyboardShortcut(.cancelAction)
@@ -28,18 +29,19 @@ struct SettingsView: View {
 
             Spacer(minLength: 0)
         }
-        .padding(24)
-        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .leading)
+        .padding(metrics.gutter)
+        .frame(maxWidth: metrics.size(.wizardMaxWidth), alignment: .leading)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         .background(theme.surfaceBase)
     }
 
     private var historySection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: metrics.rowGap) {
             Text("과거 기록")
-                .font(.headline)
+                .arcadeType(.readout, .m, weight: .bold)
                 .foregroundStyle(theme.inkPrimary)
             Text("Jira 변경 이력을 읽어 지난 전이를 점수에 반영합니다. 내가 직접 옮긴 전이만 XP가 됩니다.")
-                .font(.callout)
+                .arcadeType(.prose, .m)
                 .foregroundStyle(theme.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
@@ -50,7 +52,7 @@ struct SettingsView: View {
                 backfillProgressView
                 Button("중단") { model.cancelBackfill() }
                 Text("중단해도 지금까지 불러온 기록은 남고, 나중에 이어서 받을 수 있습니다.")
-                    .font(.caption2)
+                    .arcadeType(.prose, .xs)
                     .foregroundStyle(theme.inkTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             } else if model.hasResumableBackfill {
@@ -64,14 +66,14 @@ struct SettingsView: View {
                     Task { await model.startBackfill() }
                 }
                 Text("처음부터 받으면 중단 지점은 버려지고 모든 티켓을 다시 읽습니다. 이미 기록한 이력은 중복되지 않습니다.")
-                    .font(.caption2)
+                    .arcadeType(.prose, .xs)
                     .foregroundStyle(theme.inkTertiary)
                     .fixedSize(horizontal: false, vertical: true)
                 if let failure = model.lastBackfillFailure {
                     // 저장된 값은 에러 타입 이름뿐이라 그대로 보여주면 뜻이 통하지 않는다.
                     // 문장으로 감싸고 타입 이름은 괄호 안 부가 정보로만 곁들인다.
                     Text("지난 불러오기가 중단되었습니다 (\(failure)). 이어서 받을 수 있습니다.")
-                        .font(.caption)
+                        .arcadeType(.prose, .s)
                         .foregroundStyle(theme.inkSecondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -85,7 +87,7 @@ struct SettingsView: View {
                 // 카탈로그를 못 받으면 폴백 ②가 꺼진 채로 돈다 — 매핑에 없는 과거
                 // 상태가 전부 0점이 된다. 조용히 두면 사용자는 XP가 왜 적은지 모른다.
                 Text("상태 목록을 불러오지 못해 일부 과거 상태를 인식하지 못했습니다. 다시 불러오면 더 정확해집니다.")
-                    .font(.caption)
+                    .arcadeType(.prose, .s)
                     .foregroundStyle(theme.inkTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
@@ -103,14 +105,14 @@ struct SettingsView: View {
                 ProgressView(value: Double(min(progress.processed, total)),
                              total: Double(total)) {
                     Text("불러오는 중 \(progress.processed)/\(total)")
-                        .font(.caption)
+                        .arcadeType(.prose, .s)
                         .foregroundStyle(theme.inkSecondary)
                 }
                 .tint(theme.accent)
             } else {
                 ProgressView {
                     Text("불러오는 중 \(progress.processed)건")
-                        .font(.caption)
+                        .arcadeType(.prose, .s)
                         .foregroundStyle(theme.inkSecondary)
                 }
                 .tint(theme.accent)
@@ -118,7 +120,7 @@ struct SettingsView: View {
         } else {
             ProgressView {
                 Text("불러오는 중…")
-                    .font(.caption)
+                    .arcadeType(.prose, .s)
                     .foregroundStyle(theme.inkSecondary)
             }
             .tint(theme.accent)
@@ -128,12 +130,12 @@ struct SettingsView: View {
     /// 매핑 마법사로 돌아가는 입구. 백필이 발견한 과거 상태는 statusCategory에서 끌어낸
     /// 추정으로 채점되고 있으므로(방향까지 틀릴 수 있다), 사용자가 바로잡을 길이 필요하다.
     private var mappingSection: some View {
-        VStack(alignment: .leading, spacing: 8) {
+        VStack(alignment: .leading, spacing: metrics.rowGap) {
             Text("워크플로 매핑")
-                .font(.headline)
+                .arcadeType(.readout, .m, weight: .bold)
                 .foregroundStyle(theme.inkPrimary)
             Text("상태 이름을 게임의 진행 단계에 연결합니다. 과거 기록을 불러온 뒤에는 그때 발견된 상태도 함께 뜹니다.")
-                .font(.callout)
+                .arcadeType(.prose, .m)
                 .foregroundStyle(theme.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
             // 발견 목록이 아니라 **지금 실제로 추정이 적용되는** 상태를 센다. 발견 목록은
@@ -142,7 +144,7 @@ struct SettingsView: View {
             let guessed = model.guessScoredStatuses
             if !guessed.isEmpty {
                 Text("과거 이력에서 찾은 상태 \(guessed.count)개가 추정값으로 채점되고 있습니다.")
-                    .font(.caption)
+                    .arcadeType(.prose, .s)
                     .foregroundStyle(theme.inkTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
