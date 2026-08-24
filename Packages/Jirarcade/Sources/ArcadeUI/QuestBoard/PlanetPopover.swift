@@ -34,7 +34,7 @@ struct PlanetPopover: View {
             if let dueLabel {
                 Text(dueLabel)
                     .arcadeType(.readout, .xs)
-                    .foregroundStyle(theme.danger)
+                    .foregroundStyle(dueColor)
             }
             if planet.sprintCarryOvers > 0 {
                 // 문구는 `TicketCardView`와 같아야 한다.
@@ -79,14 +79,23 @@ struct PlanetPopover: View {
     private var dueLabel: String? {
         switch planet.dueState {
         case .none: nil
-        case .dueIn(let days): "D-\(days)"
         case .overdue(let days): "\(days)일 지남"
+        case .dueIn(let days): days == 0 ? "오늘 마감" : "D-\(days)"
+        }
+    }
+
+    /// 강조 기준은 뷰가 정한다(`ArcadeCore`는 사실만 담는다). D-3 이내부터 눈에 띄게 한다.
+    private var dueColor: Color {
+        switch planet.dueState {
+        case .none:              theme.inkTertiary
+        case .overdue:           theme.danger
+        case .dueIn(let days):   days <= 3 ? theme.accent : theme.inkTertiary
         }
     }
 
     private var sprintTooltip: String {
         guard let first = planet.firstSprintName, let latest = planet.latestSprintName
         else { return "" }
-        return "\(first) → \(latest)"
+        return first == latest ? first : "\(first) → \(latest)"
     }
 }
