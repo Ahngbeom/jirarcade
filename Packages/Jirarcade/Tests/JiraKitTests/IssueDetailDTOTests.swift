@@ -73,3 +73,23 @@ import Foundation
     #expect(comments.count == 1)
     #expect(comments[0].authorName == "알 수 없음")
 }
+
+/// 본문이 구조적으로 잘못된 댓글도 살린다 — id와 시간은 있는데 본문만 이상해도
+/// 대화에서 없어지면 안 된다. 본문이 nil이어도 "누가 이 시간에 뭔가 했다"는
+/// 기록은 남는다.
+@Test func anInvalidBodyDoesNotDropTheComment() throws {
+    let json = #"""
+    {"comments":[
+      {"id":"12","author":{"displayName":"유효한"},"created":"2026-08-24T09:00:00.000+0900","body":{"notype":"oops"}},
+      {"id":"13","author":{"displayName":"정상"},"created":"2026-08-24T09:10:00.000+0900","body":null}
+    ]}
+    """#
+
+    let comments = try JiraComment.decodePage(Data(json.utf8))
+
+    #expect(comments.count == 2)
+    #expect(comments[0].id == "12")
+    #expect(comments[0].authorName == "유효한")
+    #expect(comments[0].body == nil)
+    #expect(comments[1].id == "13")
+}

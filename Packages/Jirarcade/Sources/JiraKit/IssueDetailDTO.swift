@@ -78,6 +78,19 @@ public struct JiraComment: Sendable, Equatable, Identifiable {
             let created: String?
             let author: Author?
             let body: ADFNode?
+
+            private enum CodingKeys: String, CodingKey {
+                case id, created, author, body
+            }
+
+            init(from decoder: Decoder) throws {
+                let container = try decoder.container(keyedBy: CodingKeys.self)
+                id = try container.decodeIfPresent(String.self, forKey: .id)
+                created = try container.decodeIfPresent(String.self, forKey: .created)
+                author = try container.decodeIfPresent(Author.self, forKey: .author)
+                body = (try? container.decodeIfPresent(ADFNode.self, forKey: .body)) ?? nil
+            }
+
             struct Author: Decodable { let displayName: String? }
         }
     }
