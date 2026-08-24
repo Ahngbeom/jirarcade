@@ -1021,40 +1021,58 @@ public final class AppModel {
     ///
     /// 보내는 ADF는 우리가 처음부터 만든다 — 읽어온 문서를 되돌려 보내지 않으므로
     /// 왕복 손실이 없다.
-    public func postComment(issueKey: String, text: String) async {
-        guard let client else { return }
+    ///
+    /// 반환값은 실제로 등록됐는지만 말한다. 시트가 이 값으로 초안을 지울지
+    /// 정하므로, `editFailures`의 부재로 성공을 추론하면 안 된다 — 401은
+    /// 만료 배너와 중복되지 않도록 `editFailures`를 일부러 비워 두는데, 그
+    /// 상태는 성공과 구분되지 않기 때문이다.
+    @discardableResult
+    public func postComment(issueKey: String, text: String) async -> Bool {
+        guard let client else { return false }
         // 미러에 없는 티켓은 화면에도 없다 — 사용자가 고를 수 있는 상황이 아니다.
-        guard issues.contains(where: { $0.key == issueKey }) else { return }
-        guard !editInFlight.contains(issueKey) else { return }
+        guard issues.contains(where: { $0.key == issueKey }) else { return false }
+        guard !editInFlight.contains(issueKey) else { return false }
         // 공백만 친 뒤 저장을 누른 것은 등록 의사가 아니다 — 상태도 건드리지 않고 그냥 돌아간다.
-        guard let document = ADFBuilder.paragraphs(from: text) else { return }
+        guard let document = ADFBuilder.paragraphs(from: text) else { return false }
 
         editInFlight.insert(issueKey)
         editFailures[issueKey] = nil
         let generation = syncGeneration
 
-        let task = Task { [weak self] in
-            guard let self else { return }
+        let work = Task { [weak self] () -> Bool in
+            guard let self else { return false }
             defer { self.finishEdit(issueKey: issueKey) }
             do {
                 try await client.addComment(issueKey: issueKey, body: document)
             } catch JiraError.unauthorized {
                 if generation == self.syncGeneration { self.phase = .expired }
-                return
+                return false
             } catch {
                 if generation == self.syncGeneration {
                     self.editFailures[issueKey] = Self.editFailureMessage(error)
                 }
-                return
+                return false
             }
-            // 등록하는 동안 계정이 바뀌었으면 이 결과는 남의 것이다.
-            guard generation == self.syncGeneration else { return }
+            // 등록하는 동안 계정이 바뀌었으면 이 결과는 남의 것이다 — 그래도 댓글
+            // 자체는 Jira에 실제로 남았으므로 반환값은 true다.
+            guard generation == self.syncGeneration else { return true }
             // 댓글은 `updated` 타임스탬프를 움직인다 — 다음 동기화가 `.touched`로
             // 관측하게 둔다. XP를 직접 주지 않는다.
             await self.syncNow(reason: .manual)
+            return true
         }
-        editTasks[issueKey] = task
-        await task.value
+        // `editTasks`는 `Task<Void, Never>`를 저장한다(`saveSummary`도 같은 딕셔너리를
+        // 쓴다) — `work`는 `Bool`을 반환하므로 그대로 넣을 수 없다. 취소 전달을 잃지
+        // 않도록 감싸기만 하는 `Void` 래퍼를 대신 저장하고, `signOut`의 `.cancel()`이
+        // 이 래퍼에 오면 `withTaskCancellationHandler`가 `work`로 그대로 넘긴다.
+        editTasks[issueKey] = Task {
+            await withTaskCancellationHandler {
+                _ = await work.value
+            } onCancel: {
+                work.cancel()
+            }
+        }
+        return await work.value
     }
 
     public func dismissEditFailure(issueKey: String) {

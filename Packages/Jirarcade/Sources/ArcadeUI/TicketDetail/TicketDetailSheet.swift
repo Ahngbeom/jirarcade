@@ -13,6 +13,10 @@ struct TicketDetailSheet: View {
 
     @State private var summaryDraft = ""
     @State private var commentDraft = ""
+    // 댓글 등록이 `openDetail`을 다시 불러 `.loaded`가 새로 그려질 때마다
+    // `onAppear`가 또 fire한다 — 그때마다 다시 시딩하면 아직 저장하지 않은
+    // 제목 수정이 지워진다. 시트 하나당 한 번만 시딩한다.
+    @State private var hasSeededSummaryDraft = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -90,7 +94,11 @@ struct TicketDetailSheet: View {
                               || summaryDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || summaryDraft == detail.summary)
                 }
-                .onAppear { summaryDraft = detail.summary }
+                .onAppear {
+                    guard !hasSeededSummaryDraft else { return }
+                    hasSeededSummaryDraft = true
+                    summaryDraft = detail.summary
+                }
 
                 VStack(alignment: .leading, spacing: 6) {
                     Text("본문").font(.system(size: 10, design: .monospaced))
@@ -112,10 +120,12 @@ struct TicketDetailSheet: View {
                         .border(theme.inkTertiary.opacity(0.3))
                     Button("댓글 등록") {
                         Task {
-                            await model.postComment(issueKey: issueKey, text: commentDraft)
-                            // 등록 도중 실패했으면 `editFailures`에 사유가 남는다 — 그 경우
-                            // 입력을 지우지 않고 다시 시도할 수 있게 그대로 둔다.
-                            guard model.editFailures[issueKey] == nil else { return }
+                            let posted = await model.postComment(issueKey: issueKey, text: commentDraft)
+                            // 실패했으면(401 포함) 입력을 지우지 않고 다시 시도할 수 있게
+                            // 그대로 둔다. `editFailures`의 유무로는 이걸 알 수 없다 — 401은
+                            // 만료 배너와 중복되지 않도록 일부러 비워 두므로 `postComment`의
+                            // 반환값을 그대로 읽는다.
+                            guard posted else { return }
                             commentDraft = ""
                             await model.openDetail(issueKey: issueKey)
                         }

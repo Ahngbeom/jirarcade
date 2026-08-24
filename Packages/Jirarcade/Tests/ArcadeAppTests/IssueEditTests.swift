@@ -126,8 +126,9 @@ private func readySeededWorkflow() -> InMemoryWorkflowStore {
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
     model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
 
-    await model.postComment(issueKey: "DEMO-1", text: "확인했습니다")
+    let posted = await model.postComment(issueKey: "DEMO-1", text: "확인했습니다")
 
+    #expect(posted)
     #expect(model.editInFlight.isEmpty)
     #expect(model.editFailures["DEMO-1"] == nil)
 }
@@ -140,9 +141,61 @@ private func readySeededWorkflow() -> InMemoryWorkflowStore {
     await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
     model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
 
-    await model.postComment(issueKey: "DEMO-1", text: "   \n  ")
+    let posted = await model.postComment(issueKey: "DEMO-1", text: "   \n  ")
 
     // 큐가 비었으므로 요청이 하나라도 더 나갔다면 URLError로 실패했을 것이다.
+    #expect(!posted)
+    #expect(model.editFailures["DEMO-1"] == nil)
+    #expect(model.editInFlight.isEmpty)
+}
+
+/// 400 같은 보통 실패는 `editFailures`에 사유를 남기고, 반환값으로도 실패를 알린다 —
+/// 시트가 이 값으로 초안을 지울지 정한다.
+@MainActor
+@Test func aRejectedCommentReportsFailure() async throws {
+    let model = try makeModel(
+        workflow: readySeededWorkflow(),
+        http: {
+            ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),   // /myself
+                .init(status: 200, body: Data("[]".utf8)),         // signIn의 field
+                .init(status: 400, body: Data("{}".utf8)),         // POST comment rejected
+            ])
+        }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    let posted = await model.postComment(issueKey: "DEMO-1", text: "확인했습니다")
+
+    #expect(!posted)
+    #expect(model.editFailures["DEMO-1"] != nil)
+    #expect(model.editInFlight.isEmpty)
+}
+
+/// 401은 `editFailures`를 일부러 비워 둔다(만료 배너와 중복 방지) — 그 부재가
+/// 성공과 구분되지 않으므로, 시트는 반환값만으로 성공 여부를 판단해야 한다.
+/// 이 반환값이 없으면 401도 성공처럼 보여 초안이 날아가고 시트가 같은 401로
+/// 다시 멈춘다.
+@MainActor
+@Test func anExpiredTokenDuringACommentReportsFailureWithoutAFieldFailure() async throws {
+    let model = try makeModel(
+        workflow: readySeededWorkflow(),
+        http: {
+            ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),   // /myself
+                .init(status: 200, body: Data("[]".utf8)),         // signIn의 field
+                .init(status: 401, body: Data("{}".utf8)),         // POST comment unauthorized
+            ])
+        }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "a@example.com", token: "t")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    let posted = await model.postComment(issueKey: "DEMO-1", text: "확인했습니다")
+
+    #expect(!posted)
+    #expect(model.phase == .expired)
     #expect(model.editFailures["DEMO-1"] == nil)
     #expect(model.editInFlight.isEmpty)
 }
