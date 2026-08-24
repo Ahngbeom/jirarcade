@@ -1204,9 +1204,9 @@ git commit -m "feat: 궤도 좌표를 만드는 입구를 모델에 낸다"
 - Create: `Packages/Jirarcade/Sources/ArcadeUI/QuestBoard/PlanetView.swift`
 
 **Interfaces:**
-- Consumes: `OrbitPoint`, `OrbitPlanet`, `OrbitSystem`, `OrbitLayout` 상수 (Task 1·3), `ArcadeMetrics`, `ArcadeTheme`
+- Consumes: `OrbitPoint`, `OrbitPlanet`, `OrbitSystem`, `OrbitSnapshot.extent`, `OrbitLayout.planetArc` (Task 1·3), `ArcadeMetrics`, `ArcadeTheme`
 - Produces:
-  - `struct OrbitMetrics` — `init(viewport:scale:pan:)`, `static func fitScale(viewport:) -> Double`, `var zoomProgress: Double`, `func point(_:) -> CGPoint`, `func planetPoint(system:planet:) -> CGPoint`, `func driftPoint(_:) -> CGPoint`, `func diameter(for:) -> Double`, `func length(_:) -> Double`, `var showsPlanetLabels: Bool`
+  - `struct OrbitMetrics` — `init(viewport:scale:pan:extent:)`, `static func fitScale(viewport:extent:) -> Double`, `static func minScale(viewport:extent:)`, `static func maxScale(viewport:extent:)`, `var zoomProgress: Double`, `func point(_:) -> CGPoint`, `func planetPoint(system:planet:) -> CGPoint`, `func driftPoint(_:) -> CGPoint`, `func diameter(for:) -> Double`, `func length(_:) -> Double`, `var showsPlanetLabels: Bool`
   - `struct PlanetView: View` — `init(planet:diameter:isPending:)`
 
 - [ ] **Step 1: `OrbitMetrics`를 만든다**
@@ -1224,29 +1224,44 @@ struct OrbitMetrics {
     /// 논리 1.0이 몇 pt인가.
     let scale: Double
     let pan: CGSize
+    /// 성계 전체가 들어가는 논리 반지름. `OrbitSnapshot.extent`에서 온다.
+    let extent: Double
 
     /// 성계 넷이 모두 들어오는 배율.
     ///
-    /// 논리 12단위를 기준으로 삼는다: `Stage` 중심이 ±3.0이고 성계 외곽 반경이 2.5이므로
-    /// 전체 폭이 11.0이며, 가장자리에 1.0을 남긴다. **떠돌이 고리(8.0)는 기준에 넣지
-    /// 않는다** — 미매핑 상태가 없는 것이 정상이고, 있을 때를 기준으로 배율을 잡으면
-    /// 평소에 성계가 화면 한가운데 작게 뭉친다.
-    static func fitScale(viewport: CGSize) -> Double {
-        min(viewport.width, viewport.height) / 12.0
+    /// `extent`는 스냅샷이 알려준다 — **상수로 둘 수 없다.** 성계의 크기가 그 `Stage`에
+    /// 접힌 상태 수에 따라 달라지기 때문이다(`OrbitLayout.statusOrbit(count:)`). 상태가
+    /// 여덟인 조직과 둘인 조직은 논리 좌표에서 성계 크기가 두 배 넘게 차이 난다.
+    ///
+    /// 지름(`extent * 2`)에 가장자리 여백 2.0을 더한 값으로 나눈다. 떠돌이 고리는
+    /// `extent`에 들어 있지 않다 — 미매핑 상태가 없는 것이 정상이고, 있을 때를 기준으로
+    /// 배율을 잡으면 평소에 성계가 화면 한가운데 작게 뭉친다.
+    static func fitScale(viewport: CGSize, extent: Double) -> Double {
+        min(viewport.width, viewport.height) / max(extent * 2 + 2.0, 1)
     }
 
-    static func minScale(viewport: CGSize) -> Double { fitScale(viewport: viewport) * 0.6 }
-    static func maxScale(viewport: CGSize) -> Double { fitScale(viewport: viewport) * 6 }
+    static func minScale(viewport: CGSize, extent: Double) -> Double {
+        fitScale(viewport: viewport, extent: extent) * 0.6
+    }
+
+    static func maxScale(viewport: CGSize, extent: Double) -> Double {
+        fitScale(viewport: viewport, extent: extent) * 6
+    }
 
     /// 태양이 상태별로 다 갈라지는 배율.
-    private static func spreadScale(viewport: CGSize) -> Double {
-        fitScale(viewport: viewport) * 2.5
+    private static func spreadScale(viewport: CGSize, extent: Double) -> Double {
+        fitScale(viewport: viewport, extent: extent) * 2.5
     }
 
     /// `OrbitLayout.snapshot`에 넘길 값. 기본 배율에서 0이고 2.5배에서 1이다.
+    ///
+    /// **닭과 달걀:** `extent`는 스냅샷에서 오는데 스냅샷을 만들려면 `zoomProgress`가
+    /// 필요하다. 끊는 자리는 여기다 — `extent`는 어느 `Stage`에 상태가 몇 개인지에서만
+    /// 나오고 줌과 무관하므로, 뷰는 `zoomProgress: 0`으로 스냅샷을 한 번 만들어
+    /// `extent`를 얻은 뒤 실제 줌으로 다시 만든다. 둘 다 순수 함수라 값이 흔들리지 않는다.
     var zoomProgress: Double {
-        let base = Self.fitScale(viewport: viewport)
-        let spread = Self.spreadScale(viewport: viewport)
+        let base = Self.fitScale(viewport: viewport, extent: extent)
+        let spread = Self.spreadScale(viewport: viewport, extent: extent)
         guard spread > base else { return 1 }
         return min(max((scale - base) / (spread - base), 0), 1)
     }
@@ -1520,12 +1535,18 @@ struct OrbitView: View {
 
     var body: some View {
         GeometryReader { proxy in
-            let base = scale ?? OrbitMetrics.fitScale(viewport: proxy.size)
+            // 성계가 논리 좌표에서 얼마나 큰지 먼저 잰다. 크기는 어느 `Stage`에 상태가
+            // 몇 개 접혔는지에서만 나오고 줌과 무관하므로, 줌 0으로 한 번 만들어
+            // `extent`를 얻고 그 값으로 배율을 정한 뒤 실제 줌으로 다시 만든다.
+            // 순수 함수 두 번이라 값이 흔들리지 않는다.
+            let extent = model.orbitSnapshot(zoomProgress: 0).extent
+            let base = scale ?? OrbitMetrics.fitScale(viewport: proxy.size, extent: extent)
             let metrics = OrbitMetrics(
                 viewport: proxy.size,
-                scale: clampScale(base * gestureScale, viewport: proxy.size),
+                scale: clampScale(base * gestureScale, viewport: proxy.size, extent: extent),
                 pan: CGSize(width: committedPan.width + dragPan.width,
-                            height: committedPan.height + dragPan.height)
+                            height: committedPan.height + dragPan.height),
+                extent: extent
             )
             let snapshot = model.orbitSnapshot(zoomProgress: metrics.zoomProgress)
 
@@ -1538,9 +1559,11 @@ struct OrbitView: View {
             .frame(width: proxy.size.width, height: proxy.size.height)
             .contentShape(Rectangle())
             .gesture(pan(viewport: proxy.size))
-            .gesture(magnify(viewport: proxy.size))
+            .gesture(magnify(viewport: proxy.size, extent: extent))
             .background(theme.surfaceBase)
-            .overlay(alignment: .bottomTrailing) { zoomControls(viewport: proxy.size) }
+            .overlay(alignment: .bottomTrailing) {
+                zoomControls(viewport: proxy.size, extent: extent)
+            }
         }
     }
 
@@ -1623,9 +1646,9 @@ struct OrbitView: View {
 
     // MARK: - 제스처
 
-    private func clampScale(_ value: Double, viewport: CGSize) -> Double {
-        min(max(value, OrbitMetrics.minScale(viewport: viewport)),
-            OrbitMetrics.maxScale(viewport: viewport))
+    private func clampScale(_ value: Double, viewport: CGSize, extent: Double) -> Double {
+        min(max(value, OrbitMetrics.minScale(viewport: viewport, extent: extent)),
+            OrbitMetrics.maxScale(viewport: viewport, extent: extent))
     }
 
     private func pan(viewport: CGSize) -> some Gesture {
@@ -1638,23 +1661,24 @@ struct OrbitView: View {
             }
     }
 
-    private func magnify(viewport: CGSize) -> some Gesture {
+    private func magnify(viewport: CGSize, extent: Double) -> some Gesture {
         MagnifyGesture()
             .onChanged { gestureScale = $0.magnification }
             .onEnded { value in
-                let base = scale ?? OrbitMetrics.fitScale(viewport: viewport)
-                scale = clampScale(base * value.magnification, viewport: viewport)
+                let base = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
+                scale = clampScale(base * value.magnification,
+                                   viewport: viewport, extent: extent)
                 gestureScale = 1
             }
     }
 
     /// 트랙패드가 없거나 키보드만 쓰는 경우의 경로. 궤도가 유일한 경로인 정보는
     /// 없으므로(레인이 항상 있다) 접근성 하한은 "조작 가능"이다.
-    private func zoomControls(viewport: CGSize) -> some View {
+    private func zoomControls(viewport: CGSize, extent: Double) -> some View {
         HStack(spacing: density.tightGap) {
-            Button("−") { step(0.8, viewport: viewport) }
+            Button("−") { step(0.8, viewport: viewport, extent: extent) }
                 .keyboardShortcut("-", modifiers: .command)
-            Button("＋") { step(1.25, viewport: viewport) }
+            Button("＋") { step(1.25, viewport: viewport, extent: extent) }
                 .keyboardShortcut("=", modifiers: .command)
             Button("전체") {
                 scale = nil
@@ -1666,10 +1690,10 @@ struct OrbitView: View {
         .padding(density.rowGap)
     }
 
-    private func step(_ factor: Double, viewport: CGSize) {
-        let base = scale ?? OrbitMetrics.fitScale(viewport: viewport)
+    private func step(_ factor: Double, viewport: CGSize, extent: Double) {
+        let base = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-            scale = clampScale(base * factor, viewport: viewport)
+            scale = clampScale(base * factor, viewport: viewport, extent: extent)
         }
     }
 }
