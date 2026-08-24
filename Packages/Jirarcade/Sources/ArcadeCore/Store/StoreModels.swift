@@ -21,11 +21,18 @@ public final class IssueSnapshot {
     public var jiraUpdatedAt: Date
     public var firstObservedAt: Date
     public var lastObservedAt: Date
+    /// 스프린트 이월 횟수. **기본값이 선언에 있어야** 이 컬럼이 없던 기존 미러가 열린다.
+    public var sprintCarryOvers: Int = 0
+    public var firstSprintName: String?
+    public var latestSprintName: String?
 
     public init(
         key: String, summary: String, statusName: String, issueType: String,
         priority: String?, assigneeAccountId: String?, assigneeName: String?,
-        dueDate: Date?, jiraUpdatedAt: Date, firstObservedAt: Date, lastObservedAt: Date
+        dueDate: Date?, jiraUpdatedAt: Date, firstObservedAt: Date, lastObservedAt: Date,
+        sprintCarryOvers: Int = 0,
+        firstSprintName: String? = nil,
+        latestSprintName: String? = nil
     ) {
         self.key = key
         self.summary = summary
@@ -38,6 +45,9 @@ public final class IssueSnapshot {
         self.jiraUpdatedAt = jiraUpdatedAt
         self.firstObservedAt = firstObservedAt
         self.lastObservedAt = lastObservedAt
+        self.sprintCarryOvers = sprintCarryOvers
+        self.firstSprintName = firstSprintName
+        self.latestSprintName = latestSprintName
     }
 }
 
