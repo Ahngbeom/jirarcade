@@ -3,11 +3,11 @@ import Foundation
 /// 티켓이 속한 스프린트 하나.
 ///
 /// 응답에는 `boardId`·`goal`·`endDate`·`completeDate`도 오지만 담지 않는다 — 실측에서
-/// `goal`은 전부 빈 문자열이었고 나머지는 이 계획이 쓰지 않는다(스펙 §9).
+/// `goal`은 전부 빈 문자열이었고 나머지는 이 계획이 쓰지 않는다.
 public struct JiraSprint: Sendable, Equatable {
     public let id: Int
     public let name: String
-    /// `closed` / `future` / `active`. 이월 계산은 구분하지 않지만(스펙 §5)
+    /// `closed` / `future` / `active`. 이월 계산은 구분하지 않지만
     /// 나중에 필요할 값이라 담는다.
     public let state: String
     /// 정렬 키. 드물게 없다.

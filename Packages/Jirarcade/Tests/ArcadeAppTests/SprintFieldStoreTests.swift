@@ -83,7 +83,7 @@ private let activeOnlyWorkflow = WorkflowMap(statusToStage: ["In Progress": .act
 }
 
 /// 스프린트를 쓰지 않는 사이트에서도 로그인이 정상으로 끝나야 한다.
-/// 필드가 없다는 것은 오류가 아니라 사실이다(스펙 §3).
+/// 필드가 없다는 것은 오류가 아니라 사실이다.
 @MainActor
 @Test func signsInNormallyWhenTheSiteHasNoSprintField() async throws {
     let sprintField = InMemorySprintFieldStore()
