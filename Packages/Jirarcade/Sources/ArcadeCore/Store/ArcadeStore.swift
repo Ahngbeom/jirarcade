@@ -469,7 +469,10 @@ private extension IssueSnapshot {
         ObservedIssue(
             key: key, summary: summary, statusName: statusName, issueType: issueType,
             priority: priority, assigneeAccountId: assigneeAccountId, assigneeName: assigneeName,
-            dueDate: dueDate, jiraUpdatedAt: jiraUpdatedAt
+            dueDate: dueDate, jiraUpdatedAt: jiraUpdatedAt,
+            sprintCarryOvers: sprintCarryOvers,
+            firstSprintName: firstSprintName,
+            latestSprintName: latestSprintName
         )
     }
 
@@ -479,7 +482,10 @@ private extension IssueSnapshot {
             issueType: issue.issueType, priority: issue.priority,
             assigneeAccountId: issue.assigneeAccountId, assigneeName: issue.assigneeName,
             dueDate: issue.dueDate, jiraUpdatedAt: issue.jiraUpdatedAt,
-            firstObservedAt: observedAt, lastObservedAt: observedAt
+            firstObservedAt: observedAt, lastObservedAt: observedAt,
+            sprintCarryOvers: issue.sprintCarryOvers,
+            firstSprintName: issue.firstSprintName,
+            latestSprintName: issue.latestSprintName
         )
     }
 
@@ -493,5 +499,8 @@ private extension IssueSnapshot {
         dueDate = issue.dueDate
         jiraUpdatedAt = issue.jiraUpdatedAt
         lastObservedAt = observedAt
+        sprintCarryOvers = issue.sprintCarryOvers
+        firstSprintName = issue.firstSprintName
+        latestSprintName = issue.latestSprintName
     }
 }

@@ -162,3 +162,29 @@ private func snapshot(
 @Test func emptyLaneHasNoRows() {
     #expect(snapshot([]).lanes.allSatisfy { $0.rowCount == 0 })
 }
+
+/// 보드는 이월 정보를 옮기기만 한다 — 새 판단은 하지 않는다.
+@Test func carriesSprintInformationOntoTheSlot() {
+    let issue = ObservedIssue(
+        key: "DEMO-1", summary: "샘플", statusName: "In Progress", issueType: "개선",
+        priority: nil, assigneeAccountId: "acc-me", assigneeName: "tester",
+        dueDate: nil, jiraUpdatedAt: now,
+        sprintCarryOvers: 12,
+        firstSprintName: "DEMO 스프린트 (52)",
+        latestSprintName: "DEMO 스프린트 (66)"
+    )
+
+    let slot = snapshot([issue]).lanes[1].slots[0]
+
+    #expect(slot.sprintCarryOvers == 12)
+    #expect(slot.firstSprintName == "DEMO 스프린트 (52)")
+    #expect(slot.latestSprintName == "DEMO 스프린트 (66)")
+}
+
+/// 스프린트를 쓰지 않는 티켓은 0이고 이름이 없다.
+@Test func reportsNoSprintInformationWhenThereIsNone() {
+    let slot = snapshot([issue(key: "DEMO-1", status: "In Progress")]).lanes[1].slots[0]
+
+    #expect(slot.sprintCarryOvers == 0)
+    #expect(slot.firstSprintName == nil)
+}

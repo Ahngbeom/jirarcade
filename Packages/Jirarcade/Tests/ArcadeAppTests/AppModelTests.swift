@@ -16,10 +16,11 @@ import JiraKit
     let creds = InMemoryCredentialStore(
         seeded: Credentials(site: "example.atlassian.net", email: "u@e.com", token: "t")
     )
-    // /myself 성공 → 매핑 후보 조회 (빈 결과)
+    // /myself 성공 → field 조회 → 매핑 후보 조회 (빈 결과)
     let model = try makeModel(credentials: creds, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),
             .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
         ])
     })
@@ -132,6 +133,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(credentials: creds, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),
             .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
         ])
     })
@@ -162,6 +164,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(credentials: creds, workflow: workflow, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),
             .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
         ])
     })
@@ -191,6 +194,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(credentials: creds, workflow: workflow, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),
             .init(status: 200, body: Data(issues.utf8)),
         ])
     })
@@ -253,6 +257,7 @@ private func assertDoesNotLeak(
     utc.timeZone = TimeZone(identifier: "UTC")!
     let model = AppModel(
         store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        sprintField: InMemorySprintFieldStore(),
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
@@ -293,6 +298,7 @@ private func assertDoesNotLeak(
     utc.timeZone = TimeZone(identifier: "UTC")!
     let model = AppModel(
         store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        sprintField: InMemorySprintFieldStore(),
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
@@ -332,6 +338,7 @@ private func assertDoesNotLeak(
     utc.timeZone = TimeZone(identifier: "UTC")!
     let model = AppModel(
         store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        sprintField: InMemorySprintFieldStore(),
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
@@ -371,6 +378,7 @@ private func assertDoesNotLeak(
 
     let model = AppModel(
         store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        sprintField: InMemorySprintFieldStore(),
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP(status: 200, body: responses.removeFirst()))
         },
@@ -454,6 +462,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(credentials: creds, workflow: workflow, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),   // start의 myself
+            .init(status: 200, body: Data("[]".utf8)),         // start의 field
             .init(status: 200, body: Data(issues.utf8)),       // syncNow의 검색
         ])
     })
@@ -482,6 +491,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(credentials: creds, workflow: workflow, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),           // start의 field
             .init(status: 200, body: Data(issues.utf8)),
             .init(status: 500, body: Data("{}".utf8)),          // 두 번째 동기화는 실패
         ])
@@ -505,6 +515,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(credentials: creds, workflow: workflow, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),   // start의 field
             .init(status: 401, body: Data("{}".utf8)),
         ])
     })
@@ -533,6 +544,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(credentials: creds, workflow: workflow, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),   // start의 field
             .init(status: 400, body: Data(errorBody.utf8)),   // 검색 호출이 응답 본문에 이메일을 담아 거부
         ])
     })
@@ -705,6 +717,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(credentials: creds, workflow: workflow, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),   // start의 field
             .init(status: 200, body: Data(issuesBody(status: "To Do", assignee: "acc-me").utf8)),
             .init(status: 200,
                   body: Data(issuesBody(status: "In Progress", assignee: "acc-me").utf8)),
@@ -738,6 +751,7 @@ private func assertDoesNotLeak(
     let model = try makeModel(store: store, credentials: creds, workflow: workflow, http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),   // start의 field
             .init(status: 200, body: Data(before.utf8)),
             .init(status: 200, body: Data(after.utf8)),
         ])
@@ -837,6 +851,7 @@ private func assertDoesNotLeak(
     utc.timeZone = TimeZone(identifier: "UTC")!
     let model = AppModel(
         store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        sprintField: InMemorySprintFieldStore(),
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),
@@ -885,6 +900,7 @@ private func assertDoesNotLeak(
     utc.timeZone = TimeZone(identifier: "UTC")!
     let model = AppModel(
         store: store, credentials: creds, workflow: workflow, accountBinding: accountBinding,
+        sprintField: InMemorySprintFieldStore(),
         clientFactory: { auth in
             JiraClient(auth: auth, http: ScriptedHTTP([
                 .init(status: 200, body: Data(myselfBody.utf8)),

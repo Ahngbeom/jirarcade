@@ -44,11 +44,23 @@ struct TicketCardView: View {
                     .font(.system(size: 9, weight: .bold, design: .monospaced))
                     .foregroundStyle(dueColor)
             }
+            // 이월은 실패 블록이 없을 때만 그린다. 실패 블록은 2줄 메시지에 링크 줄까지
+            // 붙어 35pt를 쓰므로, 이월 줄을 더하면 104pt 콘텐츠 박스를 106pt로 넘긴다.
+            // 대기 중에는 숨기지 않는다 — 대기 줄은 한 줄(11pt)이라 이월을 같이 그려도
+            // 96pt로 8pt가 남고, 이는 메뉴가 뜨는 보통 상태보다 오히려 여유가 크다.
+            // 마감일 줄(바로 위)과 같은 술어로 gate한다 — "실패 블록이 떠 있는가"를 두
+            // 가지 스펠링으로 묻지 않게, 그 판정은 `showsFailureBlock` 하나뿐이다.
+            if slot.sprintCarryOvers > 0, !showsFailureBlock {
+                Text("↻ 스프린트 \(slot.sprintCarryOvers)회")
+                    .font(.system(size: 9, design: .monospaced))
+                    .foregroundStyle(theme.inkTertiary)
+                    .help(sprintTooltip)
+            }
             if let pending {
                 // 남은 시간과 대상 상태·취소를 한 줄에 묶는다 — 별도 줄을 더하면(header
-                // + key + summary×2 + due + pending행 + 새 줄) 112pt 카드에서 여유가
-                // 0pt가 된다(아래 예산 계산 참고). 같은 줄에 붙이는 쪽이 실패 블록과
-                // 같은 예산 안에서 안전하게 들어간다.
+                // + key + summary×2 + due + pending행 + 새 줄) 120pt 카드에서 여유가
+                // 8pt로 줄어든다(아래 예산 계산 참고). 같은 줄에 붙이는 쪽이 실패 블록과
+                // 같은 예산 안에서 더 안전하게 들어간다.
                 HStack(spacing: 4) {
                     Text("→ \(pending.toStatusName)")
                         .font(.system(size: 9, weight: .bold, design: .monospaced))
@@ -205,6 +217,10 @@ struct TicketCardView: View {
     /// 대기(`pending`)가 있으면 항상 대기 배너가 우선이라 실패 블록은 뜨지 않는다
     /// (`AppModel`이 요청 시점에 `transitionFailures`를 지우므로 둘은 원래도 동시에
     /// 채워지지 않는다) — 그래도 뷰가 스스로 판정하도록 조건을 명시한다.
+    ///
+    /// 마감일 줄과 이월 줄 둘 다 "실패 블록이 떠 있는가"를 이 값 하나로 gate한다 —
+    /// 각자 `failure == nil`을 따로 쓰면 `pending`과 `failure`가 함께 채워지는(지금은
+    /// `AppModel`이 만들지 않는) 상태에서 둘이 다른 답을 낸다.
     private var showsFailureBlock: Bool { pending == nil && failure != nil }
 
     private var dueLabel: String? {
@@ -222,5 +238,13 @@ struct TicketCardView: View {
         case .overdue:           return theme.danger
         case .dueIn(let days):   return days <= 3 ? theme.accent : theme.inkTertiary
         }
+    }
+
+    /// `ArcadeCore`는 이름 둘을 사실로만 담는다. 문장은 여기서 만든다 —
+    /// `DueState`·`HygieneNextStep`과 같은 경계다.
+    private var sprintTooltip: String {
+        guard let first = slot.firstSprintName, let latest = slot.latestSprintName
+        else { return "" }
+        return first == latest ? first : "\(first) → \(latest)"
     }
 }

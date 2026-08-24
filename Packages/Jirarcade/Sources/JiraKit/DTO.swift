@@ -10,6 +10,8 @@ public struct JiraIssue: Sendable, Equatable {
     public let assigneeName: String?
     public let dueDate: Date?
     public let updated: Date
+    /// 이 티켓이 속한 스프린트. 필드 ID를 모르거나 값이 없으면 빈 배열이다.
+    public let sprints: [JiraSprint]
 
     /// 테스트와 ArcadeCore의 ObservedIssue 변환이 쓰는 public 이니셜라이저.
     /// 여기 두는 이유: 이 초기화 구문이 하나라도 원본 struct 선언 안에 있어야
@@ -18,7 +20,7 @@ public struct JiraIssue: Sendable, Equatable {
     public init(
         key: String, summary: String, statusName: String, issueType: String,
         priority: String?, assigneeAccountId: String?, assigneeName: String?,
-        dueDate: Date?, updated: Date
+        dueDate: Date?, updated: Date, sprints: [JiraSprint] = []
     ) {
         self.key = key
         self.summary = summary
@@ -29,6 +31,7 @@ public struct JiraIssue: Sendable, Equatable {
         self.assigneeName = assigneeName
         self.dueDate = dueDate
         self.updated = updated
+        self.sprints = sprints
     }
 }
 
@@ -71,8 +74,12 @@ public struct IssuePage: Sendable, Equatable {
 
 /// 검색 응답을 파싱한다. 개별 이슈의 디코딩 실패가 전체를 무효화하지 않는다.
 public enum JiraSearchResponse {
-    public static func decode(_ data: Data) throws -> IssuePage {
-        let envelope = try JSONDecoder().decode(Envelope.self, from: data)
+    public static func decode(_ data: Data, sprintFieldID: String? = nil) throws -> IssuePage {
+        let decoder = JSONDecoder()
+        if let sprintFieldID {
+            decoder.userInfo[.sprintFieldID] = sprintFieldID
+        }
+        let envelope = try decoder.decode(Envelope.self, from: data)
 
         var issues: [JiraIssue] = []
         var failures: [DecodingFailure] = []
@@ -144,6 +151,20 @@ extension JiraSearchResponse {
     }()
 }
 
+public extension CodingUserInfoKey {
+    /// 스프린트 커스텀 필드의 키. 사이트마다 달라 고정 `CodingKeys`로 잡을 수 없으므로
+    /// 디코딩 시점에 주입한다.
+    static let sprintFieldID = CodingUserInfoKey(rawValue: "jirarcade.sprintFieldID")!
+}
+
+/// 런타임에 정해지는 필드 키를 읽기 위한 CodingKey.
+private struct DynamicFieldKey: CodingKey {
+    let stringValue: String
+    init?(stringValue: String) { self.stringValue = stringValue }
+    var intValue: Int? { nil }
+    init?(intValue: Int) { nil }
+}
+
 extension JiraIssue: Decodable {
     private enum CodingKeys: String, CodingKey { case key, fields }
     private enum FieldKeys: String, CodingKey {
@@ -179,5 +200,15 @@ extension JiraIssue: Decodable {
             )
         }
         updated = parsed
+
+        // 스프린트는 부가 정보다. 여기서 실패해도 티켓을 잃으면 안 되므로 전부 `try?`로 받는다.
+        if let fieldID = decoder.userInfo[.sprintFieldID] as? String,
+           let key = DynamicFieldKey(stringValue: fieldID),
+           let dynamic = try? root.nestedContainer(keyedBy: DynamicFieldKey.self, forKey: .fields),
+           let raw = try? dynamic.decodeIfPresent([FailableSprint].self, forKey: key) {
+            sprints = raw.compactMap(\.value)
+        } else {
+            sprints = []
+        }
     }
 }

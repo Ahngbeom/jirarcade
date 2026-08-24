@@ -45,7 +45,9 @@ extension BoardSlot {
         BoardSlot(
             issue: issue, daysStagnant: daysStagnant, tier: tier,
             position: position, row: row,
-            isApproximate: isApproximate, dueState: dueState
+            isApproximate: isApproximate, dueState: dueState,
+            sprintCarryOvers: sprintCarryOvers,
+            firstSprintName: firstSprintName, latestSprintName: latestSprintName
         )
     }
 }

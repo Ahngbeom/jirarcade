@@ -6,7 +6,8 @@ private func slot(_ key: String, at position: Double) -> BoardSlot {
     BoardSlot(
         issue: issue(key: key, status: "In Progress"),
         daysStagnant: 0, tier: .fresh, position: position, row: 0,
-        isApproximate: false, dueState: .none
+        isApproximate: false, dueState: .none,
+        sprintCarryOvers: 0, firstSprintName: nil, latestSprintName: nil
     )
 }
 
