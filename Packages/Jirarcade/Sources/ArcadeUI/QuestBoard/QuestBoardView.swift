@@ -8,6 +8,7 @@ struct QuestBoardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: AppModel
     @Namespace private var cardNamespace
+    @State private var mode: BoardViewMode = .lanes
 
     /// 동기화 전과 "티켓이 없다"를 구분한다. `ObservationCabinet`이 쓰는 것과 같은
     /// 판정(`lastSync`)이다 — 집계값으로 판정하면 백필이 넣은 이벤트 때문에 이 안내가
@@ -37,38 +38,66 @@ struct QuestBoardView: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let board = BoardMetrics(
-                availableWidth: max(geometry.size.width - metrics.gutter * 2, 200),
-                metrics: metrics
-            )
-            let snapshot = model.boardSnapshot(minimumSpacing: board.minimumSpacing)
-
             VStack(spacing: 0) {
-                BoardHUDView(model: model)
-                Divider().overlay(theme.line)
-                ScrollView {
-                    VStack(alignment: .leading, spacing: metrics.sectionGap) {
-                        if model.issues.isEmpty {
-                            emptyState
-                        } else {
-                            ForEach(snapshot.lanes) { lane in
-                                BoardLaneView(
-                                    lane: lane, axis: snapshot.axis, metrics: board,
-                                    model: model, cardNamespace: cardNamespace,
-                                    wipLimit: lane.stage == .active ? model.wipLimit : nil
-                                )
-                            }
-                        }
-                        if !snapshot.unmappedIssues.isEmpty {
-                            UnmappedLaneView(issues: snapshot.unmappedIssues, model: model)
+                HStack(spacing: metrics.sectionGap) {
+                    BoardHUDView(model: model)
+                    Picker("보기", selection: $mode) {
+                        ForEach(BoardViewMode.allCases) { option in
+                            Text(option.label).tag(option)
                         }
                     }
-                    .padding(metrics.gutter)
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .padding(.trailing, metrics.gutter)
+                }
+                Divider().overlay(theme.line)
+
+                // 티켓이 하나도 없으면 두 보기 모두 할 말이 같다. 빈 우주를 그리는 대신
+                // 보드가 쓰던 안내를 그대로 쓴다.
+                if model.issues.isEmpty {
+                    ScrollView {
+                        emptyState.padding(metrics.gutter)
+                    }
+                } else {
+                    switch mode {
+                    case .lanes:
+                        lanes(width: geometry.size.width)
+                    case .orbit:
+                        OrbitView(model: model, cardNamespace: cardNamespace)
+                    }
                 }
             }
             .animation(reduceMotion ? nil : .spring(duration: 0.35),
                        value: model.pendingTransitions)
         }
         .background(theme.surfaceBase)
+    }
+
+    /// 레인 보기. 보드 스냅샷을 여기서 만드는 이유는 궤도 보기일 때 그 계산을
+    /// 하지 않기 위해서다 — 순수 함수라 비싸지는 않지만, 쓰지 않는 좌표를 매 렌더마다
+    /// 만들 이유도 없다.
+    private func lanes(width: Double) -> some View {
+        let board = BoardMetrics(
+            availableWidth: max(width - metrics.gutter * 2, 200),
+            metrics: metrics
+        )
+        let snapshot = model.boardSnapshot(minimumSpacing: board.minimumSpacing)
+
+        return ScrollView {
+            VStack(alignment: .leading, spacing: metrics.sectionGap) {
+                ForEach(snapshot.lanes) { lane in
+                    BoardLaneView(
+                        lane: lane, axis: snapshot.axis, metrics: board,
+                        model: model, cardNamespace: cardNamespace,
+                        wipLimit: lane.stage == .active ? model.wipLimit : nil
+                    )
+                }
+                if !snapshot.unmappedIssues.isEmpty {
+                    UnmappedLaneView(issues: snapshot.unmappedIssues, model: model)
+                }
+            }
+            .padding(metrics.gutter)
+        }
     }
 }
