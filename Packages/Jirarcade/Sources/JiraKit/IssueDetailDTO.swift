@@ -71,7 +71,7 @@ public struct JiraComment: Sendable, Equatable, Identifiable {
         } catch {
             throw JiraError.decoding(context: "comments: \(error)")
         }
-        return page.comments.compactMap { entry in
+        return page.comments.compactMap(\.value).compactMap { entry in
             guard let id = entry.id, let raw = entry.created,
                   let created = JiraTimestamp.parse(raw) else { return nil }
             return JiraComment(id: id,
@@ -82,7 +82,7 @@ public struct JiraComment: Sendable, Equatable, Identifiable {
     }
 
     private struct Page: Decodable {
-        let comments: [Entry]
+        let comments: [FailableEntry]
         struct Entry: Decodable {
             let id: String?
             let created: String?
@@ -102,6 +102,19 @@ public struct JiraComment: Sendable, Equatable, Identifiable {
             }
 
             struct Author: Decodable { let displayName: String? }
+        }
+
+        /// 원소 하나가 깨져도 배열 전체를 버리지 않는다. `decodeIfPresent`는 키가
+        /// 없거나 `null`인 것만 견딘다 — 키는 있는데 모양이 안 맞으면(`author`가
+        /// `[]`이거나 `id`가 숫자인 경우 등, 앱 액터·익명화된 사용자에서 실제로
+        /// 나온다) `Entry.init(from:)`이 그대로 던지고, `[Entry]`로 두면 그 하나가
+        /// 컨테이너 전체를 무너뜨린다. `SprintDTO.swift`의 `FailableSprint`,
+        /// `ADFNode.swift`의 `FailableADFNode`와 같은 도구다.
+        struct FailableEntry: Decodable {
+            let value: Entry?
+            init(from decoder: Decoder) throws {
+                value = try? Entry(from: decoder)
+            }
         }
     }
 }

@@ -783,11 +783,21 @@ public final class AppModel {
         // 관리자가 사이트에서 스프린트 필드를 없앤 경우와 구분되지 않는다. 조회 자체가
         // 실패하면(네트워크 등) 건드리지 않는다 — 전환이었다면 위에서 이미 지워졌고,
         // 전환이 아니었다면 지금 저장된 값이 여전히 맞을 가능성이 높다.
+        //
+        // "실패"에는 카탈로그를 **읽지 못한 것**도 들어간다 — `try?`로 뭉뚱그리면
+        // `sprintFieldID(in:)`이 던진 디코딩 실패와 "카탈로그는 읽었는데 스프린트
+        // 필드가 없더라"가 같은 nil로 보인다. 전자는 이번 조회가 사이트를 증언한 게
+        // 아니므로 지우면 안 된다(최종 전체 브랜치 리뷰 Finding 3).
         if let data = try? await candidate.fields() {
-            if let id = try? JiraFieldCatalog.sprintFieldID(in: data) {
-                try? sprintField.save(id)
-            } else {
-                try? sprintField.clear()
+            do {
+                if let id = try JiraFieldCatalog.sprintFieldID(in: data) {
+                    try? sprintField.save(id)
+                } else {
+                    try? sprintField.clear()
+                }
+            } catch {
+                // 카탈로그를 읽지 못했다 — "없음"이 아니라 "모른다"다. 저장된 값이
+                // 있다면 손대지 않는다.
             }
         }
 

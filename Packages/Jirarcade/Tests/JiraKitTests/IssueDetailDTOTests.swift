@@ -94,6 +94,25 @@ import Foundation
     #expect(comments[1].id == "13")
 }
 
+/// `author`가 있긴 한데 모양이 안 맞으면(`[]`) `decodeIfPresent`가 그냥 넘어가지
+/// 않고 던진다 — `id`가 숫자인 경우도 마찬가지다. 둘 다 한 페이지에 섞여 있어도
+/// 멀쩡한 댓글은 살아야 한다. 최종 전체 브랜치 리뷰 Finding 2.
+@Test func aStructurallyInvalidAuthorOrIdDoesNotDropThePage() throws {
+    let json = #"""
+    {"comments":[
+      {"id":"20","author":{"displayName":"정상"},"created":"2026-08-24T09:00:00.000+0900","body":null},
+      {"id":"21","author":[],"created":"2026-08-24T09:05:00.000+0900","body":null},
+      {"id":21,"author":{"displayName":"숫자 id"},"created":"2026-08-24T09:10:00.000+0900","body":null}
+    ]}
+    """#
+
+    let comments = try JiraComment.decodePage(Data(json.utf8))
+
+    #expect(comments.count == 1)
+    #expect(comments[0].id == "20")
+    #expect(comments[0].authorName == "정상")
+}
+
 /// 상세 본문이 구조적으로 잘못된 티켓도 제목은 살린다 — 구조가 깨진 본문 때문에
 /// 상세 전체가 실패하면 제목도 못 보고 댓글도 못 본다.
 @Test func anInvalidDescriptionDoesNotDropTheSummary() throws {
