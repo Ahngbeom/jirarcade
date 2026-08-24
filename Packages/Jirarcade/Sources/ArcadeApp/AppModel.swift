@@ -90,6 +90,15 @@ public final class AppModel {
     /// 미러에는 들어가지 않는 순전히 화면용 값이다(`IssueDetail.swift` 참고).
     public private(set) var detailState: IssueDetailState = .idle
 
+    /// 저장이 날아가 있는 티켓. 버튼을 잠가 이중 제출을 막는다 — 댓글 POST는
+    /// 멱등이 아니라 두 번 누르면 댓글이 둘이 된다.
+    public private(set) var editInFlight: Set<String> = []
+    /// 화면에 그릴 실패 문구. **Jira가 준 사유가 들어 있지 않다.**
+    public private(set) var editFailures: [String: String] = [:]
+    private var editTasks: [String: Task<Void, Never>] = [:]
+
+    var editTaskCountForTesting: Int { editTasks.count }
+
     /// 대기 중인 타이머. 취소하려면 이걸 취소한다.
     private var transitionTasks: [String: Task<Void, Never>] = [:]
     private let transitionSleep: @Sendable (Duration) async throws -> Void
@@ -220,6 +229,14 @@ public final class AppModel {
         transitionTasks = [:]
         pendingTransitions = [:]
         transitionFailures = [:]
+        // 진행 중인 저장도 로그아웃의 대상이다. 남겨두면 다음 계정으로 로그인한 뒤
+        // 완료 핸들러가 그 계정의 화면에 실패를 그리거나 동기화를 유발한다.
+        // 전이 타이머와 같은 이유이며, 같은 사고가 실제로 출하된 적이 있다.
+        editTasks.values.forEach { $0.cancel() }
+        editTasks = [:]
+        editInFlight = []
+        editFailures = [:]
+        detailState = .idle
         // 세대를 올려 진행 중이던 페치가 끝나도 이 계정의 스토어에 쓰지 못하게 막는다
         // (I4). 계정 바인딩(`accountBinding`)은 여기서 지우지 않는다 — 지우면 다음 로그인이 "계정이
         // 바뀌었는지" 판단할 근거를 잃는다. validate() 참고.
@@ -947,6 +964,85 @@ public final class AppModel {
 
     public func closeDetail() {
         detailState = .idle
+    }
+
+    /// 제목을 저장한다.
+    ///
+    /// 취소 창을 두지 않는 이유: 전이는 한 번 클릭이라 오조작이 쉽지만, 텍스트는
+    /// 입력과 저장 버튼에 이미 숙고가 들어 있다.
+    ///
+    /// **충돌은 감지하지 않는다.** Jira Cloud의 `PUT /issue`에는 낙관적 잠금이 없어
+    /// 409도 412도 오지 않는다. Jira 웹과 같은 마지막-쓰기-승리다.
+    public func saveSummary(issueKey: String, summary: String) async {
+        guard let client else { return }
+        // 미러에 없는 티켓은 화면에도 없다 — 사용자가 고를 수 있는 상황이 아니다.
+        guard issues.contains(where: { $0.key == issueKey }) else { return }
+        guard !editInFlight.contains(issueKey) else { return }
+
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        editInFlight.insert(issueKey)
+        editFailures[issueKey] = nil
+        let generation = syncGeneration
+
+        // `AppModel`은 `@Observable @MainActor`다. 이 `Task`는 같은 격리를 물려받으므로
+        // 안에서 상태를 직접 만져도 되고, 정리를 중첩 `Task`로 미루지 않아 완료 시점이
+        // 확정된다 — 미루면 `await task.value`가 돌아온 뒤에도 `editInFlight`가
+        // 잠깐 남아 있어 호출자가 본 상태와 실제가 어긋난다.
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.finishEdit(issueKey: issueKey) }
+            do {
+                try await client.updateSummary(issueKey: issueKey, summary: trimmed)
+            } catch JiraError.unauthorized {
+                // 만료 배너가 이미 같은 사실을 말한다. 시트에도 실패를 띄우면 인증
+                // 문제가 두 번 보이고, 사용자는 티켓 문제와 세션 문제를 구분하지 못한다.
+                if generation == self.syncGeneration { self.phase = .expired }
+                return
+            } catch {
+                if generation == self.syncGeneration {
+                    self.editFailures[issueKey] = Self.editFailureMessage(error)
+                }
+                return
+            }
+            // 저장하는 동안 계정이 바뀌었으면 이 결과는 남의 것이다.
+            guard generation == self.syncGeneration else { return }
+            // XP를 직접 주지 않는다. 동기화가 관측해 여느 이벤트와 똑같이 처리한다 —
+            // 점수가 관측 로그의 순수 함수라는 불변을 지키는 유일한 방법이다.
+            // 제목 수정은 미러의 summary를 갱신해야 카드의 제목이 맞는다.
+            await self.syncNow(reason: .manual)
+        }
+        editTasks[issueKey] = task
+        await task.value
+    }
+
+    public func dismissEditFailure(issueKey: String) {
+        editFailures[issueKey] = nil
+    }
+
+    private func finishEdit(issueKey: String) {
+        editInFlight.remove(issueKey)
+        editTasks[issueKey] = nil
+    }
+
+    /// 화면에 띄울 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
+    ///
+    /// 400은 `JiraError.transitionRejected(reason:)`로 들어오고 그 `reason`은 Jira
+    /// 응답의 `errorMessages`를 그대로 담는다. 본문에는 이메일이 섞일 수 있다.
+    private static func editFailureMessage(_ error: any Error) -> String {
+        switch error {
+        case JiraError.transitionRejected:
+            return "Jira가 이 수정을 받지 않았습니다. Jira에서 확인해 주세요."
+        case JiraError.offline:
+            return "연결되지 않았습니다. 다시 시도해 주세요."
+        case JiraError.forbidden:
+            return "이 티켓을 수정할 권한이 없습니다."
+        case JiraError.notFound:
+            return "티켓을 찾을 수 없습니다."
+        default:
+            return "저장하지 못했습니다. 다시 시도해 주세요."
+        }
     }
 
     /// 시트에 띄울 조회 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
