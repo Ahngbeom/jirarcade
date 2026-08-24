@@ -1229,7 +1229,7 @@ public struct JiraIssueSource: IssueSource {
         // 스프린트를 쓰지 않는 사이트도 있고, 없다는 것은 오류가 아니라 사실이다.
         // 표시가 빠질 뿐 나머지는 그대로 돈다.
         if let data = try? await candidate.fields(),
-           let id = try? JiraFieldCatalog.sprintFieldID(in: data), let id {
+           let id = try? JiraFieldCatalog.sprintFieldID(in: data) {
             try? sprintField.save(id)
         }
 ```
