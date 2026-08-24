@@ -10,7 +10,13 @@ public enum ADFBuilder {
     /// - 문단 안의 줄바꿈 하나는 `hardBreak`다.
     /// - 앞뒤 공백은 잘라내고, 남는 것이 없으면 `nil`이다 — 빈 댓글은 보내지 않는다.
     public static func paragraphs(from text: String) -> ADFDocument? {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        // Normalize line endings first: CRLF and CR → LF only.
+        // This prevents stray \r from reaching text nodes and breaking paragraph detection.
+        let normalized = text
+            .replacingOccurrences(of: "\r\n", with: "\n")
+            .replacingOccurrences(of: "\r", with: "\n")
+
+        let trimmed = normalized.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !trimmed.isEmpty else { return nil }
 
         var paragraphs: [[String]] = []

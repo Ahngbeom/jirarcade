@@ -44,3 +44,25 @@ import JiraKit
     #expect(json["type"] as? String == "doc")
     #expect(json["version"] as? Int == 1)
 }
+
+/// CRLF line endings from Windows or web editors must not corrupt text.
+/// Paragraph boundaries with CRLF must still split correctly, and no CR should appear in text nodes.
+@Test func crlfAtParagraphBoundaryPreservesContentAndBoundary() throws {
+    let doc = try #require(ADFBuilder.paragraphs(from: "첫 문단\r\n\r\n둘째 문단"))
+
+    #expect(doc.content.count == 2)
+    #expect(doc.content[0].content == [.init(type: "text", text: "첫 문단")])
+    #expect(doc.content[1].content == [.init(type: "text", text: "둘째 문단")])
+}
+
+/// Mid-paragraph CRLF must become hardBreak with clean text nodes, no CR characters embedded.
+@Test func crlfWithinParagraphBecomesCleanHardBreak() throws {
+    let doc = try #require(ADFBuilder.paragraphs(from: "한 줄\r\n다음 줄"))
+
+    #expect(doc.content.count == 1)
+    #expect(doc.content[0].content == [
+        .init(type: "text", text: "한 줄"),
+        .init(type: "hardBreak", text: nil),
+        .init(type: "text", text: "다음 줄"),
+    ])
+}
