@@ -1215,7 +1215,7 @@ import JiraKit
 /// 돌기 때문에 이 처리를 공짜로 얻지 못한다.
 @MainActor
 @Test func aFailedDetailFetchDoesNotQuoteJira() async throws {
-    let rejected = #"{"errorMessages":["someone@example.com 계정에 권한이 없습니다"]}"#
+    let rejected = #"{"errorMessages":["someone@example.com 님의 요청이 거부되었습니다: 사용자 정의 필드 XYZ 필요"]}"#
     let model = try makeModel(http: {
         ScriptedHTTP([
             .init(status: 200, body: Data(myselfBody.utf8)),
@@ -1231,7 +1231,8 @@ import JiraKit
         return
     }
     #expect(!message.contains("someone@example.com"))
-    #expect(!message.contains("권한이 없습니다"))
+    #expect(!message.contains("XYZ"))
+    #expect(!message.contains("거부되었습니다"))
 }
 
 /// 시트를 닫으면 받아온 것을 버린다. 남겨두면 다음에 다른 티켓을 열 때
@@ -1342,18 +1343,37 @@ public enum IssueDetailState: Sendable, Equatable {
             detailState = .idle
         } catch {
             guard generation == syncGeneration else { return }
-            // 동기화 경로의 축약을 여기서는 직접 불러야 한다 — 시트 조회는
-            // performSync 밖에서 돌아 그 처리를 물려받지 못한다.
-            detailState = .failed(redactedErrorDescription(error))
+            // 앱이 직접 쓴 문구를 쓴다. `redactedErrorDescription`은 로그와 동기화
+            // 이력을 위한 타입 이름(`JiraError.forbidden` 같은)이라 화면에 놓을 것이 아니다.
+            detailState = .failed(Self.detailFailureMessage(error))
         }
     }
 
     public func closeDetail() {
         detailState = .idle
     }
+
+    /// 시트에 띄울 조회 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
+    ///
+    /// 400은 `JiraError.transitionRejected(reason:)`로 들어오고 그 `reason`은 Jira 응답의
+    /// `errorMessages`를 그대로 담는다. 본문에는 이메일이 섞일 수 있다.
+    ///
+    /// 시트 조회는 동기화 경로 밖에서 돌기 때문에 이 처리를 물려받지 못한다 — 여기서 직접 한다.
+    private static func detailFailureMessage(_ error: any Error) -> String {
+        switch error {
+        case JiraError.offline:
+            return "연결되지 않았습니다. 다시 시도해 주세요."
+        case JiraError.forbidden:
+            return "이 티켓을 볼 권한이 없습니다."
+        case JiraError.notFound:
+            return "티켓을 찾을 수 없습니다."
+        default:
+            return "티켓을 불러오지 못했습니다. 다시 시도해 주세요."
+        }
+    }
 ```
 
-**주의:** `redactedErrorDescription(_:)`이 파일 스코프 함수인지 타입 메서드인지 확인하고 호출 형태를 맞춘다 — `rg "func redactedErrorDescription" Sources/ArcadeApp/`.
+**확인된 것:** `redactedErrorDescription(_:)`은 `JiraKit/ErrorRedaction.swift`의 파일 스코프 공개 함수이고, `"JiraError.forbidden"` 같은 **타입 이름**을 돌려준다. 로그와 동기화 이력을 위한 것이지 화면 문구가 아니다. 시트에는 위 `detailFailureMessage(_:)`를 쓴다.
 
 - [ ] **Step 5: 테스트가 통과하는지 확인한다**
 
