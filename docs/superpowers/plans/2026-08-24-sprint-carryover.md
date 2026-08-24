@@ -929,7 +929,7 @@ public final class InMemorySprintFieldStore: SprintFieldStore, @unchecked Sendab
 
 ```swift
     /// 이 티켓이 거쳐 온 스프린트 수 - 1. 스프린트가 없거나 하나뿐이면 0이다.
-    /// **채점에 쓰지 않는다** — 표시 전용이다(스펙 §2).
+    /// **채점에 쓰지 않는다** — 표시 전용이다.
     public let sprintCarryOvers: Int
     /// 가장 이른 스프린트 이름. 뷰가 "A → B" 문장을 만들 때 쓴다.
     public let firstSprintName: String?
