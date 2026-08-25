@@ -1052,3 +1052,16 @@ private func uiSource(_ fileName: String) throws -> String {
     #expect(badges >= 3, "배지 둘과 헬퍼 정의 하나 — 둘 다 같은 길로 마법사에 이어져야 한다")
     #expect(text.contains("reopenMapping()"), "배지가 마법사를 열어야 한다")
 }
+
+/// 플로어가 동기화 진행을 화면에 알리는지 소스로 확인한다.
+///
+/// 모델에 `isSyncing`이 있어도 화면이 읽지 않으면 아무 소용이 없다. 새로고침을 눌러도
+/// 반응이 없어 앱이 멈춘 것처럼 보인다는 검수 지적이 이 배선을 요구했다.
+@Test func theFloorShowsThatASyncIsRunning() throws {
+    let text = try uiSource("ArcadeFloorView.swift")
+
+    #expect(text.contains("model.isSyncing"), "화면이 동기화 진행을 읽어야 한다")
+    #expect(text.contains("ProgressView()"), "정지한 문구만으로는 진행이 읽히지 않는다")
+    #expect(text.contains(".disabled(model.isSyncing)"),
+            "도는 중에 새로고침을 또 누르면 요청이 쌓인다")
+}

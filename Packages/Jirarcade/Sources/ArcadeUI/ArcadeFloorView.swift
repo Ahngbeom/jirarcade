@@ -256,13 +256,24 @@ struct ArcadeFloorView: View {
             HStack(spacing: metrics.sectionGap) {
                 levelReadout
                 Spacer()
+                // 도는 동안 회전 표시를 문구 앞에 둔다. 문구만 바꾸면 정지한 글자라
+                // "지금 무언가 일어나고 있다"가 읽히지 않는다 — 새로고침을 눌러도
+                // 앱이 멈춘 것처럼 보였다는 것이 이 표시를 더한 이유다.
+                if model.isSyncing {
+                    ProgressView()
+                        .controlSize(.small)
+                        .tint(theme.accent)
+                }
                 Text(syncText)
                     .arcadeType(.readout, .s)
                     .foregroundStyle(theme.inkTertiary)
                 Button("설정") { showingSettings = true }
                     .arcadeType(.readout, .s)
+                // 도는 중에는 잠근다. 연달아 누르면 스케줄러가 요청을 쌓고, 사용자는
+                // 첫 번째가 끝난 것인지 두 번째가 시작된 것인지 알 수 없다.
                 Button("새로고침") { Task { await model.syncNow() } }
                     .arcadeType(.readout, .s)
+                    .disabled(model.isSyncing)
             }
         }
         .padding(.horizontal, metrics.gutter)
@@ -347,6 +358,11 @@ struct ArcadeFloorView: View {
         // 겹쳐 말하면 인증 문제를 네트워크 문제로 오해하게 만든다.
         if model.phase == .expired {
             return "토큰이 만료됐습니다. 다시 로그인해 주세요."
+        }
+        // 도는 중이면 지난 실패보다 먼저 말한다 — 지금 재시도하고 있는 중인데
+        // "연결하지 못했습니다"가 떠 있으면 방금 누른 새로고침이 무시된 것처럼 읽힌다.
+        if model.isSyncing {
+            return "동기화 중…"
         }
         // 실패 배지가 "아직 동기화하지 않았습니다"보다 먼저 와야 한다 — 한 번도 성공한 적
         // 없이 계속 실패 중인 사용자에게 "아직 안 했다"는 태평한 문구는 오해를 준다.
