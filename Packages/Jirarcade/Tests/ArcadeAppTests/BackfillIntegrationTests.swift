@@ -1065,3 +1065,23 @@ private func uiSource(_ fileName: String) throws -> String {
     #expect(text.contains(".disabled(model.isSyncing)"),
             "도는 중에 새로고침을 또 누르면 요청이 쌓인다")
 }
+
+/// 궤도 상세가 앱 창 안에 머무는지 소스로 확인한다.
+///
+/// macOS에서 `.popover`는 별도 윈도우로 떠서 앱 바깥으로 나간다. 검수에서 그 점이
+/// 지적됐고, 같은 뷰 트리 안의 카드로 바꿨다.
+@Test func theOrbitDetailStaysInsideTheWindow() throws {
+    let text = try uiSource("QuestBoard/OrbitView.swift")
+
+    #expect(!text.contains(".popover("), "팝오버는 앱 창 밖으로 나간다")
+    #expect(text.contains("detailOverlay"), "상세는 궤도와 같은 뷰 트리에 있어야 한다")
+}
+
+/// 상세 카드가 키보드로도 닫히는지 확인한다.
+///
+/// 바깥 탭만으로 닫히면 마우스 없이는 빠져나올 수 없다.
+@Test func theOrbitDetailClosesWithTheKeyboard() throws {
+    let text = try uiSource("QuestBoard/PlanetDetailCard.swift")
+
+    #expect(text.contains(".cancelAction"), "Esc가 유일한 키보드 출구다")
+}
