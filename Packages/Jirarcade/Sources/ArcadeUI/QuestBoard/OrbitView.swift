@@ -49,18 +49,28 @@ struct OrbitView: View {
                     systemView(system, snapshot: snapshot, metrics: metrics)
                 }
                 driftView(snapshot, metrics: metrics)
+                detailOverlay(snapshot)
             }
             // 트리거는 스냅샷 전체가 아니라 `membershipSignature`다 — 태양 중심은
             // `zoomProgress`에 따라서도 움직이는데, 스냅샷 전체를 걸면 확대할 때마다
             // 스프링이 걸려 손가락과 화면이 어긋난다. 소속·등급이 실제로 바뀔 때만 켠다.
             .animation(reduceMotion ? nil : .spring(duration: 0.6),
                        value: snapshot.membershipSignature)
+            .animation(reduceMotion ? nil : .easeOut(duration: 0.16), value: selected)
             .frame(width: proxy.size.width, height: proxy.size.height)
             // `position`으로 놓은 자식은 프레임을 넘어도 잘리지 않는다. 궤도는 줌인하면
             // 성계가 화면 밖까지 뻗으므로, 자르지 않으면 행성과 라벨이 위쪽 HUD 줄을
             // 침범해 스코어보드 글자 위에 겹쳐 그려진다.
             .clipped()
             .contentShape(Rectangle())
+            // 스크롤은 SwiftUI 제스처로 오지 않아 AppKit에서 받아 올린다. 이 층은
+            // 히트 테스트를 흘려보내므로 아래의 행성 탭과 드래그 팬이 그대로 산다.
+            .overlay(
+                ScrollEventCatcher { delta, zooming in
+                    handleScroll(delta, zooming: zooming, viewport: proxy.size,
+                                 extent: extent, snapshot: snapshot, metrics: metrics)
+                }
+            )
             .gesture(pan(viewport: proxy.size, extent: extent))
             .gesture(magnify(viewport: proxy.size, extent: extent, snapshot: snapshot, metrics: metrics))
             .background(theme.surfaceBase)
@@ -184,17 +194,6 @@ struct OrbitView: View {
             .transition(.opacity.combined(with: .scale(scale: 0.3)))
             .position(point)
             .onTapGesture { selected = planet.id }
-            .popover(isPresented: Binding(
-                get: { selected == planet.id },
-                set: { if !$0 { selected = nil } }
-            )) {
-                PlanetPopover(planet: planet, siteHost: model.siteHost)
-                    // 팝오버는 환경을 물려받지 않는다. 테마와 밀도를 **함께** 다시 넣어야
-                    // 안팎의 글자 크기가 같아진다 — `ArcadeFloorView`의 시트가 같은 이유로
-                    // 같은 두 줄을 갖고 있다.
-                    .environment(\.arcadeTheme, theme)
-                    .environment(\.arcadeMetrics, density)
-            }
 
         if metrics.showsPlanetLabels {
             Text(planet.issue.key)
@@ -203,6 +202,33 @@ struct OrbitView: View {
                 .fixedSize()
                 .transition(.opacity.combined(with: .scale(scale: 0.3)))
                 .position(x: point.x, y: point.y + metrics.diameter(for: planet) / 2 + 2)
+        }
+    }
+
+    /// 고른 행성의 상세를 궤도 위에 띄운다.
+    ///
+    /// `.popover`를 쓰지 않는 이유: macOS에서 팝오버는 **별도 윈도우**로 떠서 앱 창
+    /// 바깥으로 나간다. 같은 뷰 트리 안에 두면 창을 벗어나지 않고, 덤으로 테마·밀도
+    /// 재주입 두 줄도 필요 없어진다 — 환경이 그대로 내려오기 때문이다.
+    ///
+    /// 성계를 가리지 않고 살짝 어둡게만 덮는 이유는 맥락이다. "어느 행성을 눌렀는지"가
+    /// 뒤에 계속 보여야 카드가 어디서 나왔는지 읽힌다.
+    @ViewBuilder
+    private func detailOverlay(_ snapshot: OrbitSnapshot) -> some View {
+        if let id = selected,
+           let planet = (snapshot.systems.flatMap(\.planets) + snapshot.drifters)
+               .first(where: { $0.id == id }) {
+            ZStack {
+                // 바깥을 눌러 닫는다. `contentShape`가 없으면 투명한 곳이 탭을 받지 않는다.
+                theme.surfaceBase.opacity(0.72)
+                    .contentShape(Rectangle())
+                    .onTapGesture { selected = nil }
+
+                PlanetDetailCard(planet: planet, siteHost: model.siteHost) {
+                    selected = nil
+                }
+            }
+            .transition(.opacity)
         }
     }
 
@@ -300,6 +326,36 @@ struct OrbitView: View {
             CGSize(width: -anchor.x * newScale, height: -anchor.y * newScale),
             extent: extent, scale: newScale
         )
+    }
+
+    /// 스크롤 한 번을 배율이나 이동으로 옮긴다.
+    ///
+    /// ⌘와 함께면 확대·축소, 아니면 화면을 민다 — 지도 앱들이 쓰는 관례다. 확대 쪽이
+    /// `zoomPan`을 거치는 이유는 버튼 줌과 같다: 논리 원점에는 성계가 없어서, 보정
+    /// 없이 배율만 키우면 성계가 사방으로 흩어져 빈 가운데만 남는다.
+    private func handleScroll(
+        _ delta: CGSize, zooming: Bool, viewport: CGSize, extent: Double,
+        snapshot: OrbitSnapshot, metrics: OrbitMetrics
+    ) {
+        if zooming {
+            // 세로 스크롤만 배율에 쓴다. 가로까지 섞으면 대각선으로 굴릴 때
+            // 배율이 의도보다 크게 튄다.
+            let factor = 1 + delta.height / 200
+            guard factor > 0 else { return }
+            let oldScale = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
+            let newScale = clampScale(oldScale * factor, viewport: viewport, extent: extent)
+            scale = newScale
+            committedPan = zoomPan(
+                factor: factor, oldScale: oldScale, newScale: newScale,
+                snapshot: snapshot, metrics: metrics, extent: extent
+            )
+        } else {
+            committedPan = clampPan(
+                CGSize(width: committedPan.width + delta.width,
+                       height: committedPan.height + delta.height),
+                extent: extent, scale: metrics.scale
+            )
+        }
     }
 
     private func pan(viewport: CGSize, extent: Double) -> some Gesture {

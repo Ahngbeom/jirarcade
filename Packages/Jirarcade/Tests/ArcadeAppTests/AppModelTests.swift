@@ -995,3 +995,49 @@ private func jiraTransition(id: String, name: String, to status: String) throws 
     #expect(slot?.firstSprintName == "DEMO 스프린트 (1)")
     #expect(slot?.latestSprintName == "DEMO 스프린트 (5)")
 }
+
+// MARK: - 동기화 진행 표시
+
+/// 동기화가 도는 동안 화면이 그 사실을 알 수 있어야 한다.
+///
+/// 이 값이 없으면 새로고침을 눌러도 아무 반응이 없어 앱이 멈춘 것처럼 보인다.
+/// 백필은 `isBackfilling`으로 같은 일을 이미 하고 있다.
+@MainActor
+@Test func syncingRaisesAFlagTheScreenCanSee() async throws {
+    let creds = InMemoryCredentialStore(seeded: .init(site: "example.atlassian.net",
+                                                      email: "a@example.com", token: "t"))
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),
+            .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
+        ])
+    })
+    await model.start()
+
+    #expect(!model.isSyncing, "동기화 전에는 꺼져 있다")
+    await model.syncNow()
+    #expect(!model.isSyncing, "동기화가 끝나면 다시 꺼진다")
+}
+
+/// 실패해도 표시가 꺼져야 한다. 켜진 채로 남으면 새로고침 버튼이 영영 비활성되고
+/// 사용자는 앱을 다시 켜는 것 말고 할 수 있는 일이 없다.
+@MainActor
+@Test func syncingFlagClearsEvenWhenTheSyncFails() async throws {
+    let creds = InMemoryCredentialStore(seeded: .init(site: "example.atlassian.net",
+                                                      email: "a@example.com", token: "t"))
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),
+            .init(status: 500, body: Data()),                  // 검색 실패
+        ])
+    })
+    await model.start()
+
+    await model.syncNow()
+
+    #expect(!model.isSyncing, "실패 경로에서도 반드시 꺼진다")
+}

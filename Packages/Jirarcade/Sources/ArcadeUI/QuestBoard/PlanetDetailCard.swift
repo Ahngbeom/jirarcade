@@ -1,16 +1,21 @@
 import SwiftUI
 import ArcadeCore
 
-/// 행성을 눌렀을 때 뜨는 읽기 전용 요약.
+/// 행성을 눌렀을 때 궤도 위에 뜨는 읽기 전용 상세.
 ///
 /// `TicketCardView`를 재사용하지 않는 이유는 그 뷰가 상태 옮기기 메뉴와 5초 실행 취소
 /// UI를 품고 있기 때문이다 — 궤도는 보는 화면이고 전이는 레인에서 한다(스펙 §12).
-/// 대신 표기는 카드와 맞춘다.
-struct PlanetPopover: View {
+/// 대신 표기는 `TicketPresentation`을 함께 거쳐 카드와 어긋나지 않는다.
+///
+/// 팝오버가 아니라 같은 뷰 트리 안의 카드인 이유: macOS 팝오버는 별도 윈도우로 떠서
+/// 앱 창 바깥으로 나간다.
+struct PlanetDetailCard: View {
     @Environment(\.arcadeTheme) private var theme
     @Environment(\.arcadeMetrics) private var metrics
     let planet: OrbitPlanet
     let siteHost: String?
+    /// 닫기. 바깥 탭과 같은 일을 하지만 버튼이 있어야 키보드로도 닿는다.
+    let onClose: () -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: metrics.rowGap) {
@@ -50,7 +55,18 @@ struct PlanetPopover: View {
             }
         }
         .padding(metrics.sectionGap)
-        .frame(width: metrics.size(.ticketCardWidth))
+        .frame(width: metrics.size(.ticketCardWidth) * 1.35, alignment: .leading)
+        .background(theme.surfaceRaised)
+        .overlay(Rectangle().strokeBorder(theme.line, lineWidth: 1))
+        .overlay(alignment: .topTrailing) {
+            Button("✕", action: onClose)
+                .buttonStyle(.plain)
+                .arcadeType(.readout, .s)
+                .foregroundStyle(theme.inkTertiary)
+                .padding(metrics.rowGap)
+                // Esc로도 닫힌다 — 카드가 열린 채 키보드만 쓰는 경우의 유일한 출구다.
+                .keyboardShortcut(.cancelAction)
+        }
     }
 
     /// 등급 라벨·색·정체일 표기·마감 표기·스프린트 툴팁은 `TicketPresentation`에
