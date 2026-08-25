@@ -29,11 +29,17 @@ struct OrbitView: View {
             // 순수 함수 두 번이라 값이 흔들리지 않는다.
             let extent = model.orbitSnapshot(zoomProgress: 0).extent
             let base = scale ?? OrbitMetrics.fitScale(viewport: proxy.size, extent: extent)
+            let clampedScale = clampScale(base * gestureScale, viewport: proxy.size, extent: extent)
             let metrics = OrbitMetrics(
                 viewport: proxy.size,
-                scale: clampScale(base * gestureScale, viewport: proxy.size, extent: extent),
-                pan: CGSize(width: committedPan.width + dragPan.width,
-                            height: committedPan.height + dragPan.height),
+                scale: clampedScale,
+                // 클램프는 `metrics.pan`을 만드는 이 자리에서 매 프레임 건다 — 드래그가
+                // 진행 중이든 끝났든 화면에 나가는 값은 항상 상한 안에 있다.
+                pan: clampPan(
+                    CGSize(width: committedPan.width + dragPan.width,
+                           height: committedPan.height + dragPan.height),
+                    extent: extent, scale: clampedScale
+                ),
                 extent: extent
             )
             let snapshot = model.orbitSnapshot(zoomProgress: metrics.zoomProgress)
@@ -55,7 +61,7 @@ struct OrbitView: View {
             // 침범해 스코어보드 글자 위에 겹쳐 그려진다.
             .clipped()
             .contentShape(Rectangle())
-            .gesture(pan(viewport: proxy.size))
+            .gesture(pan(viewport: proxy.size, extent: extent))
             .gesture(magnify(viewport: proxy.size, extent: extent))
             .background(theme.surfaceBase)
             .overlay(alignment: .bottomTrailing) {
@@ -85,23 +91,47 @@ struct OrbitView: View {
         // 태양. 줌아웃에서는 같은 `Stage`의 태양들이 한 점에 모이므로 상태명을 각자
         // 그리면 글자가 포개져 읽을 수 없다. 그때는 그 무리의 첫 태양에만 `Stage`
         // 이름을 적는다 — 보드 레인이 쓰는 이름과 같은 것이라 두 화면이 이어진다.
-        VStack(spacing: density.tightGap) {
-            Circle()
-                .fill(theme.accent)
-                .frame(width: metrics.length(OrbitLayout.planetArc) * 1.4,
-                       height: metrics.length(OrbitLayout.planetArc) * 1.4)
-            if let label = systemLabel(system, in: snapshot, metrics: metrics) {
-                Text(label)
-                    .arcadeType(.readout, .xs, weight: .bold)
-                    .foregroundStyle(theme.inkSecondary)
-                    .fixedSize()
-            }
-        }
-        .position(centre)
+        //
+        // 원과 라벨을 **각각** `.position`으로 놓는다 — `VStack { 원; 라벨 }.position(centre)`로
+        // 묶으면 `.position`이 VStack 전체의 중심을 centre에 맞추므로, 원 자체의 중심은
+        // centre에서 라벨 절반 높이 + 간격만큼 위로 밀린다. 기본 배율에서 그 어긋남이
+        // 태양 반지름(약 4.7pt)보다 크다. 그런데 행성은 `system.center`(=centre)를
+        // 중심으로 도므로, 태양이 자기 궤도 중심에 있지 않게 된다.
+        Circle()
+            .fill(theme.accent)
+            .frame(width: metrics.length(OrbitLayout.planetArc) * 1.4,
+                   height: metrics.length(OrbitLayout.planetArc) * 1.4)
+            .position(centre)
 
-        ForEach(system.planets) { planet in
-            planetButton(planet, at: metrics.planetPoint(system: system, planet: planet),
-                         metrics: metrics)
+        if let label = systemLabel(system, in: snapshot, metrics: metrics) {
+            // 최소 궤도(`OrbitLayout.minimumRadius`) 바깥에 놓는다 — 그 안쪽에 두면
+            // 궤도선과 가장 안쪽 행성이 라벨 위로 그려진다.
+            Text(label)
+                .arcadeType(.readout, .xs, weight: .bold)
+                .foregroundStyle(theme.inkSecondary)
+                .fixedSize()
+                .position(x: centre.x,
+                          y: centre.y + metrics.length(OrbitLayout.minimumRadius) + density.tightGap)
+        }
+
+        // 뷰포트 밖 행성은 그리지 않는다(컬링). `.clipped()`는 그리기만 자르고 히트
+        // 영역은 남기므로, 그리지 않은 행성은 보이지 않는 채로 탭을 가로채는 일도
+        // 함께 사라진다 — 줌인했을 때 화면 밖 행성이 HUD의 스코어보드·보기 토글
+        // 위를 덮어 클릭을 먹던 원인이 이것이다.
+        ForEach(visiblePlanets(system.planets, in: system, metrics: metrics), id: \.planet.id) { entry in
+            planetButton(entry.planet, at: entry.point, metrics: metrics)
+        }
+    }
+
+    /// 성계 소속 행성 중 뷰포트 안에 걸치는 것만 좌표와 함께 돌려준다. 좌표를 한 번만
+    /// 계산해 컬링 판정과 실제 그리기에 같이 쓴다.
+    private func visiblePlanets(
+        _ planets: [OrbitPlanet], in system: OrbitSystem, metrics: OrbitMetrics
+    ) -> [(planet: OrbitPlanet, point: CGPoint)] {
+        planets.compactMap { planet in
+            let point = metrics.planetPoint(system: system, planet: planet)
+            guard metrics.isVisible(point, diameter: metrics.diameter(for: planet)) else { return nil }
+            return (planet, point)
         }
     }
 
@@ -116,27 +146,23 @@ struct OrbitView: View {
         guard metrics.zoomProgress <= 0.35 else { return system.statusName }
         // 뭉쳐 있는 동안에는 그 `Stage`의 첫 태양 하나만 이름을 갖는다.
         let first = snapshot.systems.first { $0.stage == system.stage }
-        return first?.id == system.id ? stageLabel(system.stage) : nil
-    }
-
-    /// `BoardLaneView`가 레인 머리에 쓰는 것과 같은 이름이다. 두 화면이 같은 단계를
-    /// 다르게 부르면 토글이 같은 데이터의 두 시선이라는 것이 읽히지 않는다.
-    private func stageLabel(_ stage: Stage) -> String {
-        switch stage {
-        case .backlog: "BACKLOG"
-        case .active:  "ACTIVE"
-        case .review:  "REVIEW"
-        case .verify:  "VERIFY"
-        case .done:    "DONE"
-        }
+        // 궤도 태양과 보드 레인이 같은 단계를 다르게 부르면 토글이 같은 데이터의
+        // 두 시선이라는 것이 읽히지 않는다 — `BoardLaneView`와 같은 곳(`TicketPresentation`)에서 받는다.
+        return first?.id == system.id ? TicketPresentation.stageLabel(system.stage) : nil
     }
 
     /// 어느 태양에도 속하지 못한 티켓. 성계 전체를 감싸는 바깥 고리를 떠돈다.
     /// 그냥 버리면 화면에서 조용히 사라지고 사용자는 티켓이 없어졌다고 생각한다.
+    /// 뷰포트 밖 떠돌이도 성계 행성과 같은 이유로 걸러낸다(컬링, 수정 2).
     @ViewBuilder
     private func driftView(_ snapshot: OrbitSnapshot, metrics: OrbitMetrics) -> some View {
-        ForEach(snapshot.drifters) { planet in
-            planetButton(planet, at: metrics.driftPoint(planet), metrics: metrics)
+        let visible = snapshot.drifters.compactMap { planet -> (planet: OrbitPlanet, point: CGPoint)? in
+            let point = metrics.driftPoint(planet)
+            guard metrics.isVisible(point, diameter: metrics.diameter(for: planet)) else { return nil }
+            return (planet, point)
+        }
+        ForEach(visible, id: \.planet.id) { entry in
+            planetButton(entry.planet, at: entry.point, metrics: metrics)
         }
     }
 
@@ -144,33 +170,39 @@ struct OrbitView: View {
     private func planetButton(
         _ planet: OrbitPlanet, at point: CGPoint, metrics: OrbitMetrics
     ) -> some View {
-        VStack(spacing: 2) {
-            PlanetView(planet: planet,
-                       diameter: metrics.diameter(for: planet),
-                       isPending: model.pendingTransitions[planet.id] != nil)
-                .matchedGeometryEffect(id: planet.id, in: cardNamespace)
-            if metrics.showsPlanetLabels {
-                Text(planet.issue.key)
-                    .arcadeType(.readout, .xs)
-                    .foregroundStyle(theme.inkTertiary)
-                    .fixedSize()
+        // 행성과 티켓 키 라벨을 **각각** `.position`으로 놓는다. 태양과 같은 이유다
+        // (systemView 주석 참고) — `VStack { 행성; 라벨 }.position(point)`로 묶으면
+        // `zoomProgress`가 0.5를 넘어 라벨이 붙는 순간 VStack의 중심 계산이 바뀌어
+        // 모든 행성이 위로 점프한다. "줌은 좌표를 바꾸지 않는다"는 이 화면의 설계
+        // 전제(§4)가 화면에서 깨지는 지점이었다.
+        PlanetView(planet: planet,
+                   diameter: metrics.diameter(for: planet),
+                   isPending: model.pendingTransitions[planet.id] != nil)
+            .matchedGeometryEffect(id: planet.id, in: cardNamespace)
+            // 티켓이 나타나고 사라지는 것도 사건이다 — 갑자기 튀어나오거나 사라지지
+            // 않고 부풀거나 옅어지며 등장·소멸한다.
+            .transition(.opacity.combined(with: .scale(scale: 0.3)))
+            .position(point)
+            .onTapGesture { selected = planet.id }
+            .popover(isPresented: Binding(
+                get: { selected == planet.id },
+                set: { if !$0 { selected = nil } }
+            )) {
+                PlanetPopover(planet: planet, siteHost: model.siteHost)
+                    // 팝오버는 환경을 물려받지 않는다. 테마와 밀도를 **함께** 다시 넣어야
+                    // 안팎의 글자 크기가 같아진다 — `ArcadeFloorView`의 시트가 같은 이유로
+                    // 같은 두 줄을 갖고 있다.
+                    .environment(\.arcadeTheme, theme)
+                    .environment(\.arcadeMetrics, density)
             }
-        }
-        // 티켓이 나타나고 사라지는 것도 사건이다 — 갑자기 튀어나오거나 사라지지 않고
-        // 부풀거나 옅어지며 등장·소멸한다.
-        .transition(.opacity.combined(with: .scale(scale: 0.3)))
-        .position(point)
-        .onTapGesture { selected = planet.id }
-        .popover(isPresented: Binding(
-            get: { selected == planet.id },
-            set: { if !$0 { selected = nil } }
-        )) {
-            PlanetPopover(planet: planet, siteHost: model.siteHost)
-                // 팝오버는 환경을 물려받지 않는다. 테마와 밀도를 **함께** 다시 넣어야
-                // 안팎의 글자 크기가 같아진다 — `ArcadeFloorView`의 시트가 같은 이유로
-                // 같은 두 줄을 갖고 있다.
-                .environment(\.arcadeTheme, theme)
-                .environment(\.arcadeMetrics, density)
+
+        if metrics.showsPlanetLabels {
+            Text(planet.issue.key)
+                .arcadeType(.readout, .xs)
+                .foregroundStyle(theme.inkTertiary)
+                .fixedSize()
+                .transition(.opacity.combined(with: .scale(scale: 0.3)))
+                .position(x: point.x, y: point.y + metrics.diameter(for: planet) / 2 + 2)
         }
     }
 
@@ -181,12 +213,25 @@ struct OrbitView: View {
             OrbitMetrics.maxScale(viewport: viewport, extent: extent))
     }
 
-    private func pan(viewport: CGSize) -> some Gesture {
+    /// 성계 전체(논리 반지름 `extent`)가 화면 밖으로 완전히 밀려나지 않도록 팬을
+    /// pt로 환산한 `extent` 안으로 가둔다. 클램프가 없으면 드래그만으로 성계 중심을
+    /// 화면 밖으로 끌어낼 수 있고, 되돌아오는 유일한 길이 ⌘0(전체) 리셋뿐이게 된다.
+    private func clampPan(_ pan: CGSize, extent: Double, scale: Double) -> CGSize {
+        let bound = max(extent * scale, 0)
+        return CGSize(width: min(max(pan.width, -bound), bound),
+                      height: min(max(pan.height, -bound), bound))
+    }
+
+    private func pan(viewport: CGSize, extent: Double) -> some Gesture {
         DragGesture()
             .onChanged { dragPan = $0.translation }
             .onEnded { value in
-                committedPan = CGSize(width: committedPan.width + value.translation.width,
-                                      height: committedPan.height + value.translation.height)
+                let base = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
+                committedPan = clampPan(
+                    CGSize(width: committedPan.width + value.translation.width,
+                          height: committedPan.height + value.translation.height),
+                    extent: extent, scale: base
+                )
                 dragPan = .zero
             }
     }
@@ -211,8 +256,14 @@ struct OrbitView: View {
             Button("＋") { step(1.25, viewport: viewport, extent: extent) }
                 .keyboardShortcut("=", modifiers: .command)
             Button("전체") {
+                // 팬·줌 상태 넷을 모두 되돌린다. `gestureScale`·`dragPan`은 제스처가
+                // `onEnded` 없이 취소되면 1·0이 아닌 값으로 굳을 수 있는데, `scale`과
+                // `committedPan`만 초기화하면 그 굳은 값이 새 배율·팬과 다시 섞여
+                // 화면이 복구되지 않는다. "전체"가 유일한 복구 경로이므로 넷 다 지운다.
                 scale = nil
                 committedPan = .zero
+                dragPan = .zero
+                gestureScale = 1
             }
             .keyboardShortcut("0", modifiers: .command)
         }

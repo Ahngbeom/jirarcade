@@ -79,4 +79,15 @@ struct OrbitMetrics {
     func diameter(for planet: OrbitPlanet) -> Double {
         length(OrbitLayout.planetArc) * planet.sizeFactor
     }
+
+    /// 이 점에 지름 `diameter`짜리 행성을 그리면 뷰포트 안에 걸치는가.
+    ///
+    /// 밖에 있는 행성을 **그리지 않는** 이유는 성능이 아니라 입력이다. `.clipped()`는
+    /// 그리기만 자르고 히트 영역은 남기므로, 화면 밖 행성이 보이지 않는 채로 탭을
+    /// 가로채 엉뚱한 팝오버를 연다.
+    func isVisible(_ point: CGPoint, diameter: Double) -> Bool {
+        let margin = diameter / 2
+        return point.x >= -margin && point.x <= viewport.width + margin
+            && point.y >= -margin && point.y <= viewport.height + margin
+    }
 }
