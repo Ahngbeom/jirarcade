@@ -564,19 +564,42 @@ Expected: FAIL — 새 시그니처가 없어 컴파일되지 않는다.
 
 - [ ] **Step 4: `ScoreEngine.recompute`의 순회도 같은 제외를 거치게 한다**
 
-`ScoreEngine.swift`의 `recompute`에서 `StatusTimeline.apply`를 부르는 순회를 찾는다(현재 약 79행). 그 순회 앞에서 되돌림 쌍을 구하고, 제외한 뒤 `apply`한다.
+**확인된 것:** `recompute`는 맨 앞에서 `let ordered = events.sorted { $0.observedAt < $1.observedAt }`로 자체 정렬하고, `for event in ordered`로 순회한다. 그 순회는 채점과 `statusEnteredAt` 갱신을 **함께** 한다.
+
+**넘길 배열은 `events`가 아니라 `ordered`다.** `RevertDetector`가 돌려주는 것은 넘긴 배열 기준의 인덱스이므로, 순회하는 배열과 같은 것을 넘겨야 한다. `events`를 넘기면 인덱스가 어긋나 엉뚱한 이벤트를 건너뛴다 — 그리고 조용히 틀린다.
+
+`let ordered = ...` 바로 아래에 더한다.
 
 ```swift
         // 시간축과 같은 판정을 쓴다 — 보드가 쓰는 최종값과 채점이 쓰는 시점별 값이
         // 다른 규칙으로 갈리면 같은 티켓의 정체일이 화면과 점수에서 달라진다.
-        let revertedIndices = RevertDetector.revertedIndices(
-            in: events, windowMinutes: rules.revertWindowMinutes
+        //
+        // `ordered`를 넘긴다. 인덱스는 넘긴 배열 기준이고 아래 순회가 그 배열을 돈다.
+        let reverted = RevertDetector.revertedIndices(
+            in: ordered, windowMinutes: rules.revertWindowMinutes
         )
 ```
 
-그리고 순회 안에서 해당 인덱스를 건너뛴다. **순회가 인덱스를 갖고 있지 않다면** `for (index, event) in events.enumerated()` 형태로 바꾸되, 정렬 여부와 다른 로직을 건드리지 않도록 주의한다 — 이 순회는 `statusEnteredAt`만이 아니라 채점도 함께 한다.
+순회를 인덱스가 있는 형태로 바꾸고, 되돌림 쌍은 **기준선만** 건너뛴다.
 
-**주의:** `recompute`가 받는 `events`가 이미 정렬돼 있는지 확인한다(`rg "sorted" Sources/ArcadeCore/Rules/ScoreEngine.swift`). 정렬 상태가 `RevertDetector`에 넘기는 배열과 같아야 인덱스가 맞는다.
+```swift
+        for (index, event) in ordered.enumerated() {
+            let xp = awarder.baseXP(
+                for: event,
+                issue: issues[event.issueKey],
+                statusEnteredAt: statusEnteredAt[event.issueKey],
+                now: event.observedAt
+            )
+            scored.append(ScoredEvent(event: event, xp: xp))
+
+            // 갱신 규칙은 StatusTimeline이 유일하게 정의한다. 여기에 규칙을 복사해 두면
+            // 보드가 쓰는 최종값과 채점이 쓰는 시점별 값이 서로 다른 규칙으로 갈릴 수 있다.
+            guard reverted.contains(index) == false else { continue }
+            StatusTimeline.apply(event, to: &statusEnteredAt)
+        }
+```
+
+**`scored.append`는 건너뛰지 않는다.** 되돌림 쌍도 이벤트로는 존재하고, 그 XP를 0으로 만드는 것은 `abuseGuard.applyVoids`의 몫이다. 여기서 빼면 그 쌍이 채점 배열에서 통째로 사라져 `AbuseGuard`가 볼 것이 없어진다.
 
 - [ ] **Step 5: 전체 테스트를 돌리고 깨진 것을 판정한다**
 
@@ -623,36 +646,47 @@ git commit -m "fix: 되돌림 쌍이 정체 기준선을 밀지 않는다"
 
 `Tests/ArcadeCoreTests/BoardLayoutTests.swift`에 더한다.
 
+**이 파일에는 로컬 헬퍼가 있다.** `BoardLayout.snapshot`을 직접 부르지 말고 그것을 쓴다 — 인자를 늘리면 이 파일의 모든 테스트가 한 곳에서 따라온다.
+
+```swift
+private func snapshot(
+    _ issues: [ObservedIssue],
+    enteredAt: [String: Date] = [:],
+    revisits: [String: Int] = [:],
+    workflow: WorkflowMap = demoWorkflow,
+    spacing: Double = 0
+) -> BoardSnapshot {
+    BoardLayout.snapshot(
+        issues: issues, statusEnteredAt: enteredAt, statusRevisits: revisits,
+        workflow: workflow, rules: .default, minimumSpacing: spacing,
+        now: now, calendar: utc
+    )
+}
+```
+
+`revisits`에 기본값을 주므로 **기존 테스트는 한 줄도 바뀌지 않는다.**
+
+새 테스트:
+
 ```swift
 @Test func carriesTheRevisitCountOntoTheSlot() {
-    let snapshot = BoardLayout.snapshot(
-        issues: [issue(key: "DEMO-1", status: "In Progress")],
-        statusEnteredAt: [:],
-        statusRevisits: ["DEMO-1": 3],
-        workflow: demoWorkflow, rules: .default,
-        minimumSpacing: 0.1, now: iso("2026-08-25T09:00:00Z"), calendar: utc
-    )
+    let result = snapshot([issue(key: "DEMO-1", status: "In Progress")],
+                          revisits: ["DEMO-1": 3])
 
-    let slot = snapshot.lanes.flatMap(\.slots).first { $0.issue.key == "DEMO-1" }
+    let slot = result.lanes.flatMap(\.slots).first { $0.issue.key == "DEMO-1" }
     #expect(slot?.revisits == 3)
 }
 
 /// 맵에 없는 티켓은 0이다. 돌아온 적 없다는 뜻이다.
 @Test func aTicketAbsentFromTheRevisitMapGetsZero() {
-    let snapshot = BoardLayout.snapshot(
-        issues: [issue(key: "DEMO-1", status: "In Progress")],
-        statusEnteredAt: [:],
-        statusRevisits: [:],
-        workflow: demoWorkflow, rules: .default,
-        minimumSpacing: 0.1, now: iso("2026-08-25T09:00:00Z"), calendar: utc
-    )
+    let result = snapshot([issue(key: "DEMO-1", status: "In Progress")])
 
-    let slot = snapshot.lanes.flatMap(\.slots).first { $0.issue.key == "DEMO-1" }
+    let slot = result.lanes.flatMap(\.slots).first { $0.issue.key == "DEMO-1" }
     #expect(slot?.revisits == 0)
 }
 ```
 
-**주의:** `snapshot.lanes.flatMap(\.slots)`가 실제 구조와 맞는지 기존 테스트에서 확인한다(`rg "snapshot\." Tests/ArcadeCoreTests/BoardLayoutTests.swift`). 다르면 기존 테스트가 쓰는 형태를 그대로 쓴다.
+**확인된 것:** `BoardSnapshot.lanes: [BoardLane]`이고 `BoardLane.slots: [BoardSlot]`이다. `now`·`utc`·`demoWorkflow`·`issue(key:status:)`는 이 테스트 파일과 `TestSupport.swift`에 이미 있다.
 
 - [ ] **Step 2: 테스트가 실패하는지 확인한다**
 
@@ -684,7 +718,7 @@ Expected: FAIL — `statusRevisits` 인자와 `revisits` 속성이 없다.
 
 Run: `cd /Users/bahn/orca/workspaces/jirarcade/task-controlling/Packages/Jirarcade && swift test`
 
-Expected: 전부 통과. 기존 `snapshot` 호출자(테스트 포함)가 새 인자를 받아야 컴파일된다 — 그 호출부에는 `statusRevisits: [:]`를 넘긴다.
+Expected: 전부 통과. `BoardLayout.snapshot`의 호출자는 셋뿐이다 — 이 테스트 파일의 로컬 헬퍼, `AppModel.boardSnapshot`(Task 5가 고친다), 그리고 없음. `AppModel` 쪽은 이 태스크에서 `statusRevisits: [:]`를 넘겨 컴파일만 통과시키고, Task 5가 실제 값을 연결한다.
 
 - [ ] **Step 6: 커밋**
 
@@ -933,6 +967,6 @@ git commit -m "docs: 되돌아온 티켓 표시의 완성 정의와 시각 검�
 
 **남는 위험**
 
-- Task 3의 `ScoreEngine.recompute` 순회는 인덱스를 갖고 있지 않을 수 있다. 계획이 `enumerated()`로 바꾸라고 하되 정렬 상태를 확인하라고 지시한다 — 인덱스가 어긋나면 엉뚱한 이벤트를 건너뛴다. 이 태스크의 리뷰에서 가장 주의할 지점이다.
+- Task 3에서 `RevertDetector`에 넘기는 배열이 순회하는 배열과 **같아야 한다**(`ordered`). 어긋나면 엉뚱한 이벤트의 기준선을 건너뛰고, 조용히 틀린다. 이 태스크의 리뷰에서 가장 주의할 지점이다.
 - Task 4는 `BoardSlot.init`에 기본값 없는 인자를 더하므로 모든 호출부가 깨진다. 컴파일러가 전부 잡아주지만 테스트 픽스처가 여럿일 수 있다.
 - Task 1은 "동작이 바뀌면 안 되는 이동"인데 nil 가드 하나를 의도적으로 더한다. 그 하나를 제외하면 원본과 같아야 하며, 기존 `AbuseGuard` 테스트가 무편집 통과하는 것이 유일한 증거다.
