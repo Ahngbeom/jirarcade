@@ -44,6 +44,11 @@ struct OrbitView: View {
                 }
                 driftView(snapshot, metrics: metrics)
             }
+            // 트리거는 스냅샷 전체가 아니라 `membershipSignature`다 — 태양 중심은
+            // `zoomProgress`에 따라서도 움직이는데, 스냅샷 전체를 걸면 확대할 때마다
+            // 스프링이 걸려 손가락과 화면이 어긋난다. 소속·등급이 실제로 바뀔 때만 켠다.
+            .animation(reduceMotion ? nil : .spring(duration: 0.6),
+                       value: snapshot.membershipSignature)
             .frame(width: proxy.size.width, height: proxy.size.height)
             // `position`으로 놓은 자식은 프레임을 넘어도 잘리지 않는다. 궤도는 줌인하면
             // 성계가 화면 밖까지 뻗으므로, 자르지 않으면 행성과 라벨이 위쪽 HUD 줄을
@@ -151,6 +156,9 @@ struct OrbitView: View {
                     .fixedSize()
             }
         }
+        // 티켓이 나타나고 사라지는 것도 사건이다 — 갑자기 튀어나오거나 사라지지 않고
+        // 부풀거나 옅어지며 등장·소멸한다.
+        .transition(.opacity.combined(with: .scale(scale: 0.3)))
         .position(point)
         .onTapGesture { selected = planet.id }
         .popover(isPresented: Binding(

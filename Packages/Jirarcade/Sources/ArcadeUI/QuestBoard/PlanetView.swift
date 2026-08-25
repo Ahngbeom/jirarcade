@@ -31,7 +31,27 @@ struct PlanetView: View {
                     pulsing = true
                 }
             }
+            // 행성의 뷰 정체성은 `planet.id`(티켓 키)로 유지된다. 상태를 옮기면 정체일이
+            // 리셋돼 등급이 바뀌는데(raid→fresh로 내려가거나 fresh→raid로 오르거나) `.onAppear`는
+            // 다시 불리지 않으므로, 내려간 행성이 계속 맥동하거나 오른 행성이 맥동을 놓친다.
+            .onChange(of: planet.tier) { syncPulsing() }
+            .onChange(of: reduceMotion) { syncPulsing() }
             .accessibilityLabel(accessibilityLabel)
+    }
+
+    /// 맥동을 켜고 끄는 판단을 한 곳에 모은다 — 등급 변화와 동작 줄이기 변화가
+    /// 같은 규칙을 따라야 하기 때문이다.
+    private func syncPulsing() {
+        guard planet.tier == .raid, !reduceMotion else {
+            // `withAnimation(nil)`로 즉시 꺼야 한다. 애니메이션을 걸고 끄면
+            // `repeatForever`가 진행 중인 반복을 끝내고서야 멈춰 잠깐 더 뛴다.
+            withAnimation(nil) { pulsing = false }
+            return
+        }
+        guard !pulsing else { return }
+        withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) {
+            pulsing = true
+        }
     }
 
     /// raid만 채운다. 팔레트에 raid 전용 토큰이 없고, 있어야 할 이유도 없다 —

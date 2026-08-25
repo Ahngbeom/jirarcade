@@ -60,12 +60,18 @@ struct QuestBoardView: View {
                         emptyState.padding(metrics.gutter)
                     }
                 } else {
-                    switch mode {
-                    case .lanes:
-                        lanes(width: geometry.size.width)
-                    case .orbit:
-                        OrbitView(model: model, cardNamespace: cardNamespace)
+                    Group {
+                        switch mode {
+                        case .lanes:
+                            lanes(width: geometry.size.width)
+                        case .orbit:
+                            OrbitView(model: model, cardNamespace: cardNamespace)
+                        }
                     }
+                    // 카드와 행성이 같은 `cardNamespace`를 쓰므로, 모드가 바뀔 때
+                    // 이 애니메이션이 둘을 이어 준다 — 카드가 사라지고 행성이 나타나는
+                    // 것이 아니라 카드가 행성으로 접힌다.
+                    .animation(reduceMotion ? nil : .spring(duration: 0.45), value: mode)
                 }
             }
             .animation(reduceMotion ? nil : .spring(duration: 0.35),

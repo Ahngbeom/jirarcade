@@ -278,3 +278,18 @@ public enum OrbitLayout {
         )
     }
 }
+
+public extension OrbitSnapshot {
+    /// 화면이 움직여야 할 **사건**만 담은 서명.
+    ///
+    /// 어느 행성이 어느 태양에 어떤 등급으로 있는가. 줌은 소속을 바꾸지 않으므로
+    /// 여기 들어오지 않는다 — 스냅샷 전체를 애니메이션 트리거로 쓰면 확대할 때마다
+    /// 스프링이 걸려 손가락과 화면이 어긋난다.
+    var membershipSignature: String {
+        let inSystems = systems.flatMap { system in
+            system.planets.map { "\(system.statusName)/\($0.id)/\($0.tier.rawValue)" }
+        }
+        let adrift = drifters.map { "~/\($0.id)/\($0.tier.rawValue)" }
+        return (inSystems + adrift).joined(separator: ",")
+    }
+}

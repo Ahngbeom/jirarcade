@@ -320,3 +320,40 @@ private func system(_ result: OrbitSnapshot, _ statusName: String) -> OrbitSyste
 @Test func stillLeavesALoneSystemAtItsStageCentre() {
     #expect(OrbitLayout.statusOrbit(count: 1) == 0)
 }
+
+// MARK: - 애니메이션 트리거
+
+/// 줌은 소속을 바꾸지 않는다. 서명이 줌에 반응하면 확대할 때마다 스프링이 걸려
+/// 손가락과 화면이 어긋난다.
+@Test func keepsTheMembershipSignatureStableAcrossZoom() {
+    let issues = [issue(key: "DEMO-1", status: "Dev")]
+
+    #expect(snapshot(issues, zoom: 0).membershipSignature
+            == snapshot(issues, zoom: 1).membershipSignature)
+}
+
+/// 티켓이 상태를 옮기면 서명이 바뀐다 — 이때 행성이 날아가야 한다.
+@Test func changesTheSignatureWhenAnIssueMovesStatus() {
+    let before = snapshot([issue(key: "DEMO-1", status: "Dev")])
+    let after = snapshot([issue(key: "DEMO-1", status: "Staging")])
+
+    #expect(before.membershipSignature != after.membershipSignature)
+}
+
+/// 정체 등급이 오르면 궤도가 밀려나야 하므로 이것도 사건이다.
+@Test func changesTheSignatureWhenATierRises() {
+    let fresh = snapshot([issue(key: "DEMO-1", status: "Dev", updated: now)])
+    let boss = snapshot([issue(key: "DEMO-1", status: "Dev",
+                               updated: now.addingTimeInterval(-days(30)))])
+
+    #expect(fresh.membershipSignature != boss.membershipSignature)
+}
+
+/// 티켓이 나타나고 사라지는 것도 사건이다.
+@Test func changesTheSignatureWhenAnIssueAppears() {
+    let one = snapshot([issue(key: "DEMO-1", status: "Dev")])
+    let two = snapshot([issue(key: "DEMO-1", status: "Dev"),
+                        issue(key: "DEMO-2", status: "Dev")])
+
+    #expect(one.membershipSignature != two.membershipSignature)
+}
