@@ -1,7 +1,6 @@
 import Foundation
 
-/// 앱이 지금 어느 단계에 있는가. v0.1 스펙 §8.1의 인증 상태 머신에
-/// 워크플로 매핑 단계를 더한 형태다.
+/// 앱이 지금 어느 단계에 있는가. 인증 상태 머신에 워크플로 매핑 단계를 더한 형태다.
 public enum Phase: Sendable, Equatable {
     /// Keychain에서 자격증명을 찾는 중.
     case launching

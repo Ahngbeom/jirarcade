@@ -6,7 +6,7 @@ public struct AppSettings: Sendable, Equatable {
     public var syncInterval: Duration
     /// 창이 포그라운드로 왔을 때, 마지막 동기화가 이 시간 이내면 건너뛴다.
     public var foregroundCooldown: Duration
-    /// 스펙 §5.2 — 5초 → 30초 → 2분 → 10분(상한)
+    /// 연속 실패 시 재시도 간격. 5초 → 30초 → 2분 → 10분(상한)
     public var backoffSteps: [Duration]
     /// 이 횟수만큼 연속 실패해야 UI에 표시한다.
     public var failuresBeforeSurfacing: Int

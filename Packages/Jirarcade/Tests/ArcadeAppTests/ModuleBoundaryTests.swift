@@ -350,3 +350,32 @@ private func swiftFiles(in directory: URL) -> [URL] {
     #expect(text.contains("Wordmark.hinge"),
             "아이콘이 경첩 글자를 직접 적고 있다 — Wordmark.hinge를 쓸 것")
 }
+
+/// 코드 주석은 설계문서의 **절 번호**를 인용하지 않는다.
+///
+/// 주석과 커밋 메시지는 수명이 다르다. 주석은 코드만 열어 본 사람에게 "왜 이 모양인가"를
+/// 말해야 하고, 그 문장은 코드가 그대로인 한 참이어야 한다. 절 번호는 **코드를 아무도
+/// 건드리지 않아도** 문서 개편만으로 거짓이 된다 — 그리고 거짓이 된 것을 아무도
+/// 알아채지 못한다. 확인 비용을 줄이라고 붙인 참조가 오히려 늘리는 셈이다.
+///
+/// 인용 대신 그 절이 말하는 **이유**를 적는다. 문서 참조가 꼭 필요하면 커밋 메시지에
+/// 남긴다 — 커밋은 시점의 기록이라 낡아도 거짓이 되지 않는다.
+///
+/// 한 번 정리했다가 다시 쌓인 적이 있어(30316ab가 새로 들어온 참조를 뺐지만 그 이전
+/// 것들은 남았다) 사람의 기억이 아니라 이 시험이 지킨다.
+@Test func codeCommentsDoNotCiteDesignDocSections() throws {
+    let files = swiftFiles(in: sourcesDirectory())
+    #expect(!files.isEmpty, "Sources를 찾지 못했다 — 경로가 바뀌었나?")
+
+    for file in files {
+        let text = try String(contentsOf: file, encoding: .utf8)
+        for (offset, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated()
+        where line.contains("§") {
+            Issue.record("""
+                \(file.lastPathComponent):\(offset + 1)이 설계문서 절 번호를 인용한다 \
+                — 절 번호 대신 그 절이 말하는 이유를 적는다.
+                    \(line.trimmingCharacters(in: .whitespaces))
+                """)
+        }
+    }
+}

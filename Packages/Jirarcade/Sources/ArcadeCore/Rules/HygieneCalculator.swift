@@ -46,7 +46,7 @@ public struct HygieneCalculator: Sendable {
         let zombieCount = active.filter { $0.0.jiraUpdatedAt <= zombieCutoff }.count
         let zombiePenalty = zombieCount * rules.zombiePenalty
 
-        // 마감 당일은 아직 유령이 아니다. 로컬 달력의 날짜 단위로 비교한다(스펙 §8.6).
+        // 마감 당일은 아직 유령이 아니다. 로컬 달력의 날짜 단위로 비교한다.
         let ghostCount = staged.filter { pair in
             guard pair.1 != .done, let due = pair.0.dueDate else { return false }
             return DueDate.isOverdue(due, now: now, calendar: calendar)

@@ -33,7 +33,7 @@ public struct DomainEvent: Sendable, Equatable {
     public let priorUpdatedAt: Date?
     /// 이 변화를 관측한 **시점의** 마감일. `priorUpdatedAt`과 같은 이유로 이벤트가 들고 다닌다.
     ///
-    /// 마감 전 완료 보너스(스펙 §5.5)가 이 값을 쓴다. 미러의 `dueDate`를 보면 티켓이
+    /// 마감 전 완료 보너스가 이 값을 쓴다. 미러의 `dueDate`를 보면 티켓이
     /// 조회 결과에서 사라진 뒤 재집계할 때 보너스가 통째로 증발한다 — 준 XP를 도로 뺏는 셈이다.
     /// 마감일이 없는 티켓이면 nil이며, 그때는 보너스도 없다.
     public let dueDateAtObservation: Date?

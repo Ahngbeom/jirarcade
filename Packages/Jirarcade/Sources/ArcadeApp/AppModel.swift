@@ -776,7 +776,7 @@ public final class AppModel {
               let mirror = try? store.loadMirror() else { return }
         let now = clock()
         // 한 번만 읽어 캐시한다. 예전에는 이 함수 안에서만 두 번 불렀고 화면이 렌더마다
-        // 또 불렀다(후속 항목 §4.2).
+        // 또 불렀다.
         let workflowMap = effectiveWorkflow()
         boardWorkflow = workflowMap
 
@@ -878,7 +878,7 @@ public final class AppModel {
         }
 
         client = candidate
-        // "내가 직접 옮긴 것만 XP"(스펙 §4.2)를 판정하려면 내가 누구인지 알아야 한다.
+        // "내가 직접 옮긴 것만 XP"를 판정하려면 내가 누구인지 알아야 한다.
         // 여기가 accountId를 손에 넣는 유일한 지점이다.
         myAccountId = me.accountId
         // 티켓 링크를 만들 때 쓴다. APITokenAuth와 같은 정규화를 거쳐야 사용자가 어떻게
@@ -894,7 +894,7 @@ public final class AppModel {
 
         // 스토어가 어느 계정을 담고 있는지 여기서 직접 기록한다. 자격증명 저장소로는
         // "계정이 바뀌었는가"를 판단할 수 없다 — signOut()이 바로 그 저장소를 지우기
-        // 때문이다(v0.1 스펙 §8.2, AccountBindingStore.swift 참고). accountBinding은
+        // 때문이다(AccountBindingStore.swift 참고). accountBinding은
         // signOut()이 지우지 않으므로, 로그아웃 후 종료했다가 다른 계정으로 재로그인하는
         // 경로(v0.1의 유일한 로그아웃 경로 — 만료 배너의 버튼)도 여기서 걸러진다. 이
         // 검사는 persistOnSuccess와 무관하게(즉 start()에서도) 실행돼야 한다 — 그래야
@@ -1040,7 +1040,7 @@ public final class AppModel {
     }
 
     /// 이 티켓에서 지금 고를 수 있는 전이. **캐싱하지 않는다** — 관리자가 워크플로를
-    /// 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 된다(v0.1 스펙 §8.5).
+    /// 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 된다.
     /// 전이 후보를 **매번 새로** 받아 `transitionOptions`에 채운다.
     ///
     /// 캐싱하지 않는다: 관리자가 워크플로를 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 되고,
@@ -1394,7 +1394,7 @@ public final class AppModel {
     ///
     /// `JiraError.transitionRejected(reason:)`는 Jira 응답의 `errorMessages`를 그대로
     /// 담고 그 본문에는 이메일이 섞일 수 있다(`redactedErrorDescription` 참고).
-    /// v0.1 스펙 §8.4는 화면에 닿는 실패 문자열까지 이 제약 아래 둔다.
+    /// 화면에 닿는 실패 문자열도 같은 제약 아래 있다.
     ///
     /// 사유 대신 Jira로 가는 길을 준다 — 전이가 거부되는 이유는 앱이 채울 수 없는
     /// 정보를 Jira가 요구하기 때문이고, 그것을 채울 수 있는 곳은 어차피 Jira다.

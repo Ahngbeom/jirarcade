@@ -6,7 +6,7 @@ public struct PlayerSummary: Sendable, Equatable {
     public let xpIntoLevel: Int
     public let xpForNextLevel: Int
     public let streak: StreakState
-    /// 오늘 위생 점수가 기준을 넘어 지급된 데일리 보너스(스펙 §5.3). 없으면 0.
+    /// 오늘 위생 점수가 기준을 넘어 지급된 데일리 보너스. 없으면 0.
     /// `totalXP`에 이미 포함되어 있으며, UI가 "어디서 왔는지"를 보여줄 수 있게 따로 노출한다.
     public let hygieneBonusXP: Int
 }
@@ -36,14 +36,14 @@ public struct ScoreEngine: Sendable {
         self.hygiene = HygieneCalculator(rules: rules, workflow: workflow, calendar: calendar)
     }
 
-    /// 스펙 §5.6이 정한 3단 파이프라인을 순서대로 적용한다.
+    /// 3단 파이프라인을 순서대로 적용한다.
     /// 기본 XP → (무효화) → 연속 보너스 배수 → 일일 상한 → 위생 데일리 보너스.
     ///
     /// - Parameter now: **오늘**의 기준. 이벤트 채점은 각 이벤트의 `observedAt`으로 하지만,
-    ///   위생 데일리 보너스(스펙 §5.3)는 미러의 현재 상태를 이 시각 기준으로 판정한다.
+    ///   위생 데일리 보너스는 미러의 현재 상태를 이 시각 기준으로 판정한다.
     ///   미러에는 과거 상태가 없으므로 위생 보너스는 오늘 하루분만 계산할 수 있다.
     /// - Parameter since: 이 시각 이후의 이벤트만 집계한다. nil이면 전체(통산).
-    ///   시즌 XP 바가 이 파라미터로 계산된다(스펙 §6).
+    ///   시즌 XP 바가 이 파라미터로 계산된다.
     ///
     ///   **시즌은 범위만 자르고 채점 규칙은 바꾸지 않는다.** 그래서 파이프라인 전체를
     ///   통산 로그로 끝낸 **뒤에** 잘라낸다. 어느 단계든 잘라낸 뒤에 계산하면 같은 이벤트가
@@ -126,11 +126,11 @@ public struct ScoreEngine: Sendable {
         return (adjusted, summary)
     }
 
-    /// 스펙 §5.3: 위생 점수가 기준 이상인 날에 데일리 보너스를 준다.
+    /// 위생 점수가 기준 이상인 날에 데일리 보너스를 준다.
     ///
     /// 미러는 **현재 상태만** 담으므로 과거 어느 날의 위생 점수도 복원할 수 없다.
     /// 따라서 오늘 하루분만 판정한다 — 지난날의 보너스는 소급되지 않는다.
-    /// 일일 상한은 이벤트 XP와 보너스가 함께 나눠 쓴다(스펙 §5.6).
+    /// 일일 상한은 이벤트 XP와 보너스가 함께 나눠 쓴다.
     private func hygieneDailyBonus(
         issues: [String: ObservedIssue], scored: [ScoredEvent], now: Date
     ) -> Int {

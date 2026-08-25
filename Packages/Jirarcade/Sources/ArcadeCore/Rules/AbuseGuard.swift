@@ -4,8 +4,8 @@ import Foundation
 /// 입력은 `observedAt` 오름차순으로 정렬되어 있다고 가정하지 않고 내부에서 정렬해 판정하되,
 /// 반환 배열의 순서는 입력 순서를 그대로 유지한다.
 ///
-/// **무효화(`applyVoids`)와 일일 상한(`applyDailyCap`)이 분리된 이유:** 스펙 §5.6이
-/// 상한을 "연속 보너스 적용 후"로 못박았다. `ScoreEngine`이 두 단계 사이에 연속 배수를
+/// **무효화(`applyVoids`)와 일일 상한(`applyDailyCap`)이 분리된 이유:** 상한은
+/// "연속 보너스 적용 후"에 걸려야 한다. `ScoreEngine`이 두 단계 사이에 연속 배수를
 /// 끼워 넣어야 하므로 한 번의 호출로 묶을 수 없다.
 public struct AbuseGuard: Sendable {
     private let rules: RuleSet
@@ -27,7 +27,7 @@ public struct AbuseGuard: Sendable {
         return working
     }
 
-    /// 로컬 날짜별 상한. 연속 보너스를 곱한 **뒤에** 적용한다(스펙 §5.6).
+    /// 로컬 날짜별 상한. 연속 보너스를 곱한 **뒤에** 적용한다.
     public func applyDailyCap(to events: [ScoredEvent]) -> [ScoredEvent] {
         var working = events
         applyDailyCap(&working, order: chronological(working))
