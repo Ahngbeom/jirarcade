@@ -86,10 +86,10 @@ public struct AbuseGuard: Sendable {
     /// 판정은 `RevertDetector`가 한다 — 시간축도 같은 판정을 써야 한 쌍을 두 층이
     /// 다르게 보지 않는다.
     private func voidReverts(_ events: inout [ScoredEvent]) {
-        let reverted = RevertDetector.revertedIndices(
-            in: events.map(\.event), windowMinutes: rules.revertWindowMinutes
+        let steps = RevertDetector.chronology(
+            of: events, event: \.event, windowMinutes: rules.revertWindowMinutes
         )
-        for index in reverted { events[index].xp = 0 }
+        for step in steps where step.isReverted { events[step.index].xp = 0 }
     }
 
     /// 로컬 날짜별 누적이 상한을 넘으면 넘는 만큼만 깎는다(부분 지급).

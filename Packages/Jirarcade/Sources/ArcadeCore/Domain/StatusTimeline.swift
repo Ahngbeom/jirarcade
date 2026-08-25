@@ -35,13 +35,10 @@ public enum StatusTimeline {
         from events: [DomainEvent],
         revertWindowMinutes: Double
     ) -> [String: Date] {
-        let reverted = RevertDetector.revertedIndices(
-            in: events, windowMinutes: revertWindowMinutes
-        )
         var map: [String: Date] = [:]
-        for index in events.indices.sorted(by: { events[$0].observedAt < events[$1].observedAt }) {
-            guard reverted.contains(index) == false else { continue }
-            let event = events[index]
+        for step in RevertDetector.chronology(of: events, windowMinutes: revertWindowMinutes) {
+            guard step.isReverted == false else { continue }
+            let event = events[step.index]
             // 백필은 라이브 동기화(`DiffEngine`)와 달리 같은 상태로의 전환(no-op)을 거르지
             // 않는다. `apply`는 `ScoreEngine`도 함께 쓰는 원시 연산이라 여기서 고치지
             // 않는다 — 대신 호출 전에 걸러, 실제로 아무 데도 가지 않은 티켓의 정체일이
