@@ -919,3 +919,79 @@ private func assertDoesNotLeak(
     #expect(try accountBinding.load()
             == AccountBinding(site: "example.atlassian.net", accountId: "acc-me").rawValue)
 }
+
+// MARK: - 궤도 스냅샷
+
+private let orbitWorkflow = WorkflowMap(statusToStage: ["To Do": .backlog, "In Progress": .active])
+
+/// `JiraTransition`은 `Decodable` 이니셜라이저만 공개돼 있다(`Sources/JiraKit/DTO.swift`).
+/// `TransitionTests.swift`의 동명 헬퍼와 같은 모양이지만 `private`이라 파일을 넘어
+/// 보이지 않으므로 이 파일에도 둔다.
+private func jiraTransition(id: String, name: String, to status: String) throws -> JiraTransition {
+    let body = """
+    {"transitions":[{"id":"\(id)","name":"\(name)","to":{"name":"\(status)"}}]}
+    """
+    return try #require(JiraTransition.decodeList(Data(body.utf8)).first)
+}
+
+/// 뷰는 `Date()`를 부르지 않는다. 시계와 달력은 모델이 주입한다 —
+/// `boardSnapshot`이 그렇게 하는 이유와 같다.
+@MainActor
+@Test func buildsAnOrbitSnapshotFromTheSameMirrorTheBoardUses() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: orbitWorkflow)
+    let model = try makeModel(
+        workflow: workflow,
+        http: { ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))]) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    let orbit = model.orbitSnapshot(zoomProgress: 1)
+
+    #expect(orbit.systems.map(\.statusName) == ["In Progress"])
+    #expect(orbit.systems.first?.planets.map(\.id) == ["DEMO-1"])
+}
+
+/// 대기 중인 전이가 궤도에도 곧바로 보여야 한다. `issues`를 직접 읽으면
+/// 카드에서 상태를 옮겨도 행성이 5초 동안 옛 태양에 남는다.
+@MainActor
+@Test func showsPendingTransitionsInTheOrbitImmediately() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: orbitWorkflow)
+    let model = try makeModel(
+        workflow: workflow,
+        http: { ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))]) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "To Do")])
+
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try jiraTransition(id: "1", name: "시작", to: "In Progress"))
+
+    let orbit = model.orbitSnapshot(zoomProgress: 1)
+    #expect(orbit.systems.map(\.statusName) == ["In Progress"])
+}
+
+/// 낙관적 사본이 스프린트 세 값을 떨어뜨리면, 상태를 옮기는 5초 동안
+/// 카드의 이월 줄이 사라졌다가 돌아온다.
+@MainActor
+@Test func keepsSprintFactsWhileATransitionIsPending() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: orbitWorkflow)
+    let model = try makeModel(
+        workflow: workflow,
+        http: { ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))]) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "tok")
+    model.seedIssuesForTesting([
+        issue(key: "DEMO-1", status: "To Do", sprintCarryOvers: 4,
+             firstSprintName: "DEMO 스프린트 (1)", latestSprintName: "DEMO 스프린트 (5)"),
+    ])
+
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try jiraTransition(id: "1", name: "시작", to: "In Progress"))
+
+    let slot = model.boardSnapshot(minimumSpacing: 0)
+        .lanes.flatMap(\.slots).first { $0.id == "DEMO-1" }
+    #expect(slot?.sprintCarryOvers == 4)
+    #expect(slot?.firstSprintName == "DEMO 스프린트 (1)")
+    #expect(slot?.latestSprintName == "DEMO 스프린트 (5)")
+}
