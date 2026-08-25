@@ -61,6 +61,14 @@ struct OrbitView: View {
             // 침범해 스코어보드 글자 위에 겹쳐 그려진다.
             .clipped()
             .contentShape(Rectangle())
+            // 스크롤은 SwiftUI 제스처로 오지 않아 AppKit에서 받아 올린다. 이 층은
+            // 히트 테스트를 흘려보내므로 아래의 행성 탭과 드래그 팬이 그대로 산다.
+            .overlay(
+                ScrollEventCatcher { delta, zooming in
+                    handleScroll(delta, zooming: zooming, viewport: proxy.size,
+                                 extent: extent, snapshot: snapshot, metrics: metrics)
+                }
+            )
             .gesture(pan(viewport: proxy.size, extent: extent))
             .gesture(magnify(viewport: proxy.size, extent: extent, snapshot: snapshot, metrics: metrics))
             .background(theme.surfaceBase)
@@ -300,6 +308,36 @@ struct OrbitView: View {
             CGSize(width: -anchor.x * newScale, height: -anchor.y * newScale),
             extent: extent, scale: newScale
         )
+    }
+
+    /// 스크롤 한 번을 배율이나 이동으로 옮긴다.
+    ///
+    /// ⌘와 함께면 확대·축소, 아니면 화면을 민다 — 지도 앱들이 쓰는 관례다. 확대 쪽이
+    /// `zoomPan`을 거치는 이유는 버튼 줌과 같다: 논리 원점에는 성계가 없어서, 보정
+    /// 없이 배율만 키우면 성계가 사방으로 흩어져 빈 가운데만 남는다.
+    private func handleScroll(
+        _ delta: CGSize, zooming: Bool, viewport: CGSize, extent: Double,
+        snapshot: OrbitSnapshot, metrics: OrbitMetrics
+    ) {
+        if zooming {
+            // 세로 스크롤만 배율에 쓴다. 가로까지 섞으면 대각선으로 굴릴 때
+            // 배율이 의도보다 크게 튄다.
+            let factor = 1 + delta.height / 200
+            guard factor > 0 else { return }
+            let oldScale = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
+            let newScale = clampScale(oldScale * factor, viewport: viewport, extent: extent)
+            scale = newScale
+            committedPan = zoomPan(
+                factor: factor, oldScale: oldScale, newScale: newScale,
+                snapshot: snapshot, metrics: metrics, extent: extent
+            )
+        } else {
+            committedPan = clampPan(
+                CGSize(width: committedPan.width + delta.width,
+                       height: committedPan.height + delta.height),
+                extent: extent, scale: metrics.scale
+            )
+        }
     }
 
     private func pan(viewport: CGSize, extent: Double) -> some Gesture {
