@@ -143,11 +143,6 @@ struct TicketCardView: View {
         .help(cardTooltip)
     }
 
-    /// 전이 후보는 **메뉴를 열 때** 받아온다. 캐싱하지 않는 이유: 관리자가 워크플로를
-    /// 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 된다(v0.1 스펙 §8.5).
-    @State private var transitions: [JiraTransition] = []
-    @State private var isLoadingTransitions = false
-
     /// `.onTapGesture`를 `Menu`의 라벨에 얹으면 그 탭이 메뉴를 여는 제스처를 가로챌 수
     /// 있어(macOS·iOS 모두) 메뉴가 아예 열리지 않거나, 열리더라도 내용을 채우는 핸들러가
     /// 불리지 않을 수 있다. 대신 `Menu`의 `content` 클로저는 열릴 때마다(정적 `List`와
@@ -157,19 +152,22 @@ struct TicketCardView: View {
     private var transitionMenu: some View {
         Menu {
             Group {
-                if isLoadingTransitions {
+                switch model.transitionOptions[slot.issue.key] {
+                case .none, .loading:
                     Text("불러오는 중…")
-                } else if transitions.isEmpty {
+                case .ready(let options) where options.isEmpty:
                     Text("옮길 수 있는 상태가 없습니다")
-                } else {
-                    ForEach(transitions, id: \.id) { transition in
+                case .ready(let options):
+                    ForEach(options, id: \.id) { transition in
                         Button(transition.menuLabel) {
                             model.requestTransition(issueKey: slot.issue.key, transition: transition)
                         }
                     }
+                case .failed(let message):
+                    Text(message)
                 }
             }
-            .onAppear { loadTransitions() }
+            .onAppear { model.loadTransitionOptions(for: slot.issue.key) }
             if let url = jiraURL {
                 Divider()
                 Link("Jira에서 열기", destination: url)
@@ -186,15 +184,6 @@ struct TicketCardView: View {
     private var jiraURL: URL? {
         guard let site = model.siteHost else { return nil }
         return AtlassianLinks.issue(key: slot.issue.key, site: site)
-    }
-
-    private func loadTransitions() {
-        guard !isLoadingTransitions else { return }
-        isLoadingTransitions = true
-        Task {
-            transitions = (try? await model.availableTransitions(for: slot.issue.key)) ?? []
-            isLoadingTransitions = false
-        }
     }
 
     /// 등급 라벨·색·정체일 표기·마감 표기·스프린트 툴팁은 `TicketPresentation`에
