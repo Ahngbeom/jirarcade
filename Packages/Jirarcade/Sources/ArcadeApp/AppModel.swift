@@ -104,6 +104,8 @@ public final class AppModel {
     public private(set) var pendingTransitions: [String: PendingTransition] = [:]
     /// 티켓별 마지막 전이 실패 안내. **Jira가 준 사유를 담지 않는다** — 앱이 쓴 문구만 담는다.
     public private(set) var transitionFailures: [String: String] = [:]
+    /// 티켓별 `상태 옮기기` 메뉴 상태. 메뉴를 열 때마다 새로 채운다 — 캐시가 아니다.
+    public private(set) var transitionOptions: [String: TransitionOptions] = [:]
     /// 상세 시트가 지금 보여줄 상태. 시트가 열려 있을 때만 `.idle`이 아니다 —
     /// 미러에는 들어가지 않는 순전히 화면용 값이다(`IssueDetail.swift` 참고).
     public private(set) var detailState: IssueDetailState = .idle
@@ -267,6 +269,9 @@ public final class AppModel {
         transitionTasks = [:]
         pendingTransitions = [:]
         transitionFailures = [:]
+        // 전이 후보는 이 계정의 워크플로에서 나온 값이다. 남겨두면 다음 로그인 직후
+        // 남의 조직 상태명이 메뉴에 떠 있고, 그걸 누르면 존재하지 않는 전이 ID가 나간다.
+        transitionOptions = [:]
         // 진행 중인 저장도 로그아웃의 대상이다. 남겨두면 다음 계정으로 로그인한 뒤
         // 완료 핸들러가 그 계정의 화면에 실패를 그리거나 동기화를 유발한다.
         // 전이 타이머와 같은 이유이며, 같은 사고가 실제로 출하된 적이 있다.
@@ -1036,9 +1041,50 @@ public final class AppModel {
 
     /// 이 티켓에서 지금 고를 수 있는 전이. **캐싱하지 않는다** — 관리자가 워크플로를
     /// 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 된다(v0.1 스펙 §8.5).
-    public func availableTransitions(for issueKey: String) async throws -> [JiraTransition] {
-        guard let client else { throw JiraError.unauthorized }
-        return try await client.transitions(issueKey: issueKey)
+    /// 전이 후보를 **매번 새로** 받아 `transitionOptions`에 채운다.
+    ///
+    /// 캐싱하지 않는다: 관리자가 워크플로를 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 되고,
+    /// 그 ID로 보낸 요청은 Jira가 거부한다. 그래서 시작할 때 `.loading`으로 덮어 이전
+    /// 답을 화면에서 먼저 치운다 — 낡은 목록이 잠깐이라도 눌리는 창을 만들지 않는다.
+    public func loadTransitionOptions(for issueKey: String) {
+        let generation = syncGeneration
+        transitionOptions[issueKey] = .loading
+        Task { [weak self] in
+            guard let self else { return }
+            do {
+                guard let client = self.client else { throw JiraError.unauthorized }
+                let options = try await client.transitions(issueKey: issueKey)
+                // 받아오는 동안 계정이 바뀌었으면 이 답은 남의 것이다.
+                guard generation == self.syncGeneration else { return }
+                self.transitionOptions[issueKey] = .ready(options)
+            } catch JiraError.unauthorized {
+                guard generation == self.syncGeneration else { return }
+                // 만료 배너와 같은 사실을 말한다. 여기서 아무것도 안 채우면 메뉴가
+                // 영원히 "불러오는 중"으로 남아, 그것대로 또 하나의 거짓말이 된다.
+                self.phase = .expired
+                self.transitionOptions[issueKey] = .failed("세션이 만료되었습니다.")
+            } catch {
+                guard generation == self.syncGeneration else { return }
+                self.transitionOptions[issueKey] = .failed(Self.transitionOptionsFailureMessage(error))
+            }
+        }
+    }
+
+    /// 후보를 **묻지 못했을 때**의 문구. 전이를 **실행하다** 실패한 것과 다른 상황이라
+    /// `transitionFailureMessage`와 문장을 나눈다. Jira 응답 본문은 담지 않는다.
+    private static func transitionOptionsFailureMessage(_ error: any Error) -> String {
+        switch error {
+        case JiraError.offline:
+            return "연결되지 않아 옮길 수 있는 상태를 확인하지 못했습니다."
+        case JiraError.forbidden:
+            return "이 티켓의 전이 목록을 볼 권한이 없습니다."
+        case JiraError.notFound:
+            return "티켓을 찾을 수 없습니다. Jira에서 삭제되었을 수 있습니다."
+        case JiraError.rateLimited:
+            return "요청이 너무 잦습니다. 잠시 뒤 다시 열어 주세요."
+        default:
+            return "옮길 수 있는 상태를 확인하지 못했습니다."
+        }
     }
 
     /// 전이를 예약한다. 요청은 실행 취소 창이 지난 뒤에 나간다.
