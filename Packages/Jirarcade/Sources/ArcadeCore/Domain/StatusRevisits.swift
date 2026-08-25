@@ -14,15 +14,11 @@ public enum StatusRevisits {
     ) -> [String: Int] {
         // 오조작을 즉시 되돌린 흔적은 돌아온 것으로 세지 않는다 — 티켓은 어디에도 가지
         // 않았고, 세면 잘못 누른 것만으로 "왕복 중"이라는 낙인이 붙는다.
-        let reverted = RevertDetector.revertedIndices(
-            in: events, windowMinutes: revertWindowMinutes
-        )
-
-        // 입력 순서를 믿지 않는다 — 백필은 과거 이벤트를 나중에 넣는다.
+        // 순서도 검출기가 만든다 — 입력 순서를 믿지 않는다(백필은 과거 이벤트를 나중에 넣는다).
         var byIssue: [String: [DomainEvent]] = [:]
-        for index in events.indices.sorted(by: { events[$0].observedAt < events[$1].observedAt }) {
-            guard reverted.contains(index) == false else { continue }
-            let event = events[index]
+        for step in RevertDetector.chronology(of: events, windowMinutes: revertWindowMinutes) {
+            guard step.isReverted == false else { continue }
+            let event = events[step.index]
             // no-op 판정은 `StatusTimeline`이 한 번만 정의한다. 여기에 같은 비교를
             // 다시 쓰면, 정의가 넓어질 때(상태명 공백 제거·대소문자 무시 같은) 왕복
             // 횟수와 정체 기준선이 서로 다른 규칙 위에서 갈린다.
