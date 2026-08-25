@@ -1004,3 +1004,51 @@ private func uiSource(_ fileName: String) throws -> String {
     #expect(seedsExclusions, "다시 연 마법사가 기존 제외 목록을 들고 있어야 한다")
     #expect(savesExclusions, "고른 제외가 저장되지 않으면 폴백이 다시 깔린다")
 }
+
+/// 플로어가 **지금 추정이 적용되는** 개수를 세는지 소스로 확인한다.
+///
+/// 설정 시트 안에만 있으면 사용자가 열어보기 전까지 모른다. 실물에서 상태 14개가
+/// 추정으로 채점되고 있었고 그중 하나(`보류` → `done`)는 방향까지 틀렸는데,
+/// 플로어에는 그 사실이 어디에도 없었다 — 있는 것은 성격이 다른 미매핑 배지뿐이다.
+@Test func theFloorShowsHowManyStatusesAreScoredByGuess() throws {
+    let text = try uiSource("ArcadeFloorView.swift")
+
+    #expect(text.contains("model.guessScoredStatuses"),
+            "플로어가 추정 채점 개수를 보여줘야 사용자가 설정을 열기 전에 안다")
+    #expect(!text.contains("model.historyDiscoveredStatuses"),
+            "백필 시점의 스냅샷을 세면 매핑을 고쳐도 개수가 줄지 않는다")
+}
+
+/// 두 배지가 색으로 갈리는지 확인한다.
+///
+/// 미매핑은 확실한 손실(0점)이고 추정은 대개 맞다 — 실물 14개 중 13개는 타당했다.
+/// 둘 다 `danger`로 칠하면 진짜 위험이 그 안에 묻힌다.
+///
+/// 파일 어딘가에 `theme.accent`가 있는지만 보면 가드가 되지 않는다 — 이 화면은
+/// 다른 곳에서도 그 토큰을 쓴다. 추정 문구가 나온 자리부터 좁은 창 안에서 찾는다.
+@Test func theTwoMappingBadgesAreToldApartByColour() throws {
+    let text = try uiSource("ArcadeFloorView.swift")
+
+    let phrase = "추정으로 채점 중인 상태"
+    let start = try #require(text.range(of: phrase), "추정 배지 문구를 찾지 못했다")
+    let window = text[start.upperBound...].prefix(200)
+
+    #expect(window.contains("theme.accent"),
+            "추정 배지는 확인을 청하는 것이지 손실을 알리는 것이 아니다")
+    #expect(!window.contains("theme.danger"),
+            "미매핑과 같은 색이면 무엇이 더 급한지 구분되지 않는다")
+}
+
+/// 배지를 눌러 마법사로 갈 수 있는지 확인한다.
+///
+/// 죽은 텍스트로 두면 무엇을 고쳐야 하는지 알려주고도 고칠 길을 주지 않는다.
+/// 둘 중 하나만 눌리면 사용자는 안 되는 쪽을 고장으로 읽으므로 둘 다 눌린다.
+@Test func bothMappingBadgesOpenTheWizard() throws {
+    let text = try uiSource("ArcadeFloorView.swift")
+
+    // 배지 둘이 같은 헬퍼를 거치므로 `reopenMapping()` 자체는 한 번만 나온다.
+    // 세어야 할 것은 호출 횟수가 아니라 **그 헬퍼를 쓰는 배지의 수**다.
+    let badges = text.components(separatedBy: "mappingBadge(").count - 1
+    #expect(badges >= 3, "배지 둘과 헬퍼 정의 하나 — 둘 다 같은 길로 마법사에 이어져야 한다")
+    #expect(text.contains("reopenMapping()"), "배지가 마법사를 열어야 한다")
+}
