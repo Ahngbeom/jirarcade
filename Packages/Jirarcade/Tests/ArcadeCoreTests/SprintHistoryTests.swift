@@ -84,3 +84,43 @@ private func sprint(_ id: Int, _ name: String, day: Int?, state: String = "close
 
     #expect(summary.carryOvers == 1)
 }
+
+/// 이름이 빈 스프린트는 이름을 **모르는** 것이지 없는 것이 아니다.
+///
+/// 툴팁은 `firstName`/`latestName`이 `nil`인지만 보고 그리므로, 빈 문자열을 그대로
+/// 실으면 `" → DEMO 스프린트 (5)"`처럼 앞이 빈 화살표가 화면에 나간다. 여기서 `nil`로
+/// 정규화하면 뷰는 손대지 않아도 된다 — 그쪽에는 테스트가 닿지 않는다.
+@Test func anEmptyNameBecomesNilRatherThanAnEmptyString() {
+    let summary = SprintHistory.summarize([
+        sprint(1, "", day: 14),
+        sprint(2, "DEMO 스프린트 (2)", day: 21),
+    ])
+
+    #expect(summary.firstName == nil)
+    #expect(summary.latestName == "DEMO 스프린트 (2)")
+}
+
+/// 공백만 있는 이름도 마찬가지다. 툴팁에 공백 하나를 그리는 것은 이름이 아니다.
+@Test func aWhitespaceOnlyNameBecomesNil() {
+    let summary = SprintHistory.summarize([
+        sprint(1, "DEMO 스프린트 (1)", day: 14),
+        sprint(2, "   ", day: 21),
+    ])
+
+    #expect(summary.firstName == "DEMO 스프린트 (1)")
+    #expect(summary.latestName == nil)
+}
+
+/// **이름이 없다고 존재가 사라지지는 않는다.** 그 스프린트를 거쳤다는 사실은 그대로이므로
+/// 이월 횟수에는 들어가야 한다 — 이름을 못 읽었다고 숫자가 작아지면 화면이 거짓을 말한다.
+@Test func aSprintWithoutANameStillCountsTowardTheCarryOver() {
+    let summary = SprintHistory.summarize([
+        sprint(1, "DEMO 스프린트 (1)", day: 14),
+        sprint(2, "", day: 21),
+        sprint(3, "DEMO 스프린트 (3)", day: 28),
+    ])
+
+    #expect(summary.carryOvers == 2)
+    #expect(summary.firstName == "DEMO 스프린트 (1)")
+    #expect(summary.latestName == "DEMO 스프린트 (3)")
+}

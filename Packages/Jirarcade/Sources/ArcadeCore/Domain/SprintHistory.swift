@@ -49,8 +49,22 @@ public enum SprintHistory {
 
         return SprintSummary(
             carryOvers: ordered.count - 1,
-            firstName: ordered.first?.name,
-            latestName: ordered.last?.name
+            firstName: displayName(ordered.first?.name),
+            latestName: displayName(ordered.last?.name)
         )
+    }
+
+    /// 이름을 **모르는** 것과 빈 이름을 같게 다룬다.
+    ///
+    /// 소비자는 `nil`인지만 보고 그릴지 말지 정한다. 빈 문자열을 그대로 실으면 툴팁이
+    /// `" → DEMO 스프린트 (5)"`처럼 앞이 빈 화살표가 되어 화면에 나간다. 여기서 거르면
+    /// 뷰는 손대지 않아도 된다 — `ArcadeUI`에는 테스트 타깃이 없으므로 판단을 두지 않는 편이 낫다.
+    ///
+    /// **횟수에는 영향이 없다.** 이름을 못 읽었다고 그 스프린트를 거친 사실이 사라지지는 않는다.
+    private static func displayName(_ raw: String?) -> String? {
+        guard let trimmed = raw?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !trimmed.isEmpty
+        else { return nil }
+        return trimmed
     }
 }
