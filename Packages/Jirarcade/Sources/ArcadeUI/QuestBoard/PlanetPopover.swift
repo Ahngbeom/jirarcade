@@ -53,49 +53,22 @@ struct PlanetPopover: View {
         .frame(width: metrics.size(.ticketCardWidth))
     }
 
-    private var tierLabel: String {
-        switch planet.tier {
-        case .fresh: "·"
-        case .stale: "STALE"
-        case .boss:  "BOSS"
-        case .raid:  "RAID"
-        }
-    }
+    /// 등급 라벨·색·정체일 표기·마감 표기·스프린트 툴팁은 `TicketPresentation`에
+    /// 모았다 — 카드가 정본이고, 팝오버는 위임만 한다(카드와 다르게 적으면 어느
+    /// 쪽이 맞는지 알 수 없다).
+    private var tierLabel: String { TicketPresentation.tierLabel(planet.tier) }
 
-    private var tierColor: Color {
-        switch planet.tier {
-        case .fresh: theme.line
-        case .stale: theme.accent
-        case .boss, .raid: theme.boss
-        }
-    }
+    private var tierColor: Color { TicketPresentation.tierColor(planet.tier, theme: theme) }
 
-    /// 관측 이력이 없는 티켓의 정체일을 확정처럼 보여주면 "관측한 것만 안다"는
-    /// 이 앱의 원칙이 화면에서 깨진다. 카드와 같은 규칙이다.
     private var stagnationLabel: String {
-        (planet.isApproximate ? "~" : "") + "\(planet.daysStagnant)d"
+        TicketPresentation.stagnationLabel(days: planet.daysStagnant, isApproximate: planet.isApproximate)
     }
 
-    private var dueLabel: String? {
-        switch planet.dueState {
-        case .none: nil
-        case .overdue(let days): "\(days)일 지남"
-        case .dueIn(let days): days == 0 ? "오늘 마감" : "D-\(days)"
-        }
-    }
+    private var dueLabel: String? { TicketPresentation.dueLabel(planet.dueState) }
 
-    /// 강조 기준은 뷰가 정한다(`ArcadeCore`는 사실만 담는다). D-3 이내부터 눈에 띄게 한다.
-    private var dueColor: Color {
-        switch planet.dueState {
-        case .none:              theme.inkTertiary
-        case .overdue:           theme.danger
-        case .dueIn(let days):   days <= 3 ? theme.accent : theme.inkTertiary
-        }
-    }
+    private var dueColor: Color { TicketPresentation.dueColor(planet.dueState, theme: theme) }
 
     private var sprintTooltip: String {
-        guard let first = planet.firstSprintName, let latest = planet.latestSprintName
-        else { return "" }
-        return first == latest ? first : "\(first) → \(latest)"
+        TicketPresentation.sprintTooltip(first: planet.firstSprintName, latest: planet.latestSprintName)
     }
 }

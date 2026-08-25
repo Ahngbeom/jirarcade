@@ -61,26 +61,21 @@ struct PlanetView: View {
         planet.tier >= .boss ? 2 : 1
     }
 
-    private var tierColor: Color {
-        switch planet.tier {
-        case .fresh: theme.line
-        case .stale: theme.accent
-        case .boss, .raid: theme.boss
-        }
-    }
+    /// 카드가 정본이다(`TicketPresentation`). 여기서는 위임만 한다.
+    private var tierColor: Color { TicketPresentation.tierColor(planet.tier, theme: theme) }
 
     /// 마감 임박은 드물게 켜지는 신호이므로 상시 손잡이가 아니라 바깥 링으로 그린다.
-    /// D-3을 경계로 삼는 판단은 뷰의 몫이다 — `DueState`는 사실만 담는다.
+    /// D-3을 경계로 삼는 판단은 뷰의 몫이다 — `DueState`는 사실만 담는다. 색은
+    /// `TicketPresentation.dueColor`(카드와 공유)에서 받고, 굵기(D-3 이내는 1,
+    /// overdue는 2)는 행성 고유의 표현이라 여기 그대로 둔다.
     @ViewBuilder private var dueRing: some View {
         if case .dueIn(let days) = planet.dueState, days <= 3 {
-            // `TicketCardView.dueColor`가 D-3 이내를 accent로 그린다 — overdue만 danger를
-            // 쓴다. 카드와 궤도가 같은 티켓을 다른 색으로 그리면 어느 쪽이 맞는지 알 수 없다.
             Circle()
-                .strokeBorder(theme.accent, lineWidth: 1)
+                .strokeBorder(TicketPresentation.dueColor(planet.dueState, theme: theme), lineWidth: 1)
                 .padding(-3)
         } else if case .overdue = planet.dueState {
             Circle()
-                .strokeBorder(theme.danger, lineWidth: 2)
+                .strokeBorder(TicketPresentation.dueColor(planet.dueState, theme: theme), lineWidth: 2)
                 .padding(-3)
         }
     }
