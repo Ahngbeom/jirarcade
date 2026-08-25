@@ -117,28 +117,8 @@ public enum JiraSearchResponse {
 }
 
 extension JiraSearchResponse {
-    // ISO8601DateFormatter/DateFormatter는 Sendable을 준수하지 않지만, 설정을 마친 뒤
-    // 값을 바꾸지 않고 포맷팅에만 쓰므로(Apple 문서상 이 두 포매터는 스레드 세이프) 안전하다.
-    /// `.withFractionalSeconds`가 켜진 포매터는 소수점이 **없으면 nil을 돌려준다**.
-    /// Jira Cloud는 보통 `.000`을 붙이지만 배포·프록시에 따라 빠질 수 있고, 그때 이슈가
-    /// 통째로 디코딩 실패해 전량 손실로 이어진다. 두 포매터를 순서대로 시도한다.
-    fileprivate nonisolated(unsafe) static let timestampFormatters: [ISO8601DateFormatter] = {
-        let variants: [ISO8601DateFormatter.Options] = [
-            [.withInternetDateTime, .withFractionalSeconds],
-            [.withInternetDateTime],
-        ]
-        return variants.map { options in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = options
-            return formatter
-        }
-    }()
-
     fileprivate static func parseTimestamp(_ text: String) -> Date? {
-        for formatter in timestampFormatters {
-            if let date = formatter.date(from: text) { return date }
-        }
-        return nil
+        JiraTimestamp.parse(text)
     }
 
     fileprivate static let dateOnlyFormatter: DateFormatter = {

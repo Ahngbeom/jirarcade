@@ -8,6 +8,7 @@ struct QuestBoardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: AppModel
     @Namespace private var cardNamespace
+    @State private var detailTarget: DetailTarget?
 
     /// 동기화 전과 "티켓이 없다"를 구분한다. `ObservationCabinet`이 쓰는 것과 같은
     /// 판정(`lastSync`)이다 — 집계값으로 판정하면 백필이 넣은 이벤트 때문에 이 안내가
@@ -55,7 +56,8 @@ struct QuestBoardView: View {
                                 BoardLaneView(
                                     lane: lane, axis: snapshot.axis, metrics: board,
                                     model: model, cardNamespace: cardNamespace,
-                                    wipLimit: lane.stage == .active ? model.wipLimit : nil
+                                    wipLimit: lane.stage == .active ? model.wipLimit : nil,
+                                    onOpenDetail: { key in detailTarget = DetailTarget(id: key) }
                                 )
                             }
                         }
@@ -70,5 +72,21 @@ struct QuestBoardView: View {
                        value: model.pendingTransitions)
         }
         .background(theme.surfaceBase)
+        // 시트는 환경을 물려받지 않는다. 테마만 다시 주입하고 밀도를 빠뜨리면 시트 안쪽만
+        // 최소 밀도(compact)로 떨어져, 같은 라벨이 보드와 시트에서 다른 크기로 보인다
+        // (ArcadeFloorView.statusBar의 설정 시트와 같은 배선).
+        .sheet(item: $detailTarget) { target in
+            TicketDetailSheet(issueKey: target.id, model: model)
+                .frame(minWidth: metrics.size(.sheetMinWidth),
+                       minHeight: metrics.size(.sheetMinHeight))
+                .environment(\.arcadeTheme, theme)
+                .environment(\.arcadeMetrics, metrics)
+        }
     }
+}
+
+/// `sheet(item:)`이 `Identifiable`을 요구한다. 티켓 키 자체가 식별자이므로
+/// 얇게 감싸기만 한다.
+private struct DetailTarget: Identifiable {
+    let id: String
 }

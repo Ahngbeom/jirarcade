@@ -52,26 +52,8 @@ extension JiraSprint: Decodable {
         try JSONDecoder().decode([FailableSprint].self, from: data).compactMap(\.value)
     }
 
-    /// `.withFractionalSeconds`가 켜진 포매터는 소수점이 **없으면 nil을 돌려준다**.
-    /// Jira는 보통 `.000`을 붙이지만 배포·프록시에 따라 빠질 수 있어 두 포매터를 순서대로 쓴다.
-    /// `JiraSearchResponse`가 `updated`에 쓰는 것과 같은 이유다.
-    nonisolated(unsafe) static let timestampFormatters: [ISO8601DateFormatter] = {
-        let variants: [ISO8601DateFormatter.Options] = [
-            [.withInternetDateTime, .withFractionalSeconds],
-            [.withInternetDateTime],
-        ]
-        return variants.map { options in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = options
-            return formatter
-        }
-    }()
-
     static func parseTimestamp(_ text: String) -> Date? {
-        for formatter in timestampFormatters {
-            if let date = formatter.date(from: text) { return date }
-        }
-        return nil
+        JiraTimestamp.parse(text)
     }
 }
 
@@ -86,13 +68,26 @@ public enum JiraFieldCatalog {
     /// **이름으로 찾지 않는다.** 실측 사이트의 필드 이름은 `"Sprint"`가 아니라 `"스프린트"`였다.
     /// 이름은 사이트 로케일을 따르므로, 이름 비교는 영어 사이트에서만 동작하고 다른 곳에서는
     /// 아무것도 찾지 못한 채 조용히 지나간다.
+    ///
+    /// 카탈로그는 수백 개 항목이 올 수 있는 목록이다. 항목 하나가 `id`를 안 주는 등
+    /// 모양이 안 맞아도 나머지에서 스프린트 필드를 찾는 데는 지장이 없어야 한다 —
+    /// `ChangelogDTO.swift`의 `JiraStatusCatalogEntry.decodeList`와 같은 이유로
+    /// 원소 단위 방어를 쓴다. 이게 없으면 무관한 항목 하나 때문에 배열 전체 디코드가
+    /// 던지고, 그 예외를 호출자가 "필드 없음"으로 오해해 저장된 ID를 지운다
+    /// (`AppModel.validate` 참고 — 최종 전체 브랜치 리뷰 Finding 3).
     public static func sprintFieldID(in data: Data) throws -> String? {
         struct Entry: Decodable {
             let id: String
             let schema: Schema?
             struct Schema: Decodable { let custom: String? }
         }
-        let entries = try JSONDecoder().decode([Entry].self, from: data)
+        struct Lenient: Decodable {
+            let entry: Entry?
+            init(from decoder: any Decoder) throws {
+                entry = try? Entry(from: decoder)
+            }
+        }
+        let entries = try JSONDecoder().decode([Lenient].self, from: data).compactMap(\.entry)
         return entries.first { $0.schema?.custom == sprintSchema }?.id
     }
 }

@@ -272,3 +272,37 @@ private let activeOnlyWorkflow = WorkflowMap(statusToStage: ["In Progress": .act
     #expect(try sprintField.load() == "customfield_10020",
             "조회 자체가 실패했을 뿐 필드가 없어졌다는 뜻은 아니다")
 }
+
+/// authoritative-lookup의 세 번째 경계, `/field` 응답은 200으로 왔지만 **디코딩 자체가
+/// 실패**한 경우다. 앞의 두 테스트와 다르다: 저 위는 조회가 아예 실패한 경우이고, 이건
+/// 조회는 됐는데 응답 모양이 깨진 경우다. 둘 다 "필드가 없다"는 사실을 증언하지 않으므로
+/// 저장된 ID를 지우면 안 된다(최종 전체 브랜치 리뷰 Finding 3).
+@MainActor
+@Test func aFieldCatalogThatFailsToDecodeDoesNotWipeAValidStoredID() async throws {
+    let sprintField = InMemorySprintFieldStore()
+    var scripts: [ScriptedHTTP] = [
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data(fieldsBody.utf8)),
+        ]),
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            // 최상위가 배열이 아니다 — 개별 원소 방어(`Lenient`)로는 못 살리는,
+            // 응답 자체가 어긋난 경우다.
+            .init(status: 200, body: Data(#"{"unexpected":"shape"}"#.utf8)),
+        ]),
+    ]
+    let model = try makeModel(
+        workflow: InMemoryWorkflowStore(seeded: activeOnlyWorkflow),
+        sprintField: sprintField,
+        http: { scripts.removeFirst() }
+    )
+
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "t1")
+    #expect(try sprintField.load() == "customfield_10020")
+
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "t2")
+
+    #expect(try sprintField.load() == "customfield_10020",
+            "카탈로그를 읽지 못했을 뿐 필드가 없어졌다는 뜻은 아니다")
+}
