@@ -82,11 +82,12 @@ public struct ScoreEngine: Sendable {
             )
             scored.append(ScoredEvent(event: event, xp: xp))
 
-            // 갱신 규칙은 StatusTimeline이 유일하게 정의한다. 여기에 규칙을 복사해 두면
-            // 보드가 쓰는 최종값과 채점이 쓰는 시점별 값이 서로 다른 규칙으로 갈릴 수 있다.
+            // 기준선을 어떻게 미는지는 `StatusTimeline.apply`가 정의하고, 어떤 이벤트가
+            // 밀 자격을 갖는지는 아래 두 가드가 정한다 — 되돌림 쌍과 백필의 no-op
+            // 전환(fromStatus == toStatus)은 밀지 않는다. `latestStatusEntry`가 같은
+            // 짝을 이룬다. 한쪽만 옮겨 가면 보드가 쓰는 최종값과 채점이 쓰는 시점별
+            // 값이 서로 다른 규칙으로 갈린다.
             guard reverted.contains(index) == false else { continue }
-            // 백필의 no-op 전환(fromStatus == toStatus)도 기준선을 밀지 않는다 —
-            // `StatusTimeline.latestStatusEntry`와 같은 판정이다.
             guard StatusTimeline.isNoOpTransition(event) == false else { continue }
             StatusTimeline.apply(event, to: &statusEnteredAt)
         }
