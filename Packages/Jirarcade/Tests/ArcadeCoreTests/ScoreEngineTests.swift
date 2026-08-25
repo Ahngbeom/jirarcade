@@ -429,3 +429,96 @@ private func calendarDay(_ date: Date) -> Date {
     #expect(summary.totalXP == 0)
     #expect(summary.streak.currentStreak == 0)
 }
+
+// MARK: - 정체 기준선을 밀지 않는 이벤트
+
+/// 이 절의 픽스처는 하나의 티켓 위에 세 가지를 겹쳐 둔다: 긴 정체, 창 안의 되돌림 쌍,
+/// 그리고 그 뒤의 전진 전이. **마지막 전이가 받는 XP가 곧 기준선의 위치를 말한다** —
+/// 24일 정체를 깬 전이와 3일 정체를 깬 전이는 배수가 다르기 때문이다.
+///
+/// 보드가 그리는 정체일(`StatusTimeline.latestStatusEntry`)과 채점이 쓰는 시점별 기준선은
+/// 같은 규칙이어야 한다. 시간축 쪽은 `StatusTimelineTests`가 지키고, 이 절이 채점 쪽을 지킨다.
+private let baselineStart = iso("2026-07-01T09:00:00Z")
+
+private func transition(
+    _ key: String = "DEMO-1", from: String, to: String, at stamp: String,
+    priorUpdatedAt: Date? = nil
+) -> DomainEvent {
+    DomainEvent(issueKey: key, kind: .statusChanged, fromStatus: from, toStatus: to,
+                observedAt: iso(stamp), actorAccountId: "acc-me",
+                priorUpdatedAt: priorUpdatedAt)
+}
+
+/// 07-01에 In Progress로 들어가고, 07-21에 3분짜리 오조작을 하고, 07-25에 진짜로 옮긴다.
+private func revertPairFixture() -> (opening: DomainEvent, pair: [DomainEvent], forward: DomainEvent) {
+    (
+        opening: transition(from: "To Do", to: "In Progress", at: "2026-07-01T09:00:00Z",
+                            priorUpdatedAt: baselineStart),
+        pair: [
+            transition(from: "In Progress", to: "In Review", at: "2026-07-21T09:00:00Z"),
+            transition(from: "In Review", to: "In Progress", at: "2026-07-21T09:03:00Z"),
+        ],
+        forward: transition(from: "In Progress", to: "In Review", at: "2026-07-25T09:00:00Z")
+    )
+}
+
+private func scoreOfForward(_ events: [DomainEvent]) throws -> Int {
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc)
+    let result = engine.recompute(events: events, issues: [:], now: now)
+    let forward = try #require(result.scored.first {
+        $0.event.observedAt == iso("2026-07-25T09:00:00Z")
+    })
+    return forward.xp
+}
+
+/// **되돌림 쌍은 채점의 정체 기준선도 밀지 않는다.** 3분 만에 되돌린 오조작이 24일 정체를
+/// 지우면, 보드는 24일을 그리는데 `wakeXP`는 "방금 옮긴 것"으로 채점해 두 층이 갈린다.
+@Test func aRevertPairDoesNotMoveTheScoringBaseline() throws {
+    let fixture = revertPairFixture()
+
+    let withPair = try scoreOfForward([fixture.opening] + fixture.pair + [fixture.forward])
+    let withoutPair = try scoreOfForward([fixture.opening, fixture.forward])
+
+    #expect(withPair == withoutPair)
+    // 정체 24일 → 40 × (1 + 24/14) = 108.57 → 109, × 1.5 = 163.5 → 164, × 1.05(연속 1일차) = 172.2 → 172.
+    // 값을 못박아 두는 이유: 두 실행이 **똑같이 틀려도** 위의 등식은 초록이다.
+    #expect(withPair == 172)
+}
+
+/// **인덱스는 넘긴 배열 기준이다.** `recompute`는 입력을 `ordered`로 정렬해 순회하므로
+/// `RevertDetector`에도 `ordered`를 넘겨야 한다. `events`를 넘기면 컴파일되고 범위 안에도
+/// 있지만 **엉뚱한 위치를 건너뛴다** — 그러면 실제로는 되돌림이 아닌 전이가 기준선을 밀고,
+/// 되돌림 쌍이 민 기준선은 남는다.
+///
+/// 픽스처는 정렬 전후 순서가 **다르다**. 같으면 이 테스트는 아무것도 증명하지 않는다.
+@Test func theRevertSkipFollowsTheOrderTheLoopWalks() throws {
+    let fixture = revertPairFixture()
+    let chronological = [fixture.opening] + fixture.pair + [fixture.forward]
+    let shuffled = [fixture.forward, fixture.opening] + fixture.pair
+
+    #expect(shuffled.map(\.observedAt) != chronological.map(\.observedAt),
+            "정렬 전후가 같은 픽스처로는 순서 의존을 잡을 수 없다")
+
+    let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utc)
+    let ordered = engine.recompute(events: chronological, issues: [:], now: now)
+    let jumbled = engine.recompute(events: shuffled, issues: [:], now: now)
+
+    #expect(ordered.scored.map(\.xp) == jumbled.scored.map(\.xp))
+    #expect(ordered.summary.totalXP == jumbled.summary.totalXP)
+}
+
+/// **같은 상태로의 전환(no-op)도 채점의 기준선을 밀지 않는다.** 백필은 라이브 동기화와
+/// 달리 이런 이벤트를 거르지 않아 실제 로그에 남는다. 밀게 두면 아무 데도 가지 않은
+/// 티켓의 정체가 채점에서만 리셋된다.
+@Test func aNoOpTransitionDoesNotMoveTheScoringBaseline() throws {
+    let opening = transition(from: "To Do", to: "In Progress", at: "2026-07-01T09:00:00Z",
+                             priorUpdatedAt: baselineStart)
+    let noOp = transition(from: "In Progress", to: "In Progress", at: "2026-07-21T09:00:00Z")
+    let forward = transition(from: "In Progress", to: "In Review", at: "2026-07-25T09:00:00Z")
+
+    let withNoOp = try scoreOfForward([opening, noOp, forward])
+    let withoutNoOp = try scoreOfForward([opening, forward])
+
+    #expect(withNoOp == withoutNoOp)
+    #expect(withNoOp == 172)
+}

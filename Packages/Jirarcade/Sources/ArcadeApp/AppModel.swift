@@ -76,6 +76,9 @@ public final class AppModel {
     /// 티켓별 현재 상태 진입 시각. 없는 티켓은 보드가 `jiraUpdatedAt`으로 폴백하고
     /// 그 사실을 화면에 표시한다.
     public private(set) var statusEnteredAt: [String: Date] = [:]
+    /// 티켓별 "이미 거쳐 간 상태로 돌아온" 횟수. 카드가 맥락을 그릴 때 쓴다.
+    /// **표시 전용이며 채점에 쓰지 않는다.**
+    public private(set) var statusRevisits: [String: Int] = [:]
     /// 위생 리포트. HUD가 읽는다.
     public private(set) var hygiene: HygieneReport?
     /// 실효 워크플로 맵(사용자 매핑 + 폴백)의 **캐시**.
@@ -288,6 +291,7 @@ public final class AppModel {
         // 전까지 남의 티켓이 화면에 떠 있다.
         issues = []
         statusEnteredAt = [:]
+        statusRevisits = [:]
         hygiene = nil
         boardWorkflow = WorkflowMap(statusToStage: [:])
         // 백필에서 나온 값들도 함께 버린다. 남으면 다른 계정으로 로그인했을 때 이전 조직의
@@ -568,6 +572,7 @@ public final class AppModel {
         BoardLayout.snapshot(
             issues: optimisticIssues,
             statusEnteredAt: statusEnteredAt,
+            statusRevisits: statusRevisits,
             workflow: boardWorkflow,
             rules: rules,
             minimumSpacing: minimumSpacing,
@@ -734,7 +739,14 @@ public final class AppModel {
         boardWorkflow = workflowMap
 
         issues = mirror.values.sorted { $0.key < $1.key }
-        statusEnteredAt = StatusTimeline.latestStatusEntry(from: events)
+        statusEnteredAt = StatusTimeline.latestStatusEntry(
+            from: events, revertWindowMinutes: rules.revertWindowMinutes
+        )
+        // 로그를 두 번 돈다. 한 번으로 합칠 수 있으나 티켓 49건에 이벤트 5,900건
+        // 규모에서 그 비용은 재보지 않고 최적화할 값이 아니다.
+        statusRevisits = StatusRevisits.counts(
+            from: events, revertWindowMinutes: rules.revertWindowMinutes
+        )
         hygiene = HygieneCalculator(rules: rules, workflow: workflowMap, calendar: calendar)
             .evaluate(issues, now: now)
 
@@ -1326,6 +1338,10 @@ public final class AppModel {
     /// 미러와 화면이 갈라진다.
     func seedIssuesForTesting(_ seeded: [ObservedIssue]) {
         issues = seeded.sorted { $0.key < $1.key }
+    }
+
+    func seedStatusRevisitsForTesting(_ seeded: [String: Int]) {
+        statusRevisits = seeded
     }
 
     /// 대기 중인 전이 타이머 개수. `transitionTasks`는 `private`이라 테스트가 직접 보지
