@@ -147,6 +147,47 @@ private func transition(id: String, name: String, to status: String) throws -> J
     #expect(model.statusRevisits.isEmpty)
 }
 
+/// **왕복 횟수를 실제로 만들어내는 경로**를 지킨다. `signOutClearsTheRevisitCounts`는
+/// 테스트 전용 시더로 값을 넣으므로 지우는 쪽만 본다 — `recomputeFromLog()`의 산출
+/// 대입을 지워도 그 테스트는 초록이고 `⇄N`이 어느 카드에도 뜨지 않는다.
+///
+/// 이벤트를 스토어에 미리 넣는 이유: 주입한 시계가 고정값이라 동기화를 두 번 돌려도
+/// 두 전이의 `observedAt`이 같아지고, 그러면 되돌림 창 안에 들어가 왕복으로 세지 않는다.
+/// 프로덕션에서도 이 값의 원본은 스토어의 이벤트 로그다.
+@MainActor
+@Test func revisitCountsReachTheBoardFromTheEventLog() async throws {
+    let store = try ArcadeStore(container: ArcadeStore.makeInMemoryContainer())
+    // 창(10분) 밖에서 In Progress로 돌아온다 — 오조작이 아니라 진짜 복귀다.
+    try store.applySync(issues: nil, events: [
+        DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
+                    fromStatus: "In Progress", toStatus: "In Review",
+                    observedAt: iso("2026-08-01T09:00:00Z"), actorAccountId: "acc-me"),
+        DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
+                    fromStatus: "In Review", toStatus: "In Progress",
+                    observedAt: iso("2026-08-05T09:00:00Z"), actorAccountId: "acc-me"),
+    ], observedAt: iso("2026-08-05T09:00:00Z"))
+
+    let model = try makeModel(
+        store: store,
+        workflow: InMemoryWorkflowStore(seeded: demoWorkflow),
+        http: {
+            ScriptedHTTP([
+                .init(status: 200, body: Data(myselfBody.utf8)),
+                .init(status: 200, body: Data("[]".utf8)),
+                .init(status: 200, body: Data(issuesBody(status: "In Progress",
+                                                         assignee: "acc-me").utf8)),
+            ])
+        },
+        now: now
+    )
+    await model.signIn(site: "example.atlassian.net", email: "t@example.com", token: "tok")
+    await model.syncNow(reason: .manual)
+
+    let slots = model.boardSnapshot(minimumSpacing: 0.1).lanes.flatMap(\.slots)
+    let slot = try #require(slots.first { $0.issue.key == "DEMO-1" })
+    #expect(slot.revisits == 1)
+}
+
 /// 뷰가 시계와 달력을 직접 만들지 않도록 모델이 스냅샷을 준다.
 @MainActor
 @Test func buildsTheBoardSnapshotWithTheInjectedClock() async throws {
