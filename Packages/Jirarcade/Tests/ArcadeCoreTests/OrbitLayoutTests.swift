@@ -325,8 +325,20 @@ private func system(_ result: OrbitSnapshot, _ statusName: String) -> OrbitSyste
 
 /// 줌은 소속을 바꾸지 않는다. 서명이 줌에 반응하면 확대할 때마다 스프링이 걸려
 /// 손가락과 화면이 어긋난다.
+///
+/// **같은 `Stage`에 상태를 둘 넣는 이유:** `statusCentre`는 상태가 하나뿐이면
+/// 줌과 무관하게 `stageCenter`를 그대로 돌려준다. 외톨이 성계로 시험하면 태양 중심이
+/// 애초에 움직이지 않으므로, 서명에 `center`를 넣는 회귀를 이 테스트가 놓친다.
 @Test func keepsTheMembershipSignatureStableAcrossZoom() {
-    let issues = [issue(key: "DEMO-1", status: "Dev")]
+    let issues = [
+        issue(key: "DEMO-1", status: "Dev"),
+        issue(key: "DEMO-2", status: "Staging"),
+    ]
+
+    // 이 입력에서 태양 중심이 정말로 줌에 따라 움직이는지 먼저 확인한다 —
+    // 그러지 않으면 아래 단언은 아무것도 지키지 못한다.
+    #expect(snapshot(issues, zoom: 0).systems.first?.center
+            != snapshot(issues, zoom: 1).systems.first?.center)
 
     #expect(snapshot(issues, zoom: 0).membershipSignature
             == snapshot(issues, zoom: 1).membershipSignature)

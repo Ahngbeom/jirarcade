@@ -25,12 +25,9 @@ struct PlanetView: View {
             .frame(width: diameter, height: diameter)
             .opacity(isPending ? 0.5 : 1)
             .scaleEffect(pulsing ? 1.12 : 1)
-            .onAppear {
-                guard planet.tier == .raid, !reduceMotion else { return }
-                withAnimation(.easeInOut(duration: 2.4).repeatForever(autoreverses: true)) {
-                    pulsing = true
-                }
-            }
+            // 판단과 애니메이션 리터럴을 `syncPulsing()` 한 곳에만 둔다 — 진입할 때와
+            // 등급·설정이 바뀔 때 서로 다른 조건을 쓰면 두 시점의 맥동이 어긋난다.
+            .onAppear { syncPulsing() }
             // 행성의 뷰 정체성은 `planet.id`(티켓 키)로 유지된다. 상태를 옮기면 정체일이
             // 리셋돼 등급이 바뀌는데(raid→fresh로 내려가거나 fresh→raid로 오르거나) `.onAppear`는
             // 다시 불리지 않으므로, 내려간 행성이 계속 맥동하거나 오른 행성이 맥동을 놓친다.
