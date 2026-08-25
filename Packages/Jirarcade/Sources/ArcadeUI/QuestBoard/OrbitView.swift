@@ -222,6 +222,29 @@ struct OrbitView: View {
                       height: min(max(pan.height, -bound), bound))
     }
 
+    /// 배율이 바뀔 때 화면 중심이 가리키던 논리 좌표를 붙잡도록 `committedPan`을
+    /// 다시 계산한다.
+    ///
+    /// `OrbitMetrics.point`는 `logical.x * scale + pan.width`로 화면 좌표를 만든다.
+    /// 화면 중심(팬 성분 기준 0)이 가리키는 논리 좌표를 `L`이라 하면
+    /// `L * scale + pan = 0` → `L = -pan / scale`이다. 배율만 `scale`에서
+    /// `newScale`로 바꾸고 `pan`을 그대로 두면 같은 화면 중심이 가리키는 논리
+    /// 좌표가 `-pan / newScale`로 바뀐다 — 즉 `L`이 유지되지 않는다.
+    /// `L`을 유지하려면 `pan' = pan * (newScale / scale)`이어야 한다(같은 `L`을
+    /// `newScale`에 대입해 풀면 나온다).
+    ///
+    /// 이 보정이 없으면 배율만 커지고 팬은 그대로라, 논리 원점(0,0) — `Stage`
+    /// 2×2 격자의 **가운데**, 성계가 하나도 없는 빈 자리 — 만 화면 중심에 고정된
+    /// 채 나머지가 원점에서 점점 멀어진다. 확대할수록 성계 넷이 사방으로 흩어져
+    /// 결국 전부 화면 밖으로 나간다.
+    private func anchoredPan(scaleRatio: Double, extent: Double, newScale: Double) -> CGSize {
+        clampPan(
+            CGSize(width: committedPan.width * scaleRatio,
+                  height: committedPan.height * scaleRatio),
+            extent: extent, scale: newScale
+        )
+    }
+
     private func pan(viewport: CGSize, extent: Double) -> some Gesture {
         DragGesture()
             .onChanged { dragPan = $0.translation }
@@ -240,9 +263,16 @@ struct OrbitView: View {
         MagnifyGesture()
             .onChanged { gestureScale = $0.magnification }
             .onEnded { value in
-                let base = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
-                scale = clampScale(base * value.magnification,
-                                   viewport: viewport, extent: extent)
+                let oldScale = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
+                let newScale = clampScale(oldScale * value.magnification,
+                                          viewport: viewport, extent: extent)
+                scale = newScale
+                // step(_:viewport:extent:)와 같은 이유로 팬을 함께 보정한다 — 아래
+                // 그 함수의 주석 참고.
+                committedPan = anchoredPan(
+                    scaleRatio: oldScale != 0 ? newScale / oldScale : 1,
+                    extent: extent, newScale: newScale
+                )
                 gestureScale = 1
             }
     }
@@ -272,9 +302,17 @@ struct OrbitView: View {
     }
 
     private func step(_ factor: Double, viewport: CGSize, extent: Double) {
-        let base = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
+        let oldScale = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
+        let newScale = clampScale(oldScale * factor, viewport: viewport, extent: extent)
+        // `clampScale`이 상·하한에서 값을 잘라내므로 요청한 `factor`가 그대로
+        // 적용됐다고 가정할 수 없다 — 실제로 적용된 비율(`newScale / oldScale`)로
+        // 팬을 보정해야 화면 중심이 어긋나지 않는다(`anchoredPan` 주석 참고).
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
-            scale = clampScale(base * factor, viewport: viewport, extent: extent)
+            scale = newScale
+            committedPan = anchoredPan(
+                scaleRatio: oldScale != 0 ? newScale / oldScale : 1,
+                extent: extent, newScale: newScale
+            )
         }
     }
 }
