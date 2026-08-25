@@ -52,15 +52,10 @@ struct BoardLaneView: View {
         }
     }
 
-    private var stageLabel: String {
-        switch lane.stage {
-        case .backlog: return "BACKLOG"
-        case .active:  return "ACTIVE"
-        case .review:  return "REVIEW"
-        case .verify:  return "VERIFY"
-        case .done:    return "DONE"
-        }
-    }
+    /// 궤도 태양의 이름과 같은 곳(`TicketPresentation.stageLabel`)에서 온다 — 레인과
+    /// 궤도가 같은 단계를 다르게 부르면 두 화면이 같은 데이터의 두 시선이라는 것이
+    /// 읽히지 않는다.
+    private var stageLabel: String { TicketPresentation.stageLabel(lane.stage) }
 
     private var overWIP: Bool {
         guard let wipLimit else { return false }

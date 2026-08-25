@@ -135,6 +135,8 @@ Packages/Jirarcade/
 - 카드에 스프린트 이월 횟수 — 티켓이 몇 번이나 다음 스프린트로 미뤄졌는지
 - 카드에서 티켓 상세를 열어 본문과 최근 댓글을 읽기
 - 제목 수정과 댓글 등록 (충돌 감지 없음 — 저장 직전 남이 먼저 고쳤어도 마지막 저장이 이깁니다, Jira 웹과 동일)
+- 궤도 보기 — 상태 하나가 태양이 되고 티켓이 정체일만큼 떨어진 궤도에 놓인다. 확대하면 단계 안에 접혀 있던 실제 상태들이 갈라진다
+- 추정으로 채점 중인 상태를 플로어에서 알림 — 눌러서 매핑 마법사로
 
 **아직 없습니다**
 
@@ -153,6 +155,7 @@ Packages/Jirarcade/
 | [퀘스트 보드 설계](docs/superpowers/specs/2026-08-21-quest-board-design.md) | 보드 배치 알고리즘·레인 렌더링·상태 전이 UI |
 | [스프린트 이월 설계](docs/superpowers/specs/2026-08-24-sprint-carryover-design.md) | 스프린트 필드 식별·이월 계산·표시 경계 |
 | [티켓 상세 설계](docs/superpowers/specs/2026-08-24-ticket-detail-design.md) | ADF 렌더러·쓰기 경로·충돌 미감지·실패 문구 축약 |
+| [궤도 뷰 설계](docs/superpowers/specs/2026-08-24-orbit-view-design.md) | 태양계 문법·계층 줌·좌표 계산·연출 경계 |
 | [실행 기록](docs/superpowers/records/2026-08-14-app-shell-execution.md) | 왜 코드가 지금 모양인지 — 판정과 리뷰가 잡은 결함 |
 | [시각 검증 체크리스트](docs/superpowers/records/2026-08-21-quest-board-visual-checklist.md) | 테스트로 검증할 수 없는 UI 동작 수동 확인 절차 |
 

@@ -182,12 +182,18 @@ func issue(
     assignee: String? = "acc-me",
     assigneeName: String? = "bahn",
     due: Date? = nil,
-    updated: Date = iso("2026-08-12T00:00:00Z")
+    updated: Date = iso("2026-08-12T00:00:00Z"),
+    sprintCarryOvers: Int = 0,
+    firstSprintName: String? = nil,
+    latestSprintName: String? = nil
 ) -> ObservedIssue {
     ObservedIssue(
         key: key, summary: summary, statusName: status, issueType: type,
         priority: priority, assigneeAccountId: assignee, assigneeName: assigneeName,
-        dueDate: due, jiraUpdatedAt: updated
+        dueDate: due, jiraUpdatedAt: updated,
+        sprintCarryOvers: sprintCarryOvers,
+        firstSprintName: firstSprintName,
+        latestSprintName: latestSprintName
     )
 }
 

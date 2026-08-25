@@ -197,27 +197,15 @@ struct TicketCardView: View {
         }
     }
 
-    private var tierLabel: String {
-        switch slot.tier {
-        case .fresh:  return "·"
-        case .stale:  return "STALE"
-        case .boss:   return "BOSS"
-        case .raid:   return "RAID"
-        }
-    }
+    /// 등급 라벨·색·정체일 표기·마감 표기·스프린트 툴팁은 `TicketPresentation`에
+    /// 모았다 — 카드·행성·팝오버가 같은 티켓을 다르게 적으면 안 되기 때문이다.
+    /// 이 카드가 정본이므로 판단 자체는 그쪽에 그대로 옮겼고 여기서는 위임만 한다.
+    private var tierLabel: String { TicketPresentation.tierLabel(slot.tier) }
 
-    private var tierColor: Color {
-        switch slot.tier {
-        case .fresh:  return theme.line
-        case .stale:  return theme.accent
-        case .boss, .raid: return theme.boss
-        }
-    }
+    private var tierColor: Color { TicketPresentation.tierColor(slot.tier, theme: theme) }
 
-    /// 근사값에 `~`를 붙인다. 관측 이력이 없는 티켓의 정체일을 확정처럼 보여주면
-    /// "관측한 것만 안다"는 이 앱의 원칙이 화면에서 깨진다.
     private var stagnationLabel: String {
-        (slot.isApproximate ? "~" : "") + "\(slot.daysStagnant)d"
+        TicketPresentation.stagnationLabel(days: slot.daysStagnant, isApproximate: slot.isApproximate)
     }
 
     /// 카드 툴팁. 왕복과 추정을 **둘 다** 말할 수 있어야 하므로 한 문장으로 고정하지 않는다.
@@ -256,28 +244,11 @@ struct TicketCardView: View {
     /// `AppModel`이 만들지 않는) 상태에서 둘이 다른 답을 낸다.
     private var showsFailureBlock: Bool { pending == nil && failure != nil }
 
-    private var dueLabel: String? {
-        switch slot.dueState {
-        case .none:                 return nil
-        case .overdue(let days):    return "\(days)일 지남"
-        case .dueIn(let days):      return days == 0 ? "오늘 마감" : "D-\(days)"
-        }
-    }
+    private var dueLabel: String? { TicketPresentation.dueLabel(slot.dueState) }
 
-    /// 강조 기준은 뷰가 정한다(`ArcadeCore`는 사실만 담는다). D-3 이내부터 눈에 띄게 한다.
-    private var dueColor: Color {
-        switch slot.dueState {
-        case .none:              return theme.inkTertiary
-        case .overdue:           return theme.danger
-        case .dueIn(let days):   return days <= 3 ? theme.accent : theme.inkTertiary
-        }
-    }
+    private var dueColor: Color { TicketPresentation.dueColor(slot.dueState, theme: theme) }
 
-    /// `ArcadeCore`는 이름 둘을 사실로만 담는다. 문장은 여기서 만든다 —
-    /// `DueState`·`HygieneNextStep`과 같은 경계다.
     private var sprintTooltip: String {
-        guard let first = slot.firstSprintName, let latest = slot.latestSprintName
-        else { return "" }
-        return first == latest ? first : "\(first) → \(latest)"
+        TicketPresentation.sprintTooltip(first: slot.firstSprintName, latest: slot.latestSprintName)
     }
 }

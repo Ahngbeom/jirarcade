@@ -919,3 +919,125 @@ private func assertDoesNotLeak(
     #expect(try accountBinding.load()
             == AccountBinding(site: "example.atlassian.net", accountId: "acc-me").rawValue)
 }
+
+// MARK: - 궤도 스냅샷
+
+private let orbitWorkflow = WorkflowMap(statusToStage: ["To Do": .backlog, "In Progress": .active])
+
+/// `JiraTransition`은 `Decodable` 이니셜라이저만 공개돼 있다(`Sources/JiraKit/DTO.swift`).
+/// `TransitionTests.swift`의 동명 헬퍼와 같은 모양이지만 `private`이라 파일을 넘어
+/// 보이지 않으므로 이 파일에도 둔다.
+private func jiraTransition(id: String, name: String, to status: String) throws -> JiraTransition {
+    let body = """
+    {"transitions":[{"id":"\(id)","name":"\(name)","to":{"name":"\(status)"}}]}
+    """
+    return try #require(JiraTransition.decodeList(Data(body.utf8)).first)
+}
+
+/// 뷰는 `Date()`를 부르지 않는다. 시계와 달력은 모델이 주입한다 —
+/// `boardSnapshot`이 그렇게 하는 이유와 같다.
+@MainActor
+@Test func buildsAnOrbitSnapshotFromTheSameMirrorTheBoardUses() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: orbitWorkflow)
+    let model = try makeModel(
+        workflow: workflow,
+        http: { ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))]) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "In Progress")])
+
+    let orbit = model.orbitSnapshot(zoomProgress: 1)
+
+    #expect(orbit.systems.map(\.statusName) == ["In Progress"])
+    #expect(orbit.systems.first?.planets.map(\.id) == ["DEMO-1"])
+}
+
+/// 대기 중인 전이가 궤도에도 곧바로 보여야 한다. `issues`를 직접 읽으면
+/// 카드에서 상태를 옮겨도 행성이 5초 동안 옛 태양에 남는다.
+@MainActor
+@Test func showsPendingTransitionsInTheOrbitImmediately() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: orbitWorkflow)
+    let model = try makeModel(
+        workflow: workflow,
+        http: { ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))]) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "tok")
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "To Do")])
+
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try jiraTransition(id: "1", name: "시작", to: "In Progress"))
+
+    let orbit = model.orbitSnapshot(zoomProgress: 1)
+    #expect(orbit.systems.map(\.statusName) == ["In Progress"])
+}
+
+/// 낙관적 사본이 스프린트 세 값을 떨어뜨리면, 상태를 옮기는 5초 동안
+/// 카드의 이월 줄이 사라졌다가 돌아온다.
+@MainActor
+@Test func keepsSprintFactsWhileATransitionIsPending() async throws {
+    let workflow = InMemoryWorkflowStore(seeded: orbitWorkflow)
+    let model = try makeModel(
+        workflow: workflow,
+        http: { ScriptedHTTP([.init(status: 200, body: Data(myselfBody.utf8))]) }
+    )
+    await model.signIn(site: "example.atlassian.net", email: "u@e.com", token: "tok")
+    model.seedIssuesForTesting([
+        issue(key: "DEMO-1", status: "To Do", sprintCarryOvers: 4,
+             firstSprintName: "DEMO 스프린트 (1)", latestSprintName: "DEMO 스프린트 (5)"),
+    ])
+
+    model.requestTransition(issueKey: "DEMO-1",
+                            transition: try jiraTransition(id: "1", name: "시작", to: "In Progress"))
+
+    let slot = model.boardSnapshot(minimumSpacing: 0)
+        .lanes.flatMap(\.slots).first { $0.id == "DEMO-1" }
+    #expect(slot?.sprintCarryOvers == 4)
+    #expect(slot?.firstSprintName == "DEMO 스프린트 (1)")
+    #expect(slot?.latestSprintName == "DEMO 스프린트 (5)")
+}
+
+// MARK: - 동기화 진행 표시
+
+/// 동기화가 도는 동안 화면이 그 사실을 알 수 있어야 한다.
+///
+/// 이 값이 없으면 새로고침을 눌러도 아무 반응이 없어 앱이 멈춘 것처럼 보인다.
+/// 백필은 `isBackfilling`으로 같은 일을 이미 하고 있다.
+@MainActor
+@Test func syncingRaisesAFlagTheScreenCanSee() async throws {
+    let creds = InMemoryCredentialStore(seeded: .init(site: "example.atlassian.net",
+                                                      email: "a@example.com", token: "t"))
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),
+            .init(status: 200, body: Data(#"{"issues":[]}"#.utf8)),
+        ])
+    })
+    await model.start()
+
+    #expect(!model.isSyncing, "동기화 전에는 꺼져 있다")
+    await model.syncNow()
+    #expect(!model.isSyncing, "동기화가 끝나면 다시 꺼진다")
+}
+
+/// 실패해도 표시가 꺼져야 한다. 켜진 채로 남으면 새로고침 버튼이 영영 비활성되고
+/// 사용자는 앱을 다시 켜는 것 말고 할 수 있는 일이 없다.
+@MainActor
+@Test func syncingFlagClearsEvenWhenTheSyncFails() async throws {
+    let creds = InMemoryCredentialStore(seeded: .init(site: "example.atlassian.net",
+                                                      email: "a@example.com", token: "t"))
+    let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: ["To Do": .backlog]))
+    let model = try makeModel(credentials: creds, workflow: workflow, http: {
+        ScriptedHTTP([
+            .init(status: 200, body: Data(myselfBody.utf8)),
+            .init(status: 200, body: Data("[]".utf8)),
+            .init(status: 500, body: Data()),                  // 검색 실패
+        ])
+    })
+    await model.start()
+
+    await model.syncNow()
+
+    #expect(!model.isSyncing, "실패 경로에서도 반드시 꺼진다")
+}

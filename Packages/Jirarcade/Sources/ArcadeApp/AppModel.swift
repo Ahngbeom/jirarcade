@@ -40,6 +40,13 @@ public final class AppModel {
     /// 수십 초였다. 그동안 화면이 "과거 기록 불러오기"를 활성 상태로 두면 사용자에게는
     /// 버튼이 먹지 않은 것처럼 보인다.
     public private(set) var isBackfilling: Bool = false
+
+    /// 동기화가 도는 중인가. 화면이 진행을 알리고 새로고침을 잠그는 데 쓴다.
+    ///
+    /// 백필의 `isBackfilling`과 나란히 두는 이유는 성격이 같아서다 — 둘 다
+    /// "지금 네트워크를 치는 중"이고, 그 사실이 보이지 않으면 앱이 멈춘 것처럼 읽힌다.
+    /// 진행률은 두지 않는다: 동기화는 페이지 하나짜리 조회라 셀 것이 없다.
+    public private(set) var isSyncing: Bool = false
     /// 전체 이력 기준 요약. 통산 XP를 계산하는 자리는 여기 하나뿐이다 —
     /// 동기화 경로와 집계 경로가 각자 계산하면 갱신 시점이 달라, 백필 직후부터 다음
     /// 동기화까지 한 화면에 "LV.1"과 "통산 LV.50"이 나란히 뜬다.
@@ -484,6 +491,11 @@ public final class AppModel {
     /// 경우도 마찬가지다. 그래서 `.unauthorized`를 제외한 모든 에러를 스케줄러에 닿기 전에
     /// `SyncFailure`로 한 번 줄인다 — 진단에는 타입/케이스 이름으로 충분하고, 본문은 필요 없다.
     private func performSync() async throws {
+        // 실패해도 반드시 내린다. 켜진 채 남으면 새로고침이 영영 잠기고 사용자가
+        // 할 수 있는 일은 앱을 다시 켜는 것뿐이다.
+        isSyncing = true
+        defer { isSyncing = false }
+
         // `try?`가 Optional을 평탄화하므로(SE-0230) 존재 확인은 한 번이면 된다.
         // 값을 꺼내 쓰지 않고 **있는지만** 보는 이유: 채점에 넘기는 것은 폴백을 밑에 깐
         // `effectiveWorkflow()`이지만, "아직 매핑을 안 했다/못 읽었다"는 판정은 여전히
@@ -581,6 +593,25 @@ public final class AppModel {
         )
     }
 
+    /// 궤도 뷰가 그릴 좌표. `boardSnapshot`과 같은 미러·같은 시계를 쓴다.
+    ///
+    /// 뷰가 `OrbitLayout.snapshot`을 직접 부르지 않는 이유는 그 함수가 `now`와
+    /// `calendar`를 받기 때문이다 — `ArcadeUI`에는 시계가 없어야 한다.
+    ///
+    /// - Parameter zoomProgress: 0이면 `Stage` 넷으로 뭉쳐 보이고 1이면 상태별로
+    ///   갈라진다. 뷰가 줌 배율에서 계산해 넘긴다.
+    public func orbitSnapshot(zoomProgress: Double) -> OrbitSnapshot {
+        OrbitLayout.snapshot(
+            issues: optimisticIssues,
+            statusEnteredAt: statusEnteredAt,
+            workflow: boardWorkflow,
+            rules: rules,
+            zoomProgress: zoomProgress,
+            now: clock(),
+            calendar: calendar
+        )
+    }
+
     /// 대기 중인 전이를 미러 위에 **겹친** 목록.
     ///
     /// 스토어를 건드리지 않는 것이 핵심이다 — 롤백은 `pendingTransitions`에서 지우는
@@ -598,7 +629,13 @@ public final class AppModel {
                 statusName: pending.toStatusName, issueType: issue.issueType,
                 priority: issue.priority, assigneeAccountId: issue.assigneeAccountId,
                 assigneeName: issue.assigneeName, dueDate: issue.dueDate,
-                jiraUpdatedAt: issue.jiraUpdatedAt
+                jiraUpdatedAt: issue.jiraUpdatedAt,
+                // 이 셋을 넘기지 않으면 `init`의 기본값(0/nil)이 들어가, 전이를 기다리는
+                // 5초 동안 카드에서 이월 줄이 사라졌다가 돌아온다. 상태만 바꾼 사본이므로
+                // 스프린트 이력은 원본 그대로여야 한다.
+                sprintCarryOvers: issue.sprintCarryOvers,
+                firstSprintName: issue.firstSprintName,
+                latestSprintName: issue.latestSprintName
             )
         }
     }
