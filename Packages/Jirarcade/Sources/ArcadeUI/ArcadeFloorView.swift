@@ -106,16 +106,39 @@ struct ArcadeFloorView: View {
                     .foregroundStyle(theme.inkTertiary)
             }
             Spacer()
+            // 두 배지는 다른 것을 말한다. 미매핑은 **0점 처리 중**이고, 추정은 폴백이
+            // 넣은 값으로 **채점되고 있는 중**이다. 후자가 더 위험하다 — 방향이 틀린
+            // 추정은 조용히 XP를 준다(보류 성격의 상태가 done으로 추정되면 어디서
+            // 옮겨오든 전진으로 채점되고 마감 보너스까지 붙는다). 그런데도 이 사실은
+            // 설정 시트를 열어야만 보였다.
+            //
+            // 색을 가르는 이유: 추정은 대개 맞다. 둘 다 `danger`로 칠하면 확인이
+            // 필요한 것과 확실히 잃고 있는 것이 같은 무게로 보인다.
             if !model.unmappedStatuses.isEmpty {
-                Text("⚠ 매핑되지 않은 상태 \(model.unmappedStatuses.count)개")
-                    .arcadeType(.readout, .m)
-                    .foregroundStyle(theme.danger)
+                mappingBadge("⚠ 매핑되지 않은 상태 \(model.unmappedStatuses.count)개",
+                             tint: theme.danger)
+            }
+            if !model.guessScoredStatuses.isEmpty {
+                mappingBadge("⚠ 추정으로 채점 중인 상태 \(model.guessScoredStatuses.count)개",
+                             tint: theme.accent)
             }
         }
         .padding(.horizontal, metrics.gutter)
         // 간판에는 위아래로 여유가 필요하다. 다른 줄과 같은 `rowGap`을 주면 워드마크가
         // 제목 표시줄에 붙어 헤더가 아니라 잘린 첫 줄처럼 보인다.
         .padding(.vertical, metrics.sectionGap)
+    }
+
+    /// 매핑 상태를 알리는 배지. 눌러서 마법사로 간다.
+    ///
+    /// 죽은 텍스트로 두면 무엇이 잘못됐는지 알려주고도 고칠 길을 주지 않는다.
+    /// 둘 다 눌리게 하는 이유: 나란히 놓인 배지 중 하나만 반응하면 사용자는
+    /// 안 되는 쪽을 고장으로 읽는다.
+    private func mappingBadge(_ text: String, tint: Color) -> some View {
+        Button(text) { Task { await model.reopenMapping() } }
+            .buttonStyle(.plain)
+            .arcadeType(.readout, .m)
+            .foregroundStyle(tint)
     }
 
     /// 캐비닛은 **폭이 고정**이고 넘치면 다음 줄로 접힌다. 폭을 늘려 화면을 채우면
