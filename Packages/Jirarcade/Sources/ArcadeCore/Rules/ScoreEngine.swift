@@ -82,14 +82,9 @@ public struct ScoreEngine: Sendable {
             )
             scored.append(ScoredEvent(event: event, xp: xp))
 
-            // 기준선을 어떻게 미는지는 `StatusTimeline.apply`가 정의하고, 어떤 이벤트가
-            // 밀 자격을 갖는지는 아래 두 가드가 정한다 — 되돌림 쌍과 백필의 no-op
-            // 전환(fromStatus == toStatus)은 밀지 않는다. `latestStatusEntry`가 같은
-            // 짝을 이룬다. 한쪽만 옮겨 가면 보드가 쓰는 최종값과 채점이 쓰는 시점별
-            // 값이 서로 다른 규칙으로 갈린다.
-            guard step.isReverted == false else { continue }
-            guard StatusTimeline.isNoOpTransition(event) == false else { continue }
-            StatusTimeline.apply(event, to: &statusEnteredAt)
+            // 기준선 갱신 규칙은 `StatusTimeline.apply`가 전부 정의한다 — 여기서 걸러
+            // 넘기지 않는다. `latestStatusEntry`도 같은 한 줄을 부른다.
+            StatusTimeline.apply(event, isReverted: step.isReverted, to: &statusEnteredAt)
         }
 
         let voided = abuseGuard.applyVoids(to: scored)

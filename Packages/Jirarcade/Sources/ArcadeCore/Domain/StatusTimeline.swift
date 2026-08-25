@@ -6,20 +6,29 @@ import Foundation
 /// `jiraUpdatedAt`으로 폴백하는데, 그러면 댓글·워크로그도 기준선을 밀어 정체일이 실제보다
 /// 짧게 나온다. 이벤트 로그가 있으면 언제나 그쪽이 정확하다.
 public enum StatusTimeline {
-    /// 이벤트 하나를 반영한다. **어떤 종류가 기준선을 옮기는가**만 정의하는 원시 연산이며,
-    /// `latestStatusEntry`와 `ScoreEngine.recompute`가 둘 다 이것을 부른다.
-    ///
-    /// **이것만으로는 갱신 규칙이 완성되지 않는다.** 되돌림 쌍(`RevertDetector`)과
-    /// no-op 전환(`isNoOpTransition`)을 건너뛰는 일은 호출자 쪽에 있다. 두 가드 없이
-    /// 이 함수만 부르면, 3초 만에 되돌린 오조작이 3주 정체를 지운다.
+    /// 이벤트 하나를 반영한다. **정체 기준선 갱신 규칙이 전부 여기 있다** — 무엇이
+    /// 기준선을 옮기는가, 그리고 무엇이 옮길 자격을 잃는가.
     ///
     /// `.statusChanged`만 기준선을 옮긴다. `.touched`가 옮기면 댓글 한 줄로 정체일이
     /// 0이 되어, 이 앱이 재려는 것 자체가 사라진다.
     ///
-    /// **덮어쓰기 전에 비교하지 않는다.** 호출자가 시간순으로 넣는다는 전제이며,
-    /// `ScoreEngine`은 정렬된 배열을 순회하고 `latestStatusEntry`는 스스로 정렬한다.
-    public static func apply(_ event: DomainEvent, to map: inout [String: Date]) {
+    /// 되돌림 쌍과 no-op 전환은 옮기지 못한다. 잘못 눌러 3초 만에 되돌린 오조작이 3주
+    /// 정체를 지우면 안 되고, 같은 상태로 다시 들어간 이벤트는 티켓이 아무 데도 가지
+    /// 않았다는 뜻이다.
+    ///
+    /// **`isReverted`를 인자로 받는 이유:** 되돌림은 이벤트 하나만 봐서는 알 수 없다
+    /// (`RevertDetector`가 로그 전체를 본다). 그렇다고 가드를 호출자에게 맡기면 빼먹을
+    /// 수 있고, 빼먹어도 컴파일된다. 인자로 요구하면 빼먹는 대신 거짓을 적어야 한다 —
+    /// 그건 눈에 띈다.
+    ///
+    /// **덮어쓰기 전에 비교하지 않는다.** 호출자가 시간순으로 넣는다는 전제이며, 두
+    /// 호출자 모두 `RevertDetector.chronology`가 만든 순서를 그대로 돈다.
+    public static func apply(
+        _ event: DomainEvent, isReverted: Bool, to map: inout [String: Date]
+    ) {
         guard event.kind == .statusChanged else { return }
+        guard isReverted == false else { return }
+        guard isNoOpTransition(event) == false else { return }
         map[event.issueKey] = event.observedAt
     }
 
@@ -37,14 +46,7 @@ public enum StatusTimeline {
     ) -> [String: Date] {
         var map: [String: Date] = [:]
         for step in RevertDetector.chronology(of: events, windowMinutes: revertWindowMinutes) {
-            guard step.isReverted == false else { continue }
-            let event = events[step.index]
-            // 백필은 라이브 동기화(`DiffEngine`)와 달리 같은 상태로의 전환(no-op)을 거르지
-            // 않는다. `apply`는 `ScoreEngine`도 함께 쓰는 원시 연산이라 여기서 고치지
-            // 않는다 — 대신 호출 전에 걸러, 실제로 아무 데도 가지 않은 티켓의 정체일이
-            // 리셋되지 않게 한다.
-            guard isNoOpTransition(event) == false else { continue }
-            apply(event, to: &map)
+            apply(events[step.index], isReverted: step.isReverted, to: &map)
         }
         return map
     }
