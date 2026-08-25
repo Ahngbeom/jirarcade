@@ -134,6 +134,19 @@ private func transition(id: String, name: String, to status: String) throws -> J
     #expect(model.transitionTaskCountForTesting == 0)
 }
 
+/// 로그아웃은 계정별 상태를 전부 버린다. 왕복 횟수도 그중 하나다 — 남겨두면 다음 계정의
+/// 같은 키를 가진 티켓 위에 남의 숫자가 그려진다.
+@MainActor
+@Test func signOutClearsTheRevisitCounts() async throws {
+    let model = try makeModel()
+    model.seedStatusRevisitsForTesting(["DEMO-1": 3])
+    #expect(model.statusRevisits.isEmpty == false)
+
+    await model.signOut()
+
+    #expect(model.statusRevisits.isEmpty)
+}
+
 /// 뷰가 시계와 달력을 직접 만들지 않도록 모델이 스냅샷을 준다.
 @MainActor
 @Test func buildsTheBoardSnapshotWithTheInjectedClock() async throws {
