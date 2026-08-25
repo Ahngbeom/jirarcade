@@ -1,5 +1,6 @@
 import SwiftUI
 import ArcadeApp
+import ArcadeCore
 
 public struct RootView: View {
     @Environment(\.colorScheme) private var colorScheme
@@ -8,14 +9,28 @@ public struct RootView: View {
     public init(model: AppModel) { self.model = model }
 
     public var body: some View {
-        RootContent(model: model)
-            .arcadeTheme(model.appearancePreference, systemIsDark: colorScheme == .dark)
+        // 밀도는 **창 폭**에서 나온다. GeometryReader를 여기 한 번만 두고 환경으로
+        // 내려보내는 이유: 화면마다 각자 재면 시트처럼 자기 창을 갖는 것과 본문이
+        // 서로 다른 밀도를 쓰게 되고, 같은 라벨이 화면마다 다른 크기로 보인다.
+        GeometryReader { geometry in
+            RootContent(model: model)
+                .arcadeMetrics(forWidth: geometry.size.width)
+        }
+        // 최소 크기는 GeometryReader **바깥**에 둔다. GeometryReader는 주어진 공간을
+        // 그대로 채우기만 하므로 안쪽에 두면 창의 최소 크기로 전달되지 않는다
+        // (`.windowResizability(.contentMinSize)`가 읽는 값이 이것이다).
+        .frame(minWidth: LayoutTokens.minimumWindow.width,
+               minHeight: LayoutTokens.minimumWindow.height)
+        .arcadeTheme(model.appearancePreference, systemIsDark: colorScheme == .dark)
     }
 }
 
 private struct RootContent: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var metrics
     let model: AppModel
+
+    @State private var showingTokenRenewal = false
 
     var body: some View {
         VStack(spacing: 0) {
@@ -30,7 +45,6 @@ private struct RootContent: View {
             }
             content
         }
-        .frame(minWidth: 720, minHeight: 480)
         .background(theme.surfaceBase)
         .task { await model.start() }
         .onChange(of: model.phase) { old, new in
@@ -65,9 +79,9 @@ private struct RootContent: View {
     /// 무게를 준다 — 아래 `warningBanner`(M5)와 구조적으로 다른 대접이어야, 사용자가
     /// 둘을 한눈에 구분할 수 있다.
     private var expiredBanner: some View {
-        HStack(spacing: 8) {
-            Text("토큰이 만료됐습니다. 새 토큰을 발급받아 다시 로그인해 주세요.")
-                .font(.callout.bold())
+        HStack(spacing: metrics.sectionGap) {
+            Text("토큰이 만료됐습니다. 새 토큰을 발급받아 갱신해 주세요.")
+                .arcadeType(.prose, .m, weight: .bold)
                 .foregroundStyle(theme.surfaceBase)
             Spacer()
             // 재발급 경로를 여기 두는 이유: 이 링크는 로그인 화면에도 있지만, 거기 닿으려면
@@ -76,14 +90,38 @@ private struct RootContent: View {
             // 색은 accent가 아니라 surfaceBase다 — 배너가 danger로 채워져 있어
             // accent를 얹으면 대비가 무너진다.
             Link("새 토큰 발급", destination: AtlassianLinks.apiTokens)
-                .font(.callout)
+                .arcadeType(.prose, .m)
                 .foregroundStyle(theme.surfaceBase)
+            // 주 동작. 예전에는 여기 있는 유일한 출구가 로그아웃이었는데, 로그아웃은
+            // 자격증명 항목을 통째로 지워(`CredentialStore.clear`) 사이트 주소와 이메일까지
+            // 함께 날린다 — 바뀐 것은 토큰 하나뿐인데 셋을 다시 입력하게 되는 셈이었다.
+            Button("토큰 갱신") { showingTokenRenewal = true }
+                .arcadeType(.prose, .m, weight: .bold)
+                // 기억한 연결이 없으면 토큰만으로는 어디에 붙을지 알 수 없다.
+                // 그 경우 남는 길은 로그아웃 뒤 처음부터 입력하는 것뿐이다.
+                .disabled(model.signInHint == nil)
             Button("로그아웃") { Task { await model.signOut() } }
-                .font(.callout)
+                .arcadeType(.prose, .m)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.horizontal, metrics.gutter)
+        .padding(.vertical, metrics.rowGap)
         .background(theme.danger)
+        // 시트를 배너에 붙인다 — 이 배너가 여는 유일한 곳이고, 아래 `content`에 붙이면
+        // 화면 전환(`phase` 변화)과 시트 표시가 같은 뷰에 얽힌다.
+        .sheet(isPresented: $showingTokenRenewal) {
+            if let hint = model.signInHint {
+                TokenRenewalView(
+                    model: model,
+                    hint: hint,
+                    onRenewed: { showingTokenRenewal = false },
+                    onCancel: { showingTokenRenewal = false }
+                )
+                .frame(minWidth: metrics.size(.sheetMinWidth))
+                // 시트는 환경을 물려받지 않는다 — 테마와 밀도를 함께 다시 주입한다.
+                .environment(\.arcadeTheme, theme)
+                .environment(\.arcadeMetrics, metrics)
+            }
+        }
     }
 
     /// 로그인/매핑 자체는 성공했지만 저장에 실패했을 때(자격증명 또는 워크플로 매핑) 뜬다.
@@ -96,14 +134,14 @@ private struct RootContent: View {
     /// 색 대신 구조로 가른다: 채움 대신 테두리, 굵기 대신 일반 굵기, 그리고 이미 있던
     /// "⚠" 아이콘.
     private func warningBanner(_ message: String) -> some View {
-        HStack(spacing: 8) {
+        HStack(spacing: metrics.tightGap) {
             Text("⚠ \(message)")
-                .font(.callout)
+                .arcadeType(.prose, .m)
                 .foregroundStyle(theme.danger)
             Spacer()
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 10)
+        .padding(.horizontal, metrics.gutter)
+        .padding(.vertical, metrics.rowGap)
         .background(theme.surfaceRaised)
         .overlay(Rectangle().stroke(theme.danger, lineWidth: 1))
     }
@@ -112,7 +150,12 @@ private struct RootContent: View {
     private var content: some View {
         switch model.phase {
         case .launching:
-            ProgressView().tint(theme.accent)
+            // 남은 공간을 전부 차지해야 가운데에 선다. 프레임을 주지 않으면 자기
+            // 크기만큼만 잡아 배너 아래 좌측 상단에 붙는다 — 다른 단계의 화면들은
+            // 모두 스스로 `maxWidth/maxHeight: .infinity`를 갖고 있어 이 분기만 어긋났다.
+            ProgressView()
+                .tint(theme.accent)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .signedOut, .validating:
             // 두 케이스를 한 분기에 묶어야 SignInView가 같은 뷰 정체성을 유지한다 — 그래야
             // signIn()이 phase를 .validating으로 바꿔도 SwiftUI가 SignInView를 허물고 새로

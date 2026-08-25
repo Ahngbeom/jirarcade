@@ -9,6 +9,8 @@ import JiraKit
 /// 확정돼 있고 raid 전용 토큰이 없다. `RootView.warningBanner`가 같은 판단을 이미 했다.
 struct TicketCardView: View {
     @Environment(\.arcadeTheme) private var theme
+    /// 활자 스케일. 치수를 나르는 `metrics`(BoardMetrics)와 역할이 달라 이름을 가른다.
+    @Environment(\.arcadeMetrics) private var density
     let slot: BoardSlot
     let metrics: BoardMetrics
     let model: AppModel
@@ -17,14 +19,14 @@ struct TicketCardView: View {
     let onOpenDetail: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
-            HStack(spacing: 4) {
+        VStack(alignment: .leading, spacing: metrics.cardLineGap) {
+            HStack(spacing: density.tightGap) {
                 Text(tierLabel)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .arcadeType(.readout, .xs, weight: .bold)
                     .foregroundStyle(tierColor)
                 Spacer()
                 Text(stagnationLabel)
-                    .font(.system(size: 9, design: .monospaced))
+                    .arcadeType(.readout, .xs)
                     .foregroundStyle(theme.inkTertiary)
                     .monospacedDigit()
             }
@@ -32,12 +34,12 @@ struct TicketCardView: View {
             // 취소·닫기 버튼이 있어, 전체를 제스처로 덮으면 그 클릭을 가로챈다.
             Button { onOpenDetail(slot.issue.key) } label: {
                 Text(slot.issue.key)
-                    .font(.system(size: 11, weight: .bold, design: .monospaced))
+                    .arcadeType(.readout, .s, weight: .bold)
                     .foregroundStyle(theme.inkPrimary)
             }
             .buttonStyle(.plain)
             Text(slot.issue.summary)
-                .font(.system(size: 10))
+                .arcadeType(.prose, .xs)
                 .foregroundStyle(theme.inkSecondary)
                 .lineLimit(2)
             // 실패 블록이 뜨는 동안은 마감일 줄을 감춘다 — 카드를 키우는 대신 이렇게 하는
@@ -47,29 +49,30 @@ struct TicketCardView: View {
             // dismissTransitionFailure) 마감일이 그대로 돌아온다.
             if let due = dueLabel, !showsFailureBlock {
                 Text(due)
-                    .font(.system(size: 9, weight: .bold, design: .monospaced))
+                    .arcadeType(.readout, .xs, weight: .bold)
                     .foregroundStyle(dueColor)
             }
             // 이월은 실패 블록이 없을 때만 그린다. 실패 블록은 2줄 메시지에 링크 줄까지
-            // 붙어 35pt를 쓰므로, 이월 줄을 더하면 104pt 콘텐츠 박스를 106pt로 넘긴다.
+            // 붙어 35pt를 쓰므로, 이월 줄을 더하면 compact의 104pt 콘텐츠 박스를 106pt로 넘긴다.
             // 대기 중에는 숨기지 않는다 — 대기 줄은 한 줄(11pt)이라 이월을 같이 그려도
             // 96pt로 8pt가 남고, 이는 메뉴가 뜨는 보통 상태보다 오히려 여유가 크다.
             // 마감일 줄(바로 위)과 같은 술어로 gate한다 — "실패 블록이 떠 있는가"를 두
             // 가지 스펠링으로 묻지 않게, 그 판정은 `showsFailureBlock` 하나뿐이다.
             if slot.sprintCarryOvers > 0, !showsFailureBlock {
                 Text("↻ 스프린트 \(slot.sprintCarryOvers)회")
-                    .font(.system(size: 9, design: .monospaced))
+                    .arcadeType(.readout, .xs)
                     .foregroundStyle(theme.inkTertiary)
                     .help(sprintTooltip)
             }
             if let pending {
                 // 남은 시간과 대상 상태·취소를 한 줄에 묶는다 — 별도 줄을 더하면(header
-                // + key + summary×2 + due + pending행 + 새 줄) 120pt 카드에서 여유가
-                // 8pt로 줄어든다(아래 예산 계산 참고). 같은 줄에 붙이는 쪽이 실패 블록과
-                // 같은 예산 안에서 더 안전하게 들어간다.
-                HStack(spacing: 4) {
+                // + key + summary×2 + due + pending행 + 새 줄) 가장 빠듯한 밀도의
+                // `cardHeight`에서 여유가 0pt가 된다. 같은 줄에 붙이는 쪽이 실패 블록과
+                // 같은 예산 안에서 안전하게 들어간다. 카드가 커지면 글자도 함께 커지므로
+                // 이 예산은 밀도가 올라가도 넉넉해지지 않는다 — 줄 수를 늘리지 않는다.
+                HStack(spacing: density.tightGap) {
                     Text("→ \(pending.toStatusName)")
-                        .font(.system(size: 9, weight: .bold, design: .monospaced))
+                        .arcadeType(.readout, .xs, weight: .bold)
                         .foregroundStyle(theme.accent)
                         .lineLimit(1)
                     // 뷰가 스스로 현재 시각을 만들지 않는다 — `TimelineView`가 매초
@@ -79,21 +82,21 @@ struct TicketCardView: View {
                     TimelineView(.periodic(from: pending.firesAt, by: 1)) { context in
                         Text(countdownLabel(firesAt: pending.firesAt, now: context.date))
                     }
-                    .font(.system(size: 9, design: .monospaced))
+                    .arcadeType(.readout, .xs)
                     .foregroundStyle(theme.inkTertiary)
                     .monospacedDigit()
                     Spacer()
                     Button("취소") { model.cancelPendingTransition(issueKey: slot.issue.key) }
-                        .font(.system(size: 9, design: .monospaced))
+                        .arcadeType(.readout, .xs)
                         .buttonStyle(.plain)
                         .foregroundStyle(theme.danger)
                 }
             } else if let failure {
                 // Jira가 준 사유는 담지 않는다(AppModel.transitionFailureMessage 참고).
                 // 대신 그 정보를 채울 수 있는 곳으로 보낸다.
-                VStack(alignment: .leading, spacing: 2) {
+                VStack(alignment: .leading, spacing: metrics.cardLineGap) {
                     Text(failure)
-                        .font(.system(size: 9))
+                        .arcadeType(.prose, .xs)
                         .foregroundStyle(theme.danger)
                         .lineLimit(2)
                     // "Jira에서 열기"와 "닫기"를 한 줄에 묶는다 — 실패 블록에 새 줄을
@@ -102,15 +105,15 @@ struct TicketCardView: View {
                     // `jiraURL`이 없을 때도(siteHost를 아직 못 받았을 때) 항상 보여야
                     // 한다 — 그게 없으면 실패한 카드가 세션 내내 메뉴를 다시 열
                     // 방법이 없다(최종 전체 브랜치 리뷰 Finding 2).
-                    HStack(spacing: 4) {
+                    HStack(spacing: density.tightGap) {
                         if let url = jiraURL {
                             Link("Jira에서 열기", destination: url)
-                                .font(.system(size: 9, design: .monospaced))
+                                .arcadeType(.readout, .xs)
                                 .foregroundStyle(theme.accent)
                         }
                         Spacer()
                         Button("닫기") { model.dismissTransitionFailure(issueKey: slot.issue.key) }
-                            .font(.system(size: 9, design: .monospaced))
+                            .arcadeType(.readout, .xs)
                             .buttonStyle(.plain)
                             .foregroundStyle(theme.inkTertiary)
                     }
@@ -120,7 +123,7 @@ struct TicketCardView: View {
             }
             Spacer(minLength: 0)
         }
-        .padding(8)
+        .padding(metrics.cardPadding)
         .frame(width: metrics.cardWidth, height: metrics.cardHeight, alignment: .topLeading)
         .background(slot.tier == .raid ? theme.boss.opacity(0.18) : theme.surfaceRaised)
         .overlay(
@@ -166,7 +169,7 @@ struct TicketCardView: View {
             }
         } label: {
             Text("상태 옮기기")
-                .font(.system(size: 9, design: .monospaced))
+                .arcadeType(.readout, .xs)
                 .foregroundStyle(theme.inkTertiary)
         }
         .menuStyle(.borderlessButton)

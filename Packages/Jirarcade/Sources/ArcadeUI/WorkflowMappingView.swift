@@ -4,6 +4,7 @@ import ArcadeCore
 
 struct WorkflowMappingView: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var metrics
     let model: AppModel
     let candidates: [String]
 
@@ -75,38 +76,42 @@ struct WorkflowMappingView: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 16) {
+        VStack(alignment: .leading, spacing: metrics.sectionGap) {
             Text("워크플로 매핑")
-                .font(.system(size: 24, weight: .heavy, design: .rounded))
+                .arcadeType(.marquee, .l)
                 .foregroundStyle(theme.accent)
 
             Text("이 Jira의 상태를 게임 단계에 연결해 주세요. 나중에 바꿀 수 있습니다.")
+                .arcadeType(.prose, .l)
                 .foregroundStyle(theme.inkSecondary)
 
             if allCandidates.isEmpty {
                 Text("담당한 미완료 티켓이 없어 매핑할 상태를 찾지 못했습니다. 나중에 설정에서 지정할 수 있습니다.")
+                    .arcadeType(.prose, .m)
                     .foregroundStyle(theme.inkTertiary)
-                    .padding(.vertical, 8)
+                    .padding(.vertical, metrics.rowGap)
             } else {
                 ScrollView {
-                    VStack(spacing: 8) {
+                    VStack(spacing: metrics.rowGap) {
                         ForEach(allCandidates, id: \.name) { entry in
                             row(entry)
                         }
                     }
                 }
-                .frame(maxHeight: 320)
+                // 목록이 화면 전체를 먹지 않도록 위아래로 묶어 둔다. 넓은 창에서는
+                // 이 높이가 함께 자라 스크롤 없이 더 많은 상태가 한눈에 들어온다.
+                .frame(maxHeight: metrics.size(.sheetMinHeight))
             }
 
             if unscoredCount > 0 && !allCandidates.isEmpty {
                 Text("상태 \(unscoredCount)개가 매핑되지 않았습니다. 해당 티켓의 전이는 점수에 반영되지 않습니다.")
-                    .font(.callout)
+                    .arcadeType(.prose, .m)
                     .foregroundStyle(theme.inkTertiary)
             }
 
             HStack {
                 Text(candidateSummary)
-                    .font(.caption)
+                    .arcadeType(.prose, .s)
                     .foregroundStyle(theme.inkTertiary)
                 Spacer()
                 Button("시작하기") {
@@ -119,18 +124,20 @@ struct WorkflowMappingView: View {
                 .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(40)
-        .frame(maxWidth: 560)
+        .padding(metrics.gutter)
+        .frame(maxWidth: metrics.size(.wizardMaxWidth))
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
     }
 
     private func row(_ entry: (name: String, fromHistory: Bool)) -> some View {
         HStack {
-            VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: metrics.tightGap / 2) {
                 Text(entry.name)
+                    .arcadeType(.prose, .m)
                     .foregroundStyle(theme.inkPrimary)
                 if entry.fromHistory {
                     Text("과거 이력에서 발견")
-                        .font(.caption2)
+                        .arcadeType(.prose, .xs)
                         .foregroundStyle(theme.inkTertiary)
                 }
                 // 고르지 않은 상태도 실제로는 폴백이 추정한 단계로 채점되고 있다. 그 사실을
@@ -142,14 +149,14 @@ struct WorkflowMappingView: View {
                 if let guess = model.currentFallbacks.stage(for: entry.name),
                    selection[entry.name] == nil, !excluded.contains(entry.name) {
                     Text("지금은 '\(label(for: guess))'로 추정해 채점 중입니다")
-                        .font(.caption2)
+                        .arcadeType(.prose, .xs)
                         .foregroundStyle(theme.inkTertiary)
                 }
                 // 껐다는 사실을 행에 남긴다 — 추정 문구가 사라지는 것만으로는
                 // "꺼진 것"과 "추정할 값이 애초에 없던 것"이 구분되지 않는다.
                 if excluded.contains(entry.name) {
                     Text("채점하지 않습니다 — 추정도 적용되지 않습니다")
-                        .font(.caption2)
+                        .arcadeType(.prose, .xs)
                         .foregroundStyle(theme.inkTertiary)
                 }
             }
@@ -162,10 +169,10 @@ struct WorkflowMappingView: View {
                 }
             }
             .labelsHidden()
-            .frame(width: 180)
+            .frame(width: metrics.size(.progressBarWidth) + 60)
         }
-        .padding(.horizontal, 12)
-        .padding(.vertical, 8)
+        .padding(.horizontal, metrics.sectionGap)
+        .padding(.vertical, metrics.rowGap)
         .background(theme.surfaceRaised)
         .clipShape(RoundedRectangle(cornerRadius: 6))
     }

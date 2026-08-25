@@ -7,6 +7,7 @@ import ArcadeApp
 /// 보여줄지 고르는 코드를 두지 않는다.
 struct TicketDetailSheet: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var metrics
     @Environment(\.dismiss) private var dismiss
     let issueKey: String
     let model: AppModel
@@ -24,7 +25,6 @@ struct TicketDetailSheet: View {
             Divider()
             content
         }
-        .frame(width: 520, height: 560)
         .background(theme.surfaceBase)
         .task { await model.openDetail(issueKey: issueKey) }
         .onDisappear { model.closeDetail() }
@@ -33,15 +33,16 @@ struct TicketDetailSheet: View {
     private var header: some View {
         HStack {
             Text(issueKey)
-                .font(.system(size: 13, weight: .bold, design: .monospaced))
+                .arcadeType(.readout, .m, weight: .bold)
                 .foregroundStyle(theme.inkPrimary)
             Spacer()
             Button("닫기") { dismiss() }
                 .buttonStyle(.plain)
-                .font(.system(size: 11, design: .monospaced))
+                .arcadeType(.readout, .xs)
                 .foregroundStyle(theme.inkTertiary)
         }
-        .padding(12)
+        .padding(.horizontal, metrics.gutter)
+        .padding(.vertical, metrics.rowGap)
     }
 
     @ViewBuilder
@@ -51,12 +52,12 @@ struct TicketDetailSheet: View {
             ProgressView()
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .failed(let message):
-            VStack(spacing: 8) {
+            VStack(spacing: metrics.rowGap) {
                 Text(message)
-                    .font(.system(size: 12))
+                    .arcadeType(.prose, .xs)
                     .foregroundStyle(theme.danger)
                 Button("다시 시도") { Task { await model.openDetail(issueKey: issueKey) } }
-                    .font(.system(size: 11, design: .monospaced))
+                    .arcadeType(.readout, .xs)
             }
             .frame(maxWidth: .infinity, maxHeight: .infinity)
         case .loaded(let detail):
@@ -66,30 +67,30 @@ struct TicketDetailSheet: View {
 
     private func loaded(_ detail: IssueDetailView) -> some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: metrics.sectionGap) {
                 if let failure = model.editFailures[issueKey] {
                     HStack {
                         Text(failure)
-                            .font(.system(size: 11))
+                            .arcadeType(.prose, .xs)
                             .foregroundStyle(theme.danger)
                         Spacer()
                         Button("닫기") { model.dismissEditFailure(issueKey: issueKey) }
                             .buttonStyle(.plain)
-                            .font(.system(size: 10, design: .monospaced))
+                            .arcadeType(.readout, .xs)
                             .foregroundStyle(theme.inkTertiary)
                     }
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("제목").font(.system(size: 10, design: .monospaced))
+                VStack(alignment: .leading, spacing: metrics.tightGap) {
+                    Text("제목").arcadeType(.readout, .xs)
                         .foregroundStyle(theme.inkTertiary)
                     TextField("", text: $summaryDraft)
                         .textFieldStyle(.roundedBorder)
-                        .font(.system(size: 13))
+                        .arcadeType(.prose, .s)
                     Button("제목 저장") {
                         Task { await model.saveSummary(issueKey: issueKey, summary: summaryDraft) }
                     }
-                    .font(.system(size: 11, design: .monospaced))
+                    .arcadeType(.readout, .xs)
                     .disabled(model.editInFlight.contains(issueKey)
                               || summaryDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
                               || summaryDraft == detail.summary)
@@ -100,22 +101,22 @@ struct TicketDetailSheet: View {
                     summaryDraft = detail.summary
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("본문").font(.system(size: 10, design: .monospaced))
+                VStack(alignment: .leading, spacing: metrics.tightGap) {
+                    Text("본문").arcadeType(.readout, .xs)
                         .foregroundStyle(theme.inkTertiary)
                     Text(detail.descriptionText.isEmpty ? "본문이 없습니다" : detail.descriptionText)
-                        .font(.system(size: 12))
+                        .arcadeType(.prose, .xs)
                         .foregroundStyle(theme.inkPrimary)
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
 
-                VStack(alignment: .leading, spacing: 6) {
-                    Text("댓글").font(.system(size: 10, design: .monospaced))
+                VStack(alignment: .leading, spacing: metrics.tightGap) {
+                    Text("댓글").arcadeType(.readout, .xs)
                         .foregroundStyle(theme.inkTertiary)
                     CommentListView(comments: detail.comments)
                     TextEditor(text: $commentDraft)
-                        .font(.system(size: 12))
+                        .arcadeType(.prose, .xs)
                         .frame(height: 72)
                         .border(theme.inkTertiary.opacity(0.3))
                     Button("댓글 등록") {
@@ -130,12 +131,12 @@ struct TicketDetailSheet: View {
                             await model.openDetail(issueKey: issueKey)
                         }
                     }
-                    .font(.system(size: 11, design: .monospaced))
+                    .arcadeType(.readout, .xs)
                     .disabled(model.editInFlight.contains(issueKey)
                               || commentDraft.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
                 }
             }
-            .padding(12)
+            .padding(metrics.gutter)
         }
     }
 }

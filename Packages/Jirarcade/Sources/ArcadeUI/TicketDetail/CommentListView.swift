@@ -4,22 +4,23 @@ import ArcadeApp
 /// 댓글 목록. 각 댓글의 저자·시각·본문은 `AppModel`이 이미 ADF에서 풀어 넘긴다.
 struct CommentListView: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var metrics
     let comments: [CommentView]
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: metrics.rowGap) {
             ForEach(comments) { comment in
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(spacing: 6) {
+                VStack(alignment: .leading, spacing: metrics.tightGap) {
+                    HStack(spacing: metrics.tightGap) {
                         Text(comment.authorName)
-                            .font(.system(size: 11, weight: .bold, design: .monospaced))
+                            .arcadeType(.readout, .xs, weight: .bold)
                             .foregroundStyle(theme.inkSecondary)
                         Text(comment.created, style: .date)
-                            .font(.system(size: 10, design: .monospaced))
+                            .arcadeType(.readout, .xs)
                             .foregroundStyle(theme.inkTertiary)
                     }
                     Text(comment.text)
-                        .font(.system(size: 12))
+                        .arcadeType(.prose, .xs)
                         .foregroundStyle(theme.inkPrimary)
                         .textSelection(.enabled)
                 }

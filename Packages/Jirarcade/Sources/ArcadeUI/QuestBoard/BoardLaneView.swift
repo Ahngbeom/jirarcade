@@ -5,6 +5,7 @@ import ArcadeApp
 /// 단계 하나의 레인 — 헤더 + 축 + 그 위에 놓인 카드들.
 struct BoardLaneView: View {
     @Environment(\.arcadeTheme) private var theme
+    @Environment(\.arcadeMetrics) private var density
     let lane: BoardLane
     let axis: [AxisTick]
     let metrics: BoardMetrics
@@ -15,7 +16,7 @@ struct BoardLaneView: View {
     let onOpenDetail: (String) -> Void
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 6) {
+        VStack(alignment: .leading, spacing: density.tightGap) {
             header
             ZStack(alignment: .topLeading) {
                 BoardAxisView(ticks: axis, metrics: metrics)
@@ -39,13 +40,13 @@ struct BoardLaneView: View {
     }
 
     private var header: some View {
-        HStack(spacing: 8) {
+        HStack(spacing: density.tightGap) {
             Text(stageLabel)
-                .font(.system(size: 11, weight: .bold, design: .monospaced))
+                .arcadeType(.readout, .m, weight: .bold)
                 .foregroundStyle(theme.inkSecondary)
             Spacer()
             Text(countLabel)
-                .font(.system(size: 10, design: .monospaced))
+                .arcadeType(.readout, .s)
                 .foregroundStyle(overWIP ? theme.danger : theme.inkTertiary)
                 .monospacedDigit()
         }

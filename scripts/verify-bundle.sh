@@ -63,7 +63,27 @@ else
     fail "버전 불일치 — 기대 '$EXPECTED_VERSION', 실제 '$ACTUAL_VERSION'"
 fi
 
-# 4. 압축 왕복 — 사용자가 겪을 경로를 먼저 밟는다.
+# 4. 아이콘 — 없어도 빌드는 성공하고 zip도 나간다. Dock에만 기본 아이콘이 뜬다.
+ICON_NAME="$(plutil -extract CFBundleIconFile raw "$PLIST" 2>/dev/null || echo "")"
+ICON="$APP/Contents/Resources/${ICON_NAME}.icns"
+if [[ -z "$ICON_NAME" ]]; then
+    fail "Info.plist에 CFBundleIconFile이 없습니다 — Dock에 기본 아이콘이 뜹니다"
+elif [[ ! -s "$ICON" ]]; then
+    # 키만 있고 파일 이름이 다르거나 없는 경우다. macOS는 조용히 기본 아이콘으로
+    # 넘어가므로 앱을 열어보기 전까지 아무도 모른다.
+    fail "아이콘 파일이 없거나 비어 있습니다: Resources/${ICON_NAME}.icns"
+else
+    # iconutil이 빈 껍데기를 쓰고 성공한 경우를 잡는다. .icns의 첫 네 바이트는
+    # 매직 넘버 "icns"다.
+    MAGIC="$(head -c 4 "$ICON")"
+    if [[ "$MAGIC" == "icns" ]]; then
+        pass "아이콘: ${ICON_NAME}.icns ($(wc -c < "$ICON" | tr -d " ") bytes)"
+    else
+        fail "아이콘이 .icns 형식이 아닙니다 — 매직 넘버가 'icns'가 아님"
+    fi
+fi
+
+# 5. 압축 왕복 — 사용자가 겪을 경로를 먼저 밟는다.
 #    zip이 확장 속성을 잃으면 서명이 깨지는데 그건 압축을 푼 뒤에만 드러난다.
 #
 #    여기서 만드는 zip은 실제로 배포되는 zip이 아니라 검증용으로 새로 만든
