@@ -50,9 +50,29 @@ public struct JiraTransition: Sendable, Equatable, Decodable {
         toStatusName = try container.decode(StatusRef.self, forKey: .to).name
     }
 
+    /// 항목 하나가 깨져도 나머지를 살린다.
+    ///
+    /// `to`를 싣지 않는 전이가 Jira에 실제로 있다 — 화면이 붙은 전이 중 도착 상태를
+    /// 응답에 넣지 않는 구성, 일부 전역 전이, 권한에 따라 도착 상태가 가려지는 경우.
+    /// 그런 항목 하나가 배열 전체를 무너뜨리면 메뉴가 "옮길 수 있는 상태가 없습니다"를
+    /// 띄우고, 사용자는 그 티켓을 앱에서 옮길 방법을 잃는다 — 사실이 아닌데도.
+    ///
+    /// 도착 상태를 모르는 전이는 목록에서 빼는 것이 맞다(어디로 가는지 보여줄 수 없다).
+    /// 빼야 하는 것은 그 항목 하나뿐이다.
     public static func decodeList(_ data: Data) throws -> [JiraTransition] {
-        struct Envelope: Decodable { let transitions: [JiraTransition] }
-        return try JSONDecoder().decode(Envelope.self, from: data).transitions
+        struct Envelope: Decodable { let transitions: [FailableTransition] }
+        return try JSONDecoder().decode(Envelope.self, from: data)
+            .transitions.compactMap(\.value)
+    }
+}
+
+/// 전이 하나를 시도하고 실패하면 아무것도 담지 않는다. `SprintDTO`의 `FailableSprint`와
+/// 같은 이유로 있다 — Swift의 배열 디코딩은 전부-아니면-전무라, 원소별로 감싸지 않으면
+/// 하나가 전체를 가져간다.
+private struct FailableTransition: Decodable {
+    let value: JiraTransition?
+    init(from decoder: any Decoder) throws {
+        value = try? JiraTransition(from: decoder)
     }
 }
 

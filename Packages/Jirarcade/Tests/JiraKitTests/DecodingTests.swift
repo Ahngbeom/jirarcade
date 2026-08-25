@@ -109,6 +109,39 @@ func timestampsParseWithOrWithoutFractionalSeconds(raw: String, expected: String
     }
 }
 
+/// 도착 상태를 싣지 않는 전이가 섞여도 나머지는 살아남는다.
+///
+/// `to`가 없는 전이는 Jira에 실제로 존재한다 — 화면이 붙은 전이 중 도착 상태를 응답에
+/// 싣지 않는 구성, 일부 전역 전이, 권한에 따라 도착 상태가 가려지는 경우.
+///
+/// 하나가 배열 전체를 무너뜨리면 카드의 메뉴가 "옮길 수 있는 상태가 없습니다"를 띄우고
+/// 사용자는 그 티켓을 앱에서 아예 옮길 수 없다. 그게 사실이 아닌데도.
+@Test func aTransitionWithoutADestinationDoesNotDropTheOthers() throws {
+    let transitions = try JiraTransition.decodeList(json("""
+    { "transitions": [
+        { "id": "11", "name": "시작", "to": { "name": "진행 중" } },
+        { "id": "12", "name": "도착지 없음", "to": null },
+        { "id": "13", "name": "완료로", "to": { "name": "완료" } }
+    ] }
+    """))
+
+    #expect(transitions.count == 2)
+    #expect(transitions.map(\.id) == ["11", "13"])
+    #expect(transitions[1].toStatusName == "완료")
+}
+
+/// 필수 필드가 통째로 빠진 항목도 자기만 떨어진다.
+@Test func aTransitionMissingItsNameDoesNotDropTheOthers() throws {
+    let transitions = try JiraTransition.decodeList(json("""
+    { "transitions": [
+        { "id": "21", "to": { "name": "검토" } },
+        { "id": "22", "name": "완료로", "to": { "name": "완료" } }
+    ] }
+    """))
+
+    #expect(transitions.map(\.id) == ["22"])
+}
+
 @Test func transitionsDecode() throws {
     let transitions = try JiraTransition.decodeList(json("""
     { "transitions": [
