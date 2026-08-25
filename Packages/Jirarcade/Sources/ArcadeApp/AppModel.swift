@@ -734,7 +734,9 @@ public final class AppModel {
         boardWorkflow = workflowMap
 
         issues = mirror.values.sorted { $0.key < $1.key }
-        statusEnteredAt = StatusTimeline.latestStatusEntry(from: events)
+        statusEnteredAt = StatusTimeline.latestStatusEntry(
+            from: events, revertWindowMinutes: rules.revertWindowMinutes
+        )
         hygiene = HygieneCalculator(rules: rules, workflow: workflowMap, calendar: calendar)
             .evaluate(issues, now: now)
 

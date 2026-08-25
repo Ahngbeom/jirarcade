@@ -60,12 +60,20 @@ public struct ScoreEngine: Sendable {
     ) -> (scored: [ScoredEvent], summary: PlayerSummary) {
         let ordered = events.sorted { $0.observedAt < $1.observedAt }
 
+        // 시간축과 같은 판정을 쓴다 — 보드가 쓰는 최종값과 채점이 쓰는 시점별 값이
+        // 다른 규칙으로 갈리면 같은 티켓의 정체일이 화면과 점수에서 달라진다.
+        //
+        // `ordered`를 넘긴다. 인덱스는 넘긴 배열 기준이고 아래 순회가 그 배열을 돈다.
+        let reverted = RevertDetector.revertedIndices(
+            in: ordered, windowMinutes: rules.revertWindowMinutes
+        )
+
         // 각 티켓이 현재 상태에 들어간 시각을 이벤트 순회로 재구성한다.
         var statusEnteredAt: [String: Date] = [:]
         var scored: [ScoredEvent] = []
         scored.reserveCapacity(ordered.count)
 
-        for event in ordered {
+        for (index, event) in ordered.enumerated() {
             let xp = awarder.baseXP(
                 for: event,
                 issue: issues[event.issueKey],
@@ -76,6 +84,10 @@ public struct ScoreEngine: Sendable {
 
             // 갱신 규칙은 StatusTimeline이 유일하게 정의한다. 여기에 규칙을 복사해 두면
             // 보드가 쓰는 최종값과 채점이 쓰는 시점별 값이 서로 다른 규칙으로 갈릴 수 있다.
+            guard reverted.contains(index) == false else { continue }
+            // 백필의 no-op 전환(fromStatus == toStatus)도 기준선을 밀지 않는다 —
+            // `StatusTimeline.latestStatusEntry`와 같은 판정이다.
+            guard StatusTimeline.isNoOpTransition(event) == false else { continue }
             StatusTimeline.apply(event, to: &statusEnteredAt)
         }
 
