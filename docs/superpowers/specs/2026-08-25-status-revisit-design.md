@@ -35,10 +35,13 @@
 `AbuseGuard.voidReverts` 안에 있는 판정을 순수 함수로 꺼낸다.
 
 ```swift
-/// 되돌림 쌍의 이벤트 인덱스 집합. 같은 티켓에서 A→B 직후 창 안에 B→A가 관측되면
+/// 되돌림 쌍에 속한 이벤트의 **위치**. 같은 티켓에서 A→B 직후 창 안에 B→A가 관측되면
 /// 그 둘을 한 쌍으로 본다.
+///
+/// `DomainEvent`에는 안정적인 식별자가 없고 `Hashable`도 아니라 위치로 가리킨다.
+/// 반환값은 **넘긴 배열 기준의 인덱스**이므로, 호출자는 인덱싱할 그 배열을 그대로 넘겨야 한다.
 public enum RevertDetector {
-    public static func revertedEventIDs(
+    public static func revertedIndices(
         in events: [DomainEvent],
         windowMinutes: Double
     ) -> Set<Int>
