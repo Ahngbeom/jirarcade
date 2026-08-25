@@ -191,7 +191,7 @@ public enum JiraChangelogResponse {
 }
 
 /// `/rest/api/3/status`의 항목. 워크플로에서 빠진 과거 상태도 여기 남아 있어,
-/// 매핑되지 않은 상태를 statusCategory로 폴백할 수 있다(스펙 §5).
+/// 매핑되지 않은 상태를 statusCategory로 폴백할 수 있다.
 public struct JiraStatusCatalogEntry: Sendable, Equatable, Decodable {
     public let id: String
     public let name: String
@@ -217,7 +217,7 @@ public struct JiraStatusCatalogEntry: Sendable, Equatable, Decodable {
     /// 해석 가능한 항목만 살려서 목록을 만든다.
     ///
     /// 관대하게 받는 이유: 이 카탈로그는 매핑에 없는 과거 상태를 statusCategory로 되살리는
-    /// **보조 정보**다(스펙 §5의 폴백 ②). `StatusDetails`에는 required 필드가 하나도 없어서
+    /// **보조 정보**다(폴백 ②). `StatusDetails`에는 required 필드가 하나도 없어서
     /// 항목 하나가 `id`/`name`/`statusCategory` 중 무엇이든 빠뜨리면 배열 전체 디코드가
     /// 실패하고, 그러면 폴백 ②가 통째로 죽어 과거 상태가 전부 0점 처리된다. 항목 999개를
     /// 1개 때문에 잃는 것보다 999개를 쓰는 편이 낫다.

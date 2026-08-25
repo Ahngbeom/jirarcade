@@ -24,7 +24,7 @@ public struct XpAwarder: Sendable {
         statusEnteredAt: Date?,
         now: Date
     ) -> Int {
-        // 실행자 필터. 남이 옮긴 전이는 0점이다(스펙 §4.2).
+        // 실행자 필터. 남이 옮긴 전이는 0점이다.
         //
         // myAccountId가 nil이면 필터를 건너뛴다 — "내가 누군지 모른다"를 "전부 남이 했다"로
         // 해석하면 로그인 전 재집계에서 과거 점수가 통째로 사라진다. 모를 때는 관대한 쪽이 맞다.
@@ -51,8 +51,8 @@ public struct XpAwarder: Sendable {
 
     /// 정체 기준선은 세 단계로 내려간다.
     ///
-    /// 1. `statusEnteredAt` — 우리 이벤트 로그에서 재구성한 실측값 (스펙 §5.2 1단)
-    /// 2. `event.priorUpdatedAt` — 이 변화 **직전** 미러의 `jiraUpdatedAt` (스펙 §5.2 2단 근사)
+    /// 1. `statusEnteredAt` — 우리 이벤트 로그에서 재구성한 실측값 (가장 정확)
+    /// 2. `event.priorUpdatedAt` — 이 변화 **직전** 미러의 `jiraUpdatedAt` (근사)
     /// 3. `issue.jiraUpdatedAt` — 기준선 없이 기록된 옛 이벤트를 위한 최후 폴백
     ///
     /// 3번은 재집계 직전에 갱신되므로 정체를 거의 항상 0으로 만든다. 2번이 있는 한 쓰이지 않는다.
@@ -84,7 +84,7 @@ public struct XpAwarder: Sendable {
 
         // 마감일은 **이벤트가 관측 시점에 실어둔 값**을 쓴다. 미러를 보면 티켓이 조회 결과에서
         // 사라진 뒤 재집계할 때 보너스가 증발한다 — 준 XP를 도로 뺏게 된다.
-        // 여유일은 로컬 달력의 날짜 차이로 센다(스펙 §8.6). 마감 당일 완료는 여유 0일이다.
+        // 여유일은 로컬 달력의 날짜 차이로 센다. 마감 당일 완료는 여유 0일이다.
         if to == .done, let due = event.dueDateAtObservation {
             let spareDays = DueDate.daysRemaining(until: due, from: now, calendar: calendar)
             if spareDays > 0 {

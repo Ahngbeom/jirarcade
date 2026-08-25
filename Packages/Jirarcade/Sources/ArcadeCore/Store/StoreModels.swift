@@ -72,7 +72,7 @@ public final class IssueEventRecord {
     public var sourceHistoryId: String?
     /// `EventOrigin.observed` 또는 `EventOrigin.backfill`.
     /// 관측 일수는 observed만 세야 한다 — 백필이 3년 전 이벤트를 넣었다고
-    /// 관측을 3년 했다고 말하면 거짓이다(스펙 §3.1).
+    /// 관측을 3년 했다고 말하면 거짓이다.
     ///
     /// **기본값은 프로퍼티 선언에 붙어야 한다.** SwiftData가 기존 로우를 복원할 때
     /// 커스텀 `init`을 호출하지 않으므로, `init` 파라미터 기본값만으로는 이 컬럼이
@@ -117,7 +117,7 @@ public final class SyncRunRecord {
     }
 }
 
-/// 백필 한 번의 진행 상태. `nextPageToken`이 있어 중단 지점부터 재개한다(스펙 §7.2).
+/// 백필 한 번의 진행 상태. `nextPageToken`이 있어 중단 지점부터 재개한다.
 @Model
 public final class BackfillRun {
     public var startedAt: Date

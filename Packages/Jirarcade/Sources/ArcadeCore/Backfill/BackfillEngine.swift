@@ -90,7 +90,7 @@ public final class BackfillEngine {
         resume: Bool = false,
         progress: @MainActor (Int, Int?) -> Void
     ) async throws -> BackfillOutcome {
-        // 카탈로그 조회 실패는 진행을 막지 않는다 — 폴백 ②만 잃고 ①③은 남는다(스펙 §8).
+        // 카탈로그 조회 실패는 진행을 막지 않는다 — 폴백 ②만 잃고 ①③은 남는다.
         // 다만 취소는 삼키면 안 된다. try?로 뭉뚱그리면 사용자가 중단을 눌러도
         // 카탈로그 단계에서만 조용히 넘어가고 백필이 계속 돈다.
         var catalogUnavailable = false
@@ -164,7 +164,7 @@ public final class BackfillEngine {
     }
 
     /// 진행률에 쓸 총계. **조회 실패는 백필을 막지 않는다** — 진행률이 불확정 바가 될 뿐이라
-    /// 카탈로그 조회와 같은 결로 다룬다(스펙 §8).
+    /// 카탈로그 조회와 같은 결로 다룬다.
     ///
     /// 취소만은 다시 던진다. `try?`로 뭉뚱그리면 사용자가 중단을 눌러도 이 단계에서만
     /// 조용히 넘어가고 백필이 계속 돈다 — 이 저장소에서 두 번 나온 결함이다.

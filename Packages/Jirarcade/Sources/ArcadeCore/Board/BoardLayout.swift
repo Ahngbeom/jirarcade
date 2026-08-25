@@ -150,7 +150,7 @@ public enum BoardLayout {
         )
     }
 
-    /// 마감 비교는 로컬 달력의 날짜 단위로 한다(v0.1 스펙 §8.6). `DueDate`가 그 규칙을
+    /// 마감 비교는 로컬 달력의 날짜 단위로 한다. `DueDate`가 그 규칙을
     /// 이미 갖고 있으므로 여기서 `Date`끼리 비교하지 않는다.
     static func dueState(for issue: ObservedIssue, now: Date, calendar: Calendar) -> DueState {
         guard let due = issue.dueDate else { return .none }

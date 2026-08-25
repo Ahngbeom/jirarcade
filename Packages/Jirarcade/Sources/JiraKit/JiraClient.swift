@@ -19,7 +19,7 @@ public struct JiraClient: Sendable {
     /// changelog를 함께 받는 검색. 백필의 주 경로다.
     ///
     /// `created`와 `duedate`를 fields에 넣는 이유: 백필 이벤트도 `priorUpdatedAt`과
-    /// `dueDateAtObservation`을 채워야 하는데(스펙 §4.3), 첫 history 이전의 기준선은
+    /// `dueDateAtObservation`을 채워야 하는데, 첫 history 이전의 기준선은
     /// 티켓 생성 시각이고 마감일은 변경 이력이 없을 때 현재 값을 써야 한다.
     ///
     /// `expand`가 배열이 아니라 콤마 구분 **문자열**인 이유: `POST /search/jql`의 request
@@ -192,7 +192,7 @@ public struct JiraClient: Sendable {
                           resource: resource, query: query, allowingRetry: true)
     }
 
-    /// 스펙 §8.3: 401을 만나면 `auth.recoverFromUnauthorized()`로 갱신을 시도하고,
+    /// 401을 만나면 `auth.recoverFromUnauthorized()`로 갱신을 시도하고,
     /// 성공하면 요청을 한 번만 재시도한다. `allowingRetry: false`로 들어온 재시도 호출은
     /// 다시 재시도를 걸 수 없으므로, provider가 항상 true를 돌려줘도 무한 재시도로 이어지지 않는다.
     ///

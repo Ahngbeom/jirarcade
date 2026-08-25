@@ -184,7 +184,7 @@ struct OrbitView: View {
         // (systemView 주석 참고) — `VStack { 행성; 라벨 }.position(point)`로 묶으면
         // `zoomProgress`가 0.5를 넘어 라벨이 붙는 순간 VStack의 중심 계산이 바뀌어
         // 모든 행성이 위로 점프한다. "줌은 좌표를 바꾸지 않는다"는 이 화면의 설계
-        // 전제(§4)가 화면에서 깨지는 지점이었다.
+        // 전제가 화면에서 깨지는 지점이었다.
         PlanetView(planet: planet,
                    diameter: metrics.diameter(for: planet),
                    isPending: model.pendingTransitions[planet.id] != nil)
@@ -287,7 +287,7 @@ struct OrbitView: View {
     /// 격자의 **가운데**, 곧 성계가 하나도 없는 빈 자리다. 팬하지 않은 채(또는
     /// 비례 보정만으로) 확대하면 네 성계가 원점에서 사방으로 흩어져 빈 가운데만
     /// 화면에 남는다. 이 화면에서 확대의 목적이 "한 단계를 파고들어 그 안의 상태
-    /// 분화를 보는 것"(설계 §4)이므로, 화면 중심에 가장 가까운 태양을 파고드는
+    /// 분화를 보는 것"이므로, 화면 중심에 가장 가까운 태양을 파고드는
     /// 목표로 삼는 것이 그 목적과 맞는다.
     private func zoomAnchor(_ snapshot: OrbitSnapshot, metrics: OrbitMetrics) -> OrbitPoint? {
         let centre = CGPoint(x: metrics.viewport.width / 2, y: metrics.viewport.height / 2)
