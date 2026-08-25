@@ -22,7 +22,7 @@ public struct AbuseGuard: Sendable {
         let order = chronological(working)
 
         voidDuplicates(&working, order: order)
-        voidReverts(&working, order: order)
+        voidReverts(&working)
 
         return working
     }
@@ -82,25 +82,14 @@ public struct AbuseGuard: Sendable {
     }
 
     /// 전이 직후 창 안에서 정확히 역방향 전이가 관측되면 원래 지급분을 회수한다.
-    private func voidReverts(_ events: inout [ScoredEvent], order: [Int]) {
-        let window = rules.revertWindowMinutes * 60
-
-        for (position, index) in order.enumerated() {
-            let later = events[index].event
-            guard later.kind == .statusChanged else { continue }
-
-            for earlierIndex in order[..<position].reversed() {
-                let earlier = events[earlierIndex].event
-                guard earlier.kind == .statusChanged, earlier.issueKey == later.issueKey else { continue }
-                guard later.observedAt.timeIntervalSince(earlier.observedAt) <= window else { break }
-
-                if earlier.fromStatus == later.toStatus && earlier.toStatus == later.fromStatus {
-                    events[earlierIndex].xp = 0
-                    events[index].xp = 0
-                    break
-                }
-            }
-        }
+    ///
+    /// 판정은 `RevertDetector`가 한다 — 시간축도 같은 판정을 써야 한 쌍을 두 층이
+    /// 다르게 보지 않는다.
+    private func voidReverts(_ events: inout [ScoredEvent]) {
+        let reverted = RevertDetector.revertedIndices(
+            in: events.map(\.event), windowMinutes: rules.revertWindowMinutes
+        )
+        for index in reverted { events[index].xp = 0 }
     }
 
     /// 로컬 날짜별 누적이 상한을 넘으면 넘는 만큼만 깎는다(부분 지급).

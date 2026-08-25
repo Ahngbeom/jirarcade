@@ -47,7 +47,8 @@ extension BoardSlot {
             position: position, row: row,
             isApproximate: isApproximate, dueState: dueState,
             sprintCarryOvers: sprintCarryOvers,
-            firstSprintName: firstSprintName, latestSprintName: latestSprintName
+            firstSprintName: firstSprintName, latestSprintName: latestSprintName,
+            revisits: revisits
         )
     }
 }

@@ -30,7 +30,8 @@ private func statusEvent(from: String, to: String, due: Date? = nil) -> DomainEv
                             issue: issue(key: "DEMO-1", status: "Verifying"),
                             statusEnteredAt: now.addingTimeInterval(-days(21)),
                             now: now)
-    #expect(xp == 100)   // 40 × min(1 + 21/14, 4.0) = 40 × 2.5
+    // touched 이벤트는 정체를 깨우는 신호가 아니므로 XP를 주지 않는다.
+    #expect(xp == 0)
 }
 
 @Test func wakeMultiplierIsCappedAtFour() {
@@ -40,7 +41,8 @@ private func statusEvent(from: String, to: String, due: Date? = nil) -> DomainEv
                             issue: issue(key: "DEMO-1", status: "Verifying"),
                             statusEnteredAt: now.addingTimeInterval(-days(200)),
                             now: now)
-    #expect(xp == 160)   // 40 × 4.0
+    // touched 이벤트는 정체를 깨우는 신호가 아니므로 XP를 주지 않는다.
+    #expect(xp == 0)
 }
 
 @Test func forwardTransitionGetsTheForwardMultiplier() {
@@ -201,4 +203,21 @@ func bookkeepingEventsPayNothing(kind: EventKind) {
     let xp = awarder.baseXP(for: event, issue: nil as ObservedIssue?, statusEnteredAt: nil as Date?,
                             now: now)
     #expect(xp > 0)
+}
+
+/// 댓글 한 줄로 정체를 "깨웠다"고 점수를 주면, 앱 안에 댓글 상자를 두는 순간
+/// 한 번 클릭으로 XP를 얻는 버튼이 된다. 정체를 깨우는 신호는 상태 전이뿐이다.
+@Test func touchedEarnsNothingNoMatterHowStagnant() {
+    let awarder = XpAwarder(rules: .default, workflow: demoWorkflow,
+                            myAccountId: "acc-me", calendar: utc)
+    let event = DomainEvent(
+        issueKey: "DEMO-1", kind: .touched, fromStatus: nil, toStatus: nil,
+        observedAt: iso("2026-08-24T09:00:00Z"), actorAccountId: "acc-me",
+        priorUpdatedAt: iso("2026-05-01T09:00:00Z"), dueDateAtObservation: nil
+    )
+
+    let xp = awarder.baseXP(for: event, issue: nil, statusEnteredAt: nil,
+                            now: iso("2026-08-24T09:00:00Z"))
+
+    #expect(xp == 0)
 }

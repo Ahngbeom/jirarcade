@@ -83,6 +83,9 @@ public final class AppModel {
     /// 티켓별 현재 상태 진입 시각. 없는 티켓은 보드가 `jiraUpdatedAt`으로 폴백하고
     /// 그 사실을 화면에 표시한다.
     public private(set) var statusEnteredAt: [String: Date] = [:]
+    /// 티켓별 "이미 거쳐 간 상태로 돌아온" 횟수. 카드가 맥락을 그릴 때 쓴다.
+    /// **표시 전용이며 채점에 쓰지 않는다.**
+    public private(set) var statusRevisits: [String: Int] = [:]
     /// 위생 리포트. HUD가 읽는다.
     public private(set) var hygiene: HygieneReport?
     /// 실효 워크플로 맵(사용자 매핑 + 폴백)의 **캐시**.
@@ -101,6 +104,26 @@ public final class AppModel {
     public private(set) var pendingTransitions: [String: PendingTransition] = [:]
     /// 티켓별 마지막 전이 실패 안내. **Jira가 준 사유를 담지 않는다** — 앱이 쓴 문구만 담는다.
     public private(set) var transitionFailures: [String: String] = [:]
+    /// 상세 시트가 지금 보여줄 상태. 시트가 열려 있을 때만 `.idle`이 아니다 —
+    /// 미러에는 들어가지 않는 순전히 화면용 값이다(`IssueDetail.swift` 참고).
+    public private(set) var detailState: IssueDetailState = .idle
+    /// 상세 시트를 채우는 중인 요청. `closeDetail()`과 `signOut()`이 이걸 취소해,
+    /// 시트가 닫히거나 로그아웃한 뒤에도 Jira에 요청이 계속 나가지 않게 한다.
+    private var detailTask: Task<Void, Never>?
+    /// `openDetail`을 부를 때마다 하나씩 올라간다. 늦게 도착한 응답이 지금 시트가
+    /// 실제로 기다리는 요청인지 가린다. `syncGeneration`만으로는 부족하다 — 그건
+    /// "계정이 바뀌었는가"만 답하므로, 같은 계정에서 A를 닫고 B를 연 경우(둘 다
+    /// syncGeneration은 그대로다)까지는 잡지 못한다.
+    private var detailToken = 0
+
+    /// 저장이 날아가 있는 티켓. 버튼을 잠가 이중 제출을 막는다 — 댓글 POST는
+    /// 멱등이 아니라 두 번 누르면 댓글이 둘이 된다.
+    public private(set) var editInFlight: Set<String> = []
+    /// 화면에 그릴 실패 문구. **Jira가 준 사유가 들어 있지 않다.**
+    public private(set) var editFailures: [String: String] = [:]
+    private var editTasks: [String: Task<Void, Never>] = [:]
+
+    var editTaskCountForTesting: Int { editTasks.count }
 
     /// 대기 중인 타이머. 취소하려면 이걸 취소한다.
     private var transitionTasks: [String: Task<Void, Never>] = [:]
@@ -244,6 +267,19 @@ public final class AppModel {
         transitionTasks = [:]
         pendingTransitions = [:]
         transitionFailures = [:]
+        // 진행 중인 저장도 로그아웃의 대상이다. 남겨두면 다음 계정으로 로그인한 뒤
+        // 완료 핸들러가 그 계정의 화면에 실패를 그리거나 동기화를 유발한다.
+        // 전이 타이머와 같은 이유이며, 같은 사고가 실제로 출하된 적이 있다.
+        editTasks.values.forEach { $0.cancel() }
+        editTasks = [:]
+        editInFlight = []
+        editFailures = [:]
+        // 상세 시트가 열려 있던 채로 로그아웃하면, 남겨둔 페치가 옛 계정의 client로
+        // 댓글 요청까지 마저 보낸다(최종 전체 브랜치 리뷰 Finding 1) — 취소해 끊는다.
+        detailTask?.cancel()
+        detailTask = nil
+        detailToken += 1
+        detailState = .idle
         // 세대를 올려 진행 중이던 페치가 끝나도 이 계정의 스토어에 쓰지 못하게 막는다
         // (I4). 계정 바인딩(`accountBinding`)은 여기서 지우지 않는다 — 지우면 다음 로그인이 "계정이
         // 바뀌었는지" 판단할 근거를 잃는다. validate() 참고.
@@ -262,6 +298,7 @@ public final class AppModel {
         // 전까지 남의 티켓이 화면에 떠 있다.
         issues = []
         statusEnteredAt = [:]
+        statusRevisits = [:]
         hygiene = nil
         boardWorkflow = WorkflowMap(statusToStage: [:])
         // 백필에서 나온 값들도 함께 버린다. 남으면 다른 계정으로 로그인했을 때 이전 조직의
@@ -547,6 +584,7 @@ public final class AppModel {
         BoardLayout.snapshot(
             issues: optimisticIssues,
             statusEnteredAt: statusEnteredAt,
+            statusRevisits: statusRevisits,
             workflow: boardWorkflow,
             rules: rules,
             minimumSpacing: minimumSpacing,
@@ -738,7 +776,14 @@ public final class AppModel {
         boardWorkflow = workflowMap
 
         issues = mirror.values.sorted { $0.key < $1.key }
-        statusEnteredAt = StatusTimeline.latestStatusEntry(from: events)
+        statusEnteredAt = StatusTimeline.latestStatusEntry(
+            from: events, revertWindowMinutes: rules.revertWindowMinutes
+        )
+        // 로그를 두 번 돈다. 한 번으로 합칠 수 있으나 티켓 49건에 이벤트 5,900건
+        // 규모에서 그 비용은 재보지 않고 최적화할 값이 아니다.
+        statusRevisits = StatusRevisits.counts(
+            from: events, revertWindowMinutes: rules.revertWindowMinutes
+        )
         hygiene = HygieneCalculator(rules: rules, workflow: workflowMap, calendar: calendar)
             .evaluate(issues, now: now)
 
@@ -895,11 +940,21 @@ public final class AppModel {
         // 관리자가 사이트에서 스프린트 필드를 없앤 경우와 구분되지 않는다. 조회 자체가
         // 실패하면(네트워크 등) 건드리지 않는다 — 전환이었다면 위에서 이미 지워졌고,
         // 전환이 아니었다면 지금 저장된 값이 여전히 맞을 가능성이 높다.
+        //
+        // "실패"에는 카탈로그를 **읽지 못한 것**도 들어간다 — `try?`로 뭉뚱그리면
+        // `sprintFieldID(in:)`이 던진 디코딩 실패와 "카탈로그는 읽었는데 스프린트
+        // 필드가 없더라"가 같은 nil로 보인다. 전자는 이번 조회가 사이트를 증언한 게
+        // 아니므로 지우면 안 된다(최종 전체 브랜치 리뷰 Finding 3).
         if let data = try? await candidate.fields() {
-            if let id = try? JiraFieldCatalog.sprintFieldID(in: data) {
-                try? sprintField.save(id)
-            } else {
-                try? sprintField.clear()
+            do {
+                if let id = try JiraFieldCatalog.sprintFieldID(in: data) {
+                    try? sprintField.save(id)
+                } else {
+                    try? sprintField.clear()
+                }
+            } catch {
+                // 카탈로그를 읽지 못했다 — "없음"이 아니라 "모른다"다. 저장된 값이
+                // 있다면 손대지 않는다.
             }
         }
 
@@ -1061,6 +1116,234 @@ public final class AppModel {
         await syncNow(reason: .manual)
     }
 
+    /// 시트에 그릴 만큼만 받아온다. 더 필요하면 Jira로 보낸다 — 이 앱은 티켓을
+    /// 읽는 도구가 아니라 정체를 재는 도구다.
+    public static let commentPageSize = 20
+
+    public func openDetail(issueKey: String) async {
+        guard let client else { return }
+        // 이 시트에 대해 이미 날아가고 있던 요청이 있다면 더 이상 그 결과를 기다리지
+        // 않는다 — 새로 여는 티켓이 이제부터 "지금 시트가 기다리는 요청"이다.
+        detailTask?.cancel()
+        detailToken += 1
+        let token = detailToken
+        detailState = .loading(issueKey: issueKey)
+        let generation = syncGeneration
+
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer {
+                // 이 태스크가 여전히 최신 요청일 때만 슬롯을 비운다 — 늦게 끝난 옛
+                // 태스크가 그사이 새로 시작된 태스크의 참조를 지워버리면 `closeDetail()`이
+                // 그 새 태스크를 더 이상 취소할 수 없게 된다.
+                if self.detailToken == token { self.detailTask = nil }
+            }
+            do {
+                let detail = try await client.issueDetail(issueKey: issueKey)
+                // 상세를 받는 사이 시트가 닫혔거나 다른 티켓이 열렸으면(=더 이상 이
+                // 요청을 기다리지 않으면) 댓글까지 마저 받아올 이유가 없다. 이 검사를
+                // 여기 두지 않으면 로그아웃 뒤에도 댓글 요청이 옛 계정으로 나간다 —
+                // "Jira와 더 이상 말하지 않는다"는 로그아웃의 첫 번째 의미를 어긴다.
+                guard self.isCurrentDetailFetch(token: token, generation: generation) else { return }
+                let comments = try await client.comments(issueKey: issueKey,
+                                                         limit: Self.commentPageSize)
+                // 받아오는 동안 시트가 닫혔거나, 다른 티켓이 열렸거나, 계정이 바뀌었으면
+                // 이 결과는 지금 시트가 기다리는 것이 아니다.
+                guard self.isCurrentDetailFetch(token: token, generation: generation) else { return }
+                self.detailState = .loaded(IssueDetailView(
+                    key: detail.key,
+                    summary: detail.summary,
+                    descriptionText: detail.description.map(ADFRenderer.plainText(from:)) ?? "",
+                    comments: comments.map {
+                        CommentView(id: $0.id, authorName: $0.authorName, created: $0.created,
+                                    text: $0.body.map(ADFRenderer.plainText(from:)) ?? "")
+                    }
+                ))
+            } catch JiraError.unauthorized {
+                guard self.isCurrentDetailFetch(token: token, generation: generation) else { return }
+                self.phase = .expired
+                self.detailState = .idle
+            } catch {
+                guard self.isCurrentDetailFetch(token: token, generation: generation) else { return }
+                // 앱이 직접 쓴 문구를 쓴다. `redactedErrorDescription`은 로그와 동기화
+                // 이력을 위한 타입 이름(`JiraError.forbidden` 같은)이라 화면에 놓을 것이 아니다.
+                self.detailState = .failed(Self.detailFailureMessage(error))
+            }
+        }
+        detailTask = task
+        await task.value
+    }
+
+    /// `token`이 지금도 `openDetail`이 기다리는 요청이고, 그사이 계정도 바뀌지
+    /// 않았는지. 셋 중 하나라도 어긋나면 이 응답은 지금 시트가 기다리는 것이 아니다.
+    private func isCurrentDetailFetch(token: Int, generation: Int) -> Bool {
+        token == detailToken && generation == syncGeneration
+    }
+
+    public func closeDetail() {
+        detailTask?.cancel()
+        detailTask = nil
+        // 늦게 도착하는 응답이 있어도 더 이상 기다리는 요청이 아니라고 답하도록.
+        detailToken += 1
+        detailState = .idle
+    }
+
+    /// 제목을 저장한다.
+    ///
+    /// 취소 창을 두지 않는 이유: 전이는 한 번 클릭이라 오조작이 쉽지만, 텍스트는
+    /// 입력과 저장 버튼에 이미 숙고가 들어 있다.
+    ///
+    /// **충돌은 감지하지 않는다.** Jira Cloud의 `PUT /issue`에는 낙관적 잠금이 없어
+    /// 409도 412도 오지 않는다. Jira 웹과 같은 마지막-쓰기-승리다.
+    public func saveSummary(issueKey: String, summary: String) async {
+        guard let client else { return }
+        // 미러에 없는 티켓은 화면에도 없다 — 사용자가 고를 수 있는 상황이 아니다.
+        guard issues.contains(where: { $0.key == issueKey }) else { return }
+        guard !editInFlight.contains(issueKey) else { return }
+
+        let trimmed = summary.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return }
+
+        editInFlight.insert(issueKey)
+        editFailures[issueKey] = nil
+        let generation = syncGeneration
+
+        // `AppModel`은 `@Observable @MainActor`다. 이 `Task`는 같은 격리를 물려받으므로
+        // 안에서 상태를 직접 만져도 되고, 정리를 중첩 `Task`로 미루지 않아 완료 시점이
+        // 확정된다 — 미루면 `await task.value`가 돌아온 뒤에도 `editInFlight`가
+        // 잠깐 남아 있어 호출자가 본 상태와 실제가 어긋난다.
+        let task = Task { [weak self] in
+            guard let self else { return }
+            defer { self.finishEdit(issueKey: issueKey) }
+            do {
+                try await client.updateSummary(issueKey: issueKey, summary: trimmed)
+            } catch JiraError.unauthorized {
+                // 만료 배너가 이미 같은 사실을 말한다. 시트에도 실패를 띄우면 인증
+                // 문제가 두 번 보이고, 사용자는 티켓 문제와 세션 문제를 구분하지 못한다.
+                if generation == self.syncGeneration { self.phase = .expired }
+                return
+            } catch {
+                if generation == self.syncGeneration {
+                    self.editFailures[issueKey] = Self.editFailureMessage(error)
+                }
+                return
+            }
+            // 저장하는 동안 계정이 바뀌었으면 이 결과는 남의 것이다.
+            guard generation == self.syncGeneration else { return }
+            // XP를 직접 주지 않는다. 동기화가 관측해 여느 이벤트와 똑같이 처리한다 —
+            // 점수가 관측 로그의 순수 함수라는 불변을 지키는 유일한 방법이다.
+            // 제목 수정은 미러의 summary를 갱신해야 카드의 제목이 맞는다.
+            await self.syncNow(reason: .manual)
+        }
+        editTasks[issueKey] = task
+        await task.value
+    }
+
+    /// 댓글을 등록한다.
+    ///
+    /// 보내는 ADF는 우리가 처음부터 만든다 — 읽어온 문서를 되돌려 보내지 않으므로
+    /// 왕복 손실이 없다.
+    ///
+    /// 반환값은 실제로 등록됐는지만 말한다. 시트가 이 값으로 초안을 지울지
+    /// 정하므로, `editFailures`의 부재로 성공을 추론하면 안 된다 — 401은
+    /// 만료 배너와 중복되지 않도록 `editFailures`를 일부러 비워 두는데, 그
+    /// 상태는 성공과 구분되지 않기 때문이다.
+    @discardableResult
+    public func postComment(issueKey: String, text: String) async -> Bool {
+        guard let client else { return false }
+        // 미러에 없는 티켓은 화면에도 없다 — 사용자가 고를 수 있는 상황이 아니다.
+        guard issues.contains(where: { $0.key == issueKey }) else { return false }
+        guard !editInFlight.contains(issueKey) else { return false }
+        // 공백만 친 뒤 저장을 누른 것은 등록 의사가 아니다 — 상태도 건드리지 않고 그냥 돌아간다.
+        guard let document = ADFBuilder.paragraphs(from: text) else { return false }
+
+        editInFlight.insert(issueKey)
+        editFailures[issueKey] = nil
+        let generation = syncGeneration
+
+        let work = Task { [weak self] () -> Bool in
+            guard let self else { return false }
+            defer { self.finishEdit(issueKey: issueKey) }
+            do {
+                try await client.addComment(issueKey: issueKey, body: document)
+            } catch JiraError.unauthorized {
+                if generation == self.syncGeneration { self.phase = .expired }
+                return false
+            } catch {
+                if generation == self.syncGeneration {
+                    self.editFailures[issueKey] = Self.editFailureMessage(error)
+                }
+                return false
+            }
+            // 등록하는 동안 계정이 바뀌었으면 이 결과는 남의 것이다 — 그래도 댓글
+            // 자체는 Jira에 실제로 남았으므로 반환값은 true다.
+            guard generation == self.syncGeneration else { return true }
+            // 댓글은 `updated` 타임스탬프를 움직인다 — 다음 동기화가 `.touched`로
+            // 관측하게 둔다. XP를 직접 주지 않는다.
+            await self.syncNow(reason: .manual)
+            return true
+        }
+        // `editTasks`는 `Task<Void, Never>`를 저장한다(`saveSummary`도 같은 딕셔너리를
+        // 쓴다) — `work`는 `Bool`을 반환하므로 그대로 넣을 수 없다. 취소 전달을 잃지
+        // 않도록 감싸기만 하는 `Void` 래퍼를 대신 저장하고, `signOut`의 `.cancel()`이
+        // 이 래퍼에 오면 `withTaskCancellationHandler`가 `work`로 그대로 넘긴다.
+        editTasks[issueKey] = Task {
+            await withTaskCancellationHandler {
+                _ = await work.value
+            } onCancel: {
+                work.cancel()
+            }
+        }
+        return await work.value
+    }
+
+    public func dismissEditFailure(issueKey: String) {
+        editFailures[issueKey] = nil
+    }
+
+    private func finishEdit(issueKey: String) {
+        editInFlight.remove(issueKey)
+        editTasks[issueKey] = nil
+    }
+
+    /// 화면에 띄울 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
+    ///
+    /// 400은 `JiraError.transitionRejected(reason:)`로 들어오고 그 `reason`은 Jira
+    /// 응답의 `errorMessages`를 그대로 담는다. 본문에는 이메일이 섞일 수 있다.
+    private static func editFailureMessage(_ error: any Error) -> String {
+        switch error {
+        case JiraError.transitionRejected:
+            return "Jira가 이 수정을 받지 않았습니다. Jira에서 확인해 주세요."
+        case JiraError.offline:
+            return "연결되지 않았습니다. 다시 시도해 주세요."
+        case JiraError.forbidden:
+            return "이 티켓을 수정할 권한이 없습니다."
+        case JiraError.notFound:
+            return "티켓을 찾을 수 없습니다."
+        default:
+            return "저장하지 못했습니다. 다시 시도해 주세요."
+        }
+    }
+
+    /// 시트에 띄울 조회 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
+    ///
+    /// 400은 `JiraError.transitionRejected(reason:)`로 들어오고 그 `reason`은 Jira 응답의
+    /// `errorMessages`를 그대로 담는다. 본문에는 이메일이 섞일 수 있다.
+    ///
+    /// 시트 조회는 동기화 경로 밖에서 돌기 때문에 이 처리를 물려받지 못한다 — 여기서 직접 한다.
+    private static func detailFailureMessage(_ error: any Error) -> String {
+        switch error {
+        case JiraError.offline:
+            return "연결되지 않았습니다. 다시 시도해 주세요."
+        case JiraError.forbidden:
+            return "이 티켓을 볼 권한이 없습니다."
+        case JiraError.notFound:
+            return "티켓을 찾을 수 없습니다."
+        default:
+            return "티켓을 불러오지 못했습니다. 다시 시도해 주세요."
+        }
+    }
+
     /// 화면에 띄울 실패 안내. **Jira가 준 사유를 옮기지 않는다.**
     ///
     /// `JiraError.transitionRejected(reason:)`는 Jira 응답의 `errorMessages`를 그대로
@@ -1092,6 +1375,10 @@ public final class AppModel {
     /// 미러와 화면이 갈라진다.
     func seedIssuesForTesting(_ seeded: [ObservedIssue]) {
         issues = seeded.sorted { $0.key < $1.key }
+    }
+
+    func seedStatusRevisitsForTesting(_ seeded: [String: Int]) {
+        statusRevisits = seeded
     }
 
     /// 대기 중인 전이 타이머 개수. `transitionTasks`는 `private`이라 테스트가 직접 보지

@@ -28,11 +28,17 @@ public struct BoardSlot: Sendable, Equatable, Identifiable {
     /// 툴팁이 "A → B" 문장을 만들 때 쓴다. 문장 조립은 뷰의 몫이다.
     public let firstSprintName: String?
     public let latestSprintName: String?
+    /// 이미 거쳐 간 상태로 돌아온 횟수. **표시 전용이며 채점에 쓰지 않는다.**
+    ///
+    /// 정체일은 마지막 상태 변화 이후를 세므로, 오래 공전한 티켓도 방금 옮겼다면 0이다.
+    /// 이 값이 그 맥락을 카드에 되돌려준다.
+    public let revisits: Int
 
     public init(
         issue: ObservedIssue, daysStagnant: Int, tier: StagnationTier,
         position: Double, row: Int, isApproximate: Bool, dueState: DueState,
-        sprintCarryOvers: Int, firstSprintName: String?, latestSprintName: String?
+        sprintCarryOvers: Int, firstSprintName: String?, latestSprintName: String?,
+        revisits: Int
     ) {
         self.issue = issue
         self.daysStagnant = daysStagnant
@@ -44,6 +50,7 @@ public struct BoardSlot: Sendable, Equatable, Identifiable {
         self.sprintCarryOvers = sprintCarryOvers
         self.firstSprintName = firstSprintName
         self.latestSprintName = latestSprintName
+        self.revisits = revisits
     }
 }
 
@@ -87,6 +94,7 @@ public enum BoardLayout {
     public static func snapshot(
         issues: [ObservedIssue],
         statusEnteredAt: [String: Date],
+        statusRevisits: [String: Int],
         workflow: WorkflowMap,
         rules: RuleSet,
         minimumSpacing: Double,
@@ -120,7 +128,8 @@ public enum BoardLayout {
                 dueState: dueState(for: issue, now: now, calendar: calendar),
                 sprintCarryOvers: issue.sprintCarryOvers,
                 firstSprintName: issue.firstSprintName,
-                latestSprintName: issue.latestSprintName
+                latestSprintName: issue.latestSprintName,
+                revisits: statusRevisits[issue.key] ?? 0
             ))
         }
 

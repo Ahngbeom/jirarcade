@@ -143,6 +143,45 @@ public struct JiraClient: Sendable {
                               body: body, resource: issueKey)
     }
 
+    // MARK: - 티켓 상세
+
+    public func issueDetail(issueKey: String) async throws -> JiraIssueDetail {
+        let data = try await perform(
+            method: "GET", path: "/issue/\(issueKey)", body: nil, resource: issueKey,
+            query: [URLQueryItem(name: "fields", value: "summary,description")]
+        )
+        return try JiraIssueDetail.decode(data)
+    }
+
+    /// `orderBy`를 명시하는 이유: 기본이 오래된 순이라 20건을 받으면 가장 오래된
+    /// 20건이 온다. 시트가 답하려는 질문은 "지금 무슨 상황인가"이므로 최신이 먼저다.
+    public func comments(issueKey: String, limit: Int) async throws -> [JiraComment] {
+        let data = try await perform(
+            method: "GET", path: "/issue/\(issueKey)/comment", body: nil, resource: issueKey,
+            query: [URLQueryItem(name: "orderBy", value: "-created"),
+                    URLQueryItem(name: "maxResults", value: String(limit))]
+        )
+        return try JiraComment.decodePage(data)
+    }
+
+    public func updateSummary(issueKey: String, summary: String) async throws {
+        let body = try JSONSerialization.data(
+            withJSONObject: ["fields": ["summary": summary]]
+        )
+        _ = try await perform(method: "PUT", path: "/issue/\(issueKey)",
+                              body: body, resource: issueKey)
+    }
+
+    public func addComment(issueKey: String, body document: ADFDocument) async throws {
+        let payload = try JSONEncoder().encode(CommentPayload(body: document))
+        _ = try await perform(method: "POST", path: "/issue/\(issueKey)/comment",
+                              body: payload, resource: issueKey)
+    }
+
+    private struct CommentPayload: Encodable {
+        let body: ADFDocument
+    }
+
     // MARK: - 요청 실행
 
     private func perform(

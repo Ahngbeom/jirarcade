@@ -130,6 +130,21 @@ private let threeSprints = """
     #expect(try JiraFieldCatalog.sprintFieldID(in: Data(body.utf8)) == "customfield_10020")
 }
 
+/// 항목 하나가 `id`를 안 주는 등 모양이 안 맞아도 나머지 수백 개에서 스프린트
+/// 필드를 여전히 찾아야 한다 — 그 원소가 배열 전체 디코드를 던지면 호출자는
+/// "필드 없음"으로 오해해 저장된 필드 ID를 지운다(최종 전체 브랜치 리뷰 Finding 3).
+@Test func findsTheSprintFieldEvenWhenAnotherEntryIsMalformed() throws {
+    let body = """
+    [
+      {"name":"이름만 있고 id가 없는 항목"},
+      {"id":"customfield_10020","name":"스프린트",
+       "schema":{"type":"array","custom":"com.pyxis.greenhopper.jira:gh-sprint"}}
+    ]
+    """
+
+    #expect(try JiraFieldCatalog.sprintFieldID(in: Data(body.utf8)) == "customfield_10020")
+}
+
 private func searchBody(sprintFieldKey: String, sprintJSON: String) -> String {
     """
     {"issues":[{"key":"DEMO-1","fields":{

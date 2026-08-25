@@ -16,6 +16,7 @@ struct TicketCardView: View {
     let model: AppModel
     let pending: PendingTransition?
     let failure: String?
+    let onOpenDetail: (String) -> Void
 
     var body: some View {
         VStack(alignment: .leading, spacing: metrics.cardLineGap) {
@@ -24,14 +25,28 @@ struct TicketCardView: View {
                     .arcadeType(.readout, .xs, weight: .bold)
                     .foregroundStyle(tierColor)
                 Spacer()
+                // 새 줄을 만들지 않는다 — 카드는 이미 마감일과 이월이 함께 뜨면 요약이
+                // 한 줄로 접히는 예산이다. 그리고 이 값이 수식하는 대상이 바로 옆의
+                // 정체일이라, 같은 줄에 있어야 "이 18일은 3번 돌아온 뒤의 18일"로 읽힌다.
+                if slot.revisits > 0 {
+                    Text("⇄\(slot.revisits)")
+                        .arcadeType(.readout, .xs)
+                        .foregroundStyle(theme.inkTertiary)
+                        .monospacedDigit()
+                }
                 Text(stagnationLabel)
                     .arcadeType(.readout, .xs)
                     .foregroundStyle(theme.inkTertiary)
                     .monospacedDigit()
             }
-            Text(slot.issue.key)
-                .arcadeType(.readout, .s, weight: .bold)
-                .foregroundStyle(theme.inkPrimary)
+            // 카드 전체가 아니라 키만 탭 대상이다. 카드에는 상태 옮기기 메뉴와
+            // 취소·닫기 버튼이 있어, 전체를 제스처로 덮으면 그 클릭을 가로챈다.
+            Button { onOpenDetail(slot.issue.key) } label: {
+                Text(slot.issue.key)
+                    .arcadeType(.readout, .s, weight: .bold)
+                    .foregroundStyle(theme.inkPrimary)
+            }
+            .buttonStyle(.plain)
             Text(slot.issue.summary)
                 .arcadeType(.prose, .xs)
                 .foregroundStyle(theme.inkSecondary)
@@ -125,9 +140,7 @@ struct TicketCardView: View {
                 .stroke(tierColor, lineWidth: slot.tier >= .boss ? 1.5 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: 6))
-        .help(slot.isApproximate
-              ? "관측 이력이 없어 마지막 갱신 시각으로 추정한 정체일입니다"
-              : slot.issue.summary)
+        .help(cardTooltip)
     }
 
     /// 전이 후보는 **메뉴를 열 때** 받아온다. 캐싱하지 않는 이유: 관리자가 워크플로를
@@ -193,6 +206,23 @@ struct TicketCardView: View {
 
     private var stagnationLabel: String {
         TicketPresentation.stagnationLabel(days: slot.daysStagnant, isApproximate: slot.isApproximate)
+    }
+
+    /// 카드 툴팁. 왕복과 추정을 **둘 다** 말할 수 있어야 하므로 한 문장으로 고정하지 않는다.
+    ///
+    /// **요약은 언제나 마지막 줄로 남는다.** 카드 본문의 요약은 두 줄에서 잘리므로 툴팁이
+    /// 긴 제목을 읽는 유일한 통로다. 왕복이나 추정 문장이 요약을 밀어내면, 하필 가장
+    /// 들여다보고 싶은 카드에서 제목을 읽을 수 없게 된다.
+    private var cardTooltip: String {
+        var parts: [String] = []
+        if slot.revisits > 0 {
+            parts.append("이미 거쳐 간 상태로 \(slot.revisits)번 돌아왔습니다")
+        }
+        if slot.isApproximate {
+            parts.append("관측 이력이 없어 마지막 갱신 시각으로 추정한 정체일입니다")
+        }
+        parts.append(slot.issue.summary)
+        return parts.joined(separator: "\n")
     }
 
     /// 대기 중인 전이가 실행되기까지 남은 시간을 카드 문구로 만든다. 초 단위를 올림해

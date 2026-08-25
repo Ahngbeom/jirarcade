@@ -50,9 +50,29 @@ public struct JiraTransition: Sendable, Equatable, Decodable {
         toStatusName = try container.decode(StatusRef.self, forKey: .to).name
     }
 
+    /// 항목 하나가 깨져도 나머지를 살린다.
+    ///
+    /// `to`를 싣지 않는 전이가 Jira에 실제로 있다 — 화면이 붙은 전이 중 도착 상태를
+    /// 응답에 넣지 않는 구성, 일부 전역 전이, 권한에 따라 도착 상태가 가려지는 경우.
+    /// 그런 항목 하나가 배열 전체를 무너뜨리면 메뉴가 "옮길 수 있는 상태가 없습니다"를
+    /// 띄우고, 사용자는 그 티켓을 앱에서 옮길 방법을 잃는다 — 사실이 아닌데도.
+    ///
+    /// 도착 상태를 모르는 전이는 목록에서 빼는 것이 맞다(어디로 가는지 보여줄 수 없다).
+    /// 빼야 하는 것은 그 항목 하나뿐이다.
     public static func decodeList(_ data: Data) throws -> [JiraTransition] {
-        struct Envelope: Decodable { let transitions: [JiraTransition] }
-        return try JSONDecoder().decode(Envelope.self, from: data).transitions
+        struct Envelope: Decodable { let transitions: [FailableTransition] }
+        return try JSONDecoder().decode(Envelope.self, from: data)
+            .transitions.compactMap(\.value)
+    }
+}
+
+/// 전이 하나를 시도하고 실패하면 아무것도 담지 않는다. `SprintDTO`의 `FailableSprint`와
+/// 같은 이유로 있다 — Swift의 배열 디코딩은 전부-아니면-전무라, 원소별로 감싸지 않으면
+/// 하나가 전체를 가져간다.
+private struct FailableTransition: Decodable {
+    let value: JiraTransition?
+    init(from decoder: any Decoder) throws {
+        value = try? JiraTransition(from: decoder)
     }
 }
 
@@ -117,28 +137,8 @@ public enum JiraSearchResponse {
 }
 
 extension JiraSearchResponse {
-    // ISO8601DateFormatter/DateFormatter는 Sendable을 준수하지 않지만, 설정을 마친 뒤
-    // 값을 바꾸지 않고 포맷팅에만 쓰므로(Apple 문서상 이 두 포매터는 스레드 세이프) 안전하다.
-    /// `.withFractionalSeconds`가 켜진 포매터는 소수점이 **없으면 nil을 돌려준다**.
-    /// Jira Cloud는 보통 `.000`을 붙이지만 배포·프록시에 따라 빠질 수 있고, 그때 이슈가
-    /// 통째로 디코딩 실패해 전량 손실로 이어진다. 두 포매터를 순서대로 시도한다.
-    fileprivate nonisolated(unsafe) static let timestampFormatters: [ISO8601DateFormatter] = {
-        let variants: [ISO8601DateFormatter.Options] = [
-            [.withInternetDateTime, .withFractionalSeconds],
-            [.withInternetDateTime],
-        ]
-        return variants.map { options in
-            let formatter = ISO8601DateFormatter()
-            formatter.formatOptions = options
-            return formatter
-        }
-    }()
-
     fileprivate static func parseTimestamp(_ text: String) -> Date? {
-        for formatter in timestampFormatters {
-            if let date = formatter.date(from: text) { return date }
-        }
-        return nil
+        JiraTimestamp.parse(text)
     }
 
     fileprivate static let dateOnlyFormatter: DateFormatter = {

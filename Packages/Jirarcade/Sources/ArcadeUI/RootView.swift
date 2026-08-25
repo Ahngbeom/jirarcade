@@ -57,13 +57,16 @@ private struct RootContent: View {
             // 그래서 이전 phase가 `.expired`가 아닐 때만 "처음 ready가 됐다"고 본다.
             //
             // 이 판별이 성립하는 건 지금 AppModel의 모양에 기대고 있다 — 다음 세 가지가
-            // 전부 참이어야 한다: (a) `phase = .expired`를 세팅하는 곳은 정확히 두 군데
-            // (validate()의 unauthorized catch, performSync()의 unauthorized catch)뿐이고,
-            // (b) 그중 client를 nil로 남기는 쪽(validate(persistOnSuccess: false))은
-            // performSync()를 통해 `.ready`로 회복하는 일이 없으며(guard let client에서
-            // 막힘), (c) startSyncing()을 부르는 곳은 이 한 곳뿐이다. 셋 중 하나라도
-            // 깨지면 — `.expired`로 가는 세 번째 경로가 생기거나, startSyncing()을 부르는
-            // 곳이 늘거나, 첫 번째 catch에서 client를 세팅하게 되면 — 이 조건은 조용히
+            // 전부 참이어야 한다: (a) `phase = .expired`를 세팅하는 곳은 (이제 여러
+            // 군데다 — AppModel.swift에서 `phase = .expired`를 찾아 개수를 세어 볼 것)
+            // 전부 인증 실패(401 등) 응답에 대한 반응이고, (b) 그중 `client`를 nil로
+            // 남기는 쪽은 `validate(persistOnSuccess: false)` 한 곳뿐이며 그 경로는
+            // performSync()를 통해 `.ready`로 회복하는 일이 없고(guard let client에서
+            // 막힘), 나머지는 전부 client를 채운 채로 `.expired`가 된다(그래서
+            // performSync()가 재인증 없이 회복시킬 수 있다), (c) startSyncing()을 부르는
+            // 곳은 이 한 곳뿐이다. 셋 중 하나라도 깨지면 — client를 채운 채로
+            // `.signedOut` 같은 다른 phase로 새지거나, startSyncing()을 부르는 곳이
+            // 늘거나, (b)의 그 한 곳이 client를 세팅하게 되면 — 이 조건은 조용히
             // 틀려진다. 이 줄을 건드리기 전에 위 셋을 다시 확인할 것.
             if new == .ready && old != .expired {
                 model.startSyncing()
