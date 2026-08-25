@@ -13,12 +13,13 @@ private var utc: Calendar {
 private func snapshot(
     _ issues: [ObservedIssue],
     enteredAt: [String: Date] = [:],
+    revisits: [String: Int] = [:],
     workflow: WorkflowMap = demoWorkflow,
     spacing: Double = 0
 ) -> BoardSnapshot {
     BoardLayout.snapshot(
-        issues: issues, statusEnteredAt: enteredAt, workflow: workflow,
-        rules: .default, minimumSpacing: spacing, now: now, calendar: utc
+        issues: issues, statusEnteredAt: enteredAt, statusRevisits: revisits,
+        workflow: workflow, rules: .default, minimumSpacing: spacing, now: now, calendar: utc
     )
 }
 
@@ -187,4 +188,20 @@ private func snapshot(
 
     #expect(slot.sprintCarryOvers == 0)
     #expect(slot.firstSprintName == nil)
+}
+
+@Test func carriesTheRevisitCountOntoTheSlot() {
+    let result = snapshot([issue(key: "DEMO-1", status: "In Progress")],
+                          revisits: ["DEMO-1": 3])
+
+    let slot = result.lanes.flatMap(\.slots).first { $0.issue.key == "DEMO-1" }
+    #expect(slot?.revisits == 3)
+}
+
+/// 맵에 없는 티켓은 0이다. 돌아온 적 없다는 뜻이다.
+@Test func aTicketAbsentFromTheRevisitMapGetsZero() {
+    let result = snapshot([issue(key: "DEMO-1", status: "In Progress")])
+
+    let slot = result.lanes.flatMap(\.slots).first { $0.issue.key == "DEMO-1" }
+    #expect(slot?.revisits == 0)
 }

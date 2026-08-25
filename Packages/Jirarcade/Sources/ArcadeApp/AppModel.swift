@@ -568,6 +568,7 @@ public final class AppModel {
         BoardLayout.snapshot(
             issues: optimisticIssues,
             statusEnteredAt: statusEnteredAt,
+            statusRevisits: [:],
             workflow: boardWorkflow,
             rules: rules,
             minimumSpacing: minimumSpacing,
