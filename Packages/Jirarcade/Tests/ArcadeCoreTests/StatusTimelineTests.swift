@@ -63,15 +63,38 @@ private func event(
     #expect(StatusTimeline.latestStatusEntry(from: [], revertWindowMinutes: 10).isEmpty)
 }
 
-/// `ScoreEngine`이 순회 도중 부르는 형태. 이 함수가 규칙의 유일한 정의다.
+/// `ScoreEngine`이 순회 도중 부르는 형태. 이 함수가 갱신 규칙의 유일한 정의다.
 @Test func applyUpdatesOnlyOnStatusChange() {
     var map: [String: Date] = [:]
 
-    StatusTimeline.apply(event("DEMO-1", .touched, at: 1), to: &map)
+    StatusTimeline.apply(event("DEMO-1", .touched, at: 1), isReverted: false, to: &map)
     #expect(map.isEmpty)
 
-    StatusTimeline.apply(event("DEMO-1", .statusChanged, at: 2), to: &map)
+    StatusTimeline.apply(event("DEMO-1", .statusChanged, at: 2), isReverted: false, to: &map)
     #expect(map["DEMO-1"] == base.addingTimeInterval(days(2)))
+}
+
+/// 되돌림 쌍은 `apply` 안에서 막힌다. 호출자가 가드를 빼먹어서 통과하는 일이 없어야 한다.
+@Test func applyRefusesARevertedEvent() {
+    var map: [String: Date] = [:]
+
+    StatusTimeline.apply(event("DEMO-1", .statusChanged, at: 2), isReverted: true, to: &map)
+
+    #expect(map.isEmpty)
+}
+
+/// 같은 상태로 다시 들어간 이벤트도 `apply` 안에서 막힌다. 백필(`ChangelogParser`)이
+/// 이런 이벤트를 거르지 않아 실제 로그에 남는다.
+@Test func applyRefusesANoOpTransition() {
+    var map: [String: Date] = [:]
+    let noOp = DomainEvent(
+        issueKey: "DEMO-1", kind: .statusChanged, fromStatus: "진행 중", toStatus: "진행 중",
+        observedAt: base.addingTimeInterval(days(2)), actorAccountId: "acc-me"
+    )
+
+    StatusTimeline.apply(noOp, isReverted: false, to: &map)
+
+    #expect(map.isEmpty)
 }
 
 /// 잘못 눌러 즉시 되돌린 티켓은 정체일을 잃지 않는다.
