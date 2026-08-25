@@ -23,9 +23,12 @@ public enum StatusRevisits {
         for index in events.indices.sorted(by: { events[$0].observedAt < events[$1].observedAt }) {
             guard reverted.contains(index) == false else { continue }
             let event = events[index]
+            // no-op 판정은 `StatusTimeline`이 한 번만 정의한다. 여기에 같은 비교를
+            // 다시 쓰면, 정의가 넓어질 때(상태명 공백 제거·대소문자 무시 같은) 왕복
+            // 횟수와 정체 기준선이 서로 다른 규칙 위에서 갈린다.
             guard event.kind == .statusChanged,
                   event.fromStatus != nil, event.toStatus != nil,
-                  event.fromStatus != event.toStatus  // 백필은 라이브와 달리 같은 상태로의 전환을 필터하지 않는다
+                  StatusTimeline.isNoOpTransition(event) == false
             else { continue }
             byIssue[event.issueKey, default: []].append(event)
         }

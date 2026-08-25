@@ -64,13 +64,20 @@ private func change(
 }
 
 /// 입력이 시간순이 아니어도 결과가 같다. 백필은 과거 이벤트를 나중에 넣는다.
+///
+/// **픽스처가 순서에 비대칭이어야 한다.** 두 건짜리 A→B / B→A는 뒤집어도 답이 1이라
+/// 정렬이 없어도 통과한다. 여기서는 한 번도 돌아온 적 없는 티켓을 쓴다 — 정렬이 없으면
+/// 집합이 `검토`로 열려 세 번째 이벤트가 `검토`로 "돌아온" 것으로 세어지고, 오조작 하나
+/// 없는 티켓에 `⇄1`이 붙는다.
 @Test func doesNotTrustInputOrder() {
-    let shuffled = [
-        change("DEMO-1", from: "검토", to: "진행 중", at: "2026-08-05T09:00:00Z"),
-        change("DEMO-1", from: "진행 중", to: "검토", at: "2026-08-01T09:00:00Z"),
+    // 시간순: 대기→진행 중, 진행 중→검토, 검토→완료. 돌아온 적이 없다.
+    let backfilled = [
+        change("DEMO-1", from: "검토", to: "완료", at: "2026-08-09T09:00:00Z"),
+        change("DEMO-1", from: "대기", to: "진행 중", at: "2026-08-01T09:00:00Z"),
+        change("DEMO-1", from: "진행 중", to: "검토", at: "2026-08-05T09:00:00Z"),
     ]
 
-    #expect(StatusRevisits.counts(from: shuffled, revertWindowMinutes: 10)["DEMO-1"] == 1)
+    #expect(StatusRevisits.counts(from: backfilled, revertWindowMinutes: 10)["DEMO-1"] == nil)
 }
 
 /// 상태를 모르는 이벤트는 건너뛴다 — 거쳤는지 판정할 수 없다.
