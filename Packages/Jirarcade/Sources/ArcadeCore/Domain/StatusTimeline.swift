@@ -6,8 +6,12 @@ import Foundation
 /// `jiraUpdatedAt`으로 폴백하는데, 그러면 댓글·워크로그도 기준선을 밀어 정체일이 실제보다
 /// 짧게 나온다. 이벤트 로그가 있으면 언제나 그쪽이 정확하다.
 public enum StatusTimeline {
-    /// 이벤트 하나를 반영한다. **갱신 규칙의 유일한 정의**이며 `ScoreEngine.recompute`의
-    /// 순회도 이것을 부른다.
+    /// 이벤트 하나를 반영한다. **어떤 종류가 기준선을 옮기는가**만 정의하는 원시 연산이며,
+    /// `latestStatusEntry`와 `ScoreEngine.recompute`가 둘 다 이것을 부른다.
+    ///
+    /// **이것만으로는 갱신 규칙이 완성되지 않는다.** 되돌림 쌍(`RevertDetector`)과
+    /// no-op 전환(`isNoOpTransition`)을 건너뛰는 일은 호출자 쪽에 있다. 두 가드 없이
+    /// 이 함수만 부르면, 3초 만에 되돌린 오조작이 3주 정체를 지운다.
     ///
     /// `.statusChanged`만 기준선을 옮긴다. `.touched`가 옮기면 댓글 한 줄로 정체일이
     /// 0이 되어, 이 앱이 재려는 것 자체가 사라진다.
@@ -39,9 +43,9 @@ public enum StatusTimeline {
             guard reverted.contains(index) == false else { continue }
             let event = events[index]
             // 백필은 라이브 동기화(`DiffEngine`)와 달리 같은 상태로의 전환(no-op)을 거르지
-            // 않는다. `apply`는 이 함수만의 규칙이 아니라 `ScoreEngine`도 함께 쓰는 갱신
-            // 규칙의 유일한 정의라 여기서 고치지 않는다 — 대신 호출 전에 걸러, 실제로
-            // 아무 데도 가지 않은 티켓의 정체일이 리셋되지 않게 한다.
+            // 않는다. `apply`는 `ScoreEngine`도 함께 쓰는 원시 연산이라 여기서 고치지
+            // 않는다 — 대신 호출 전에 걸러, 실제로 아무 데도 가지 않은 티켓의 정체일이
+            // 리셋되지 않게 한다.
             guard isNoOpTransition(event) == false else { continue }
             apply(event, to: &map)
         }

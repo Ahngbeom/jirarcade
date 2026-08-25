@@ -221,6 +221,10 @@ struct TicketCardView: View {
     }
 
     /// 카드 툴팁. 왕복과 추정을 **둘 다** 말할 수 있어야 하므로 한 문장으로 고정하지 않는다.
+    ///
+    /// **요약은 언제나 마지막 줄로 남는다.** 카드 본문의 요약은 두 줄에서 잘리므로 툴팁이
+    /// 긴 제목을 읽는 유일한 통로다. 왕복이나 추정 문장이 요약을 밀어내면, 하필 가장
+    /// 들여다보고 싶은 카드에서 제목을 읽을 수 없게 된다.
     private var cardTooltip: String {
         var parts: [String] = []
         if slot.revisits > 0 {
@@ -229,7 +233,8 @@ struct TicketCardView: View {
         if slot.isApproximate {
             parts.append("관측 이력이 없어 마지막 갱신 시각으로 추정한 정체일입니다")
         }
-        return parts.isEmpty ? slot.issue.summary : parts.joined(separator: "\n")
+        parts.append(slot.issue.summary)
+        return parts.joined(separator: "\n")
     }
 
     /// 대기 중인 전이가 실행되기까지 남은 시간을 카드 문구로 만든다. 초 단위를 올림해
