@@ -45,6 +45,10 @@ struct OrbitView: View {
                 driftView(snapshot, metrics: metrics)
             }
             .frame(width: proxy.size.width, height: proxy.size.height)
+            // `position`으로 놓은 자식은 프레임을 넘어도 잘리지 않는다. 궤도는 줌인하면
+            // 성계가 화면 밖까지 뻗으므로, 자르지 않으면 행성과 라벨이 위쪽 HUD 줄을
+            // 침범해 스코어보드 글자 위에 겹쳐 그려진다.
+            .clipped()
             .contentShape(Rectangle())
             .gesture(pan(viewport: proxy.size))
             .gesture(magnify(viewport: proxy.size, extent: extent))
@@ -73,22 +77,52 @@ struct OrbitView: View {
                 .opacity(0.5)
         }
 
-        // 태양. 이름은 항상 보인다.
+        // 태양. 줌아웃에서는 같은 `Stage`의 태양들이 한 점에 모이므로 상태명을 각자
+        // 그리면 글자가 포개져 읽을 수 없다. 그때는 그 무리의 첫 태양에만 `Stage`
+        // 이름을 적는다 — 보드 레인이 쓰는 이름과 같은 것이라 두 화면이 이어진다.
         VStack(spacing: density.tightGap) {
             Circle()
                 .fill(theme.accent)
                 .frame(width: metrics.length(OrbitLayout.planetArc) * 1.4,
                        height: metrics.length(OrbitLayout.planetArc) * 1.4)
-            Text(system.statusName)
-                .arcadeType(.readout, .xs, weight: .bold)
-                .foregroundStyle(theme.inkSecondary)
-                .fixedSize()
+            if let label = systemLabel(system, in: snapshot, metrics: metrics) {
+                Text(label)
+                    .arcadeType(.readout, .xs, weight: .bold)
+                    .foregroundStyle(theme.inkSecondary)
+                    .fixedSize()
+            }
         }
         .position(centre)
 
         ForEach(system.planets) { planet in
             planetButton(planet, at: metrics.planetPoint(system: system, planet: planet),
                          metrics: metrics)
+        }
+    }
+
+    /// 태양에 적을 이름. 갈라지기 전에는 `Stage`, 갈라진 뒤에는 실제 상태명이다.
+    ///
+    /// 임계를 라벨 표시(`showsPlanetLabels`, 0.5)보다 낮게 잡는 이유: 태양이 서로
+    /// 떨어지기 시작하는 순간부터 상태명이 읽히는 편이 낫고, 그 시점은 티켓 키를
+    /// 띄우기에는 아직 이르다.
+    private func systemLabel(
+        _ system: OrbitSystem, in snapshot: OrbitSnapshot, metrics: OrbitMetrics
+    ) -> String? {
+        guard metrics.zoomProgress <= 0.35 else { return system.statusName }
+        // 뭉쳐 있는 동안에는 그 `Stage`의 첫 태양 하나만 이름을 갖는다.
+        let first = snapshot.systems.first { $0.stage == system.stage }
+        return first?.id == system.id ? stageLabel(system.stage) : nil
+    }
+
+    /// `BoardLaneView`가 레인 머리에 쓰는 것과 같은 이름이다. 두 화면이 같은 단계를
+    /// 다르게 부르면 토글이 같은 데이터의 두 시선이라는 것이 읽히지 않는다.
+    private func stageLabel(_ stage: Stage) -> String {
+        switch stage {
+        case .backlog: "BACKLOG"
+        case .active:  "ACTIVE"
+        case .review:  "REVIEW"
+        case .verify:  "VERIFY"
+        case .done:    "DONE"
         }
     }
 
