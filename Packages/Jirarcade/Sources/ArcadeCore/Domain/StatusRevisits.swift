@@ -24,7 +24,8 @@ public enum StatusRevisits {
             guard reverted.contains(index) == false else { continue }
             let event = events[index]
             guard event.kind == .statusChanged,
-                  event.fromStatus != nil, event.toStatus != nil
+                  event.fromStatus != nil, event.toStatus != nil,
+                  event.fromStatus != event.toStatus  // 백필은 라이브와 달리 같은 상태로의 전환을 필터하지 않는다
             else { continue }
             byIssue[event.issueKey, default: []].append(event)
         }

@@ -95,3 +95,23 @@ private func change(
 
     #expect(counts["DEMO-1"] == nil)
 }
+
+/// 같은 상태로의 전환은 움직임이 아니다. 백필이 필터하지 않은 오류 데이터를 처리한다.
+@Test func noOpTransitionAsOnlyEventIsAbsentFromTheMap() {
+    let counts = StatusRevisits.counts(from: [
+        change("DEMO-9", from: "진행 중", to: "진행 중", at: "2026-08-01T09:00:00Z"),
+    ], revertWindowMinutes: 10)
+
+    #expect(counts["DEMO-9"] == nil)
+}
+
+/// 같은 상태로의 전환은 움직임이 아니다. 중간에 끼어있는 오류 데이터를 처리한다.
+@Test func noOpTransitionMidstreamIsIgnored() {
+    let counts = StatusRevisits.counts(from: [
+        change("DEMO-9", from: "대기", to: "진행 중", at: "2026-08-01T09:00:00Z"),
+        change("DEMO-9", from: "진행 중", to: "진행 중", at: "2026-08-02T09:00:00Z"),
+        change("DEMO-9", from: "진행 중", to: "검토", at: "2026-08-03T09:00:00Z"),
+    ], revertWindowMinutes: 10)
+
+    #expect(counts["DEMO-9"] == nil)
+}
