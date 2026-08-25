@@ -62,10 +62,10 @@ struct OrbitView: View {
             .clipped()
             .contentShape(Rectangle())
             .gesture(pan(viewport: proxy.size, extent: extent))
-            .gesture(magnify(viewport: proxy.size, extent: extent))
+            .gesture(magnify(viewport: proxy.size, extent: extent, snapshot: snapshot, metrics: metrics))
             .background(theme.surfaceBase)
             .overlay(alignment: .bottomTrailing) {
-                zoomControls(viewport: proxy.size, extent: extent)
+                zoomControls(viewport: proxy.size, extent: extent, snapshot: snapshot, metrics: metrics)
             }
         }
     }
@@ -216,14 +216,26 @@ struct OrbitView: View {
     /// 성계 전체(논리 반지름 `extent`)가 화면 밖으로 완전히 밀려나지 않도록 팬을
     /// pt로 환산한 `extent` 안으로 가둔다. 클램프가 없으면 드래그만으로 성계 중심을
     /// 화면 밖으로 끌어낼 수 있고, 되돌아오는 유일한 길이 ⌘0(전체) 리셋뿐이게 된다.
+    ///
+    /// 여유를 정확히 `extent`가 아니라 `extent * 1.2`로 두는 이유: 확대 앵커
+    /// (`zoomAnchor`)가 화면 중심에서 가장 가까운 태양의 **중심**을 그대로 쓰는데,
+    /// 태양 중심의 논리 원점 거리는 `Stage` 격자 대각선 코너 근처에서 `extent`에
+    /// 근접할 수 있다. 여유 없이 `extent`로 딱 자르면 확대할 때 앵커를 화면
+    /// 중심으로 옮기는 팬이 이 클램프에 걸려 잘려 나갈 수 있고, 그러면 확대-앵커
+    /// 보정(`zoomPan`) 자체가 무력화된다. 1.2배는 "성계가 화면 밖으로 완전히
+    /// 나가지 않을 정도면 충분하다"는 원래 클램프 목적을 지키면서 앵커에 여유를
+    /// 준다. 앵커 경로만 예외로 두지 않고 여기 하나에서 여유를 주는 이유는, 그래야
+    /// `body`가 매 프레임 다시 거는 클램프(아래 `pan:` 인자)가 `zoomPan`이 계산한
+    /// 값을 더 좁은 기준으로 재차 잘라내는 불일치가 생기지 않기 때문이다.
     private func clampPan(_ pan: CGSize, extent: Double, scale: Double) -> CGSize {
-        let bound = max(extent * scale, 0)
+        let bound = max(extent * scale * 1.2, 0)
         return CGSize(width: min(max(pan.width, -bound), bound),
                       height: min(max(pan.height, -bound), bound))
     }
 
     /// 배율이 바뀔 때 화면 중심이 가리키던 논리 좌표를 붙잡도록 `committedPan`을
-    /// 다시 계산한다.
+    /// 다시 계산한다. **축소, 또는 화면에 태양이 하나도 없을 때**만 쓴다 — 확대는
+    /// `zoomPan`이 `zoomAnchor`로 처리한다.
     ///
     /// `OrbitMetrics.point`는 `logical.x * scale + pan.width`로 화면 좌표를 만든다.
     /// 화면 중심(팬 성분 기준 0)이 가리키는 논리 좌표를 `L`이라 하면
@@ -233,14 +245,59 @@ struct OrbitView: View {
     /// `L`을 유지하려면 `pan' = pan * (newScale / scale)`이어야 한다(같은 `L`을
     /// `newScale`에 대입해 풀면 나온다).
     ///
-    /// 이 보정이 없으면 배율만 커지고 팬은 그대로라, 논리 원점(0,0) — `Stage`
-    /// 2×2 격자의 **가운데**, 성계가 하나도 없는 빈 자리 — 만 화면 중심에 고정된
-    /// 채 나머지가 원점에서 점점 멀어진다. 확대할수록 성계 넷이 사방으로 흩어져
-    /// 결국 전부 화면 밖으로 나간다.
+    /// 축소는 시야를 넓히는 동작이라 특정 태양으로 파고들 이유가 없다 — 지금
+    /// 화면 중심이 보던 자리를 그대로 유지하는 것으로 충분하다.
     private func anchoredPan(scaleRatio: Double, extent: Double, newScale: Double) -> CGSize {
         clampPan(
             CGSize(width: committedPan.width * scaleRatio,
                   height: committedPan.height * scaleRatio),
+            extent: extent, scale: newScale
+        )
+    }
+
+    /// 확대할 때 붙잡을 논리 좌표 — 화면 중심에서 가장 가까운 태양의 중심이다.
+    ///
+    /// 화면 중심을 그대로 붙잡으면 안 되는 이유: 논리 원점(0,0)은 `Stage` 2×2
+    /// 격자의 **가운데**, 곧 성계가 하나도 없는 빈 자리다. 팬하지 않은 채(또는
+    /// 비례 보정만으로) 확대하면 네 성계가 원점에서 사방으로 흩어져 빈 가운데만
+    /// 화면에 남는다. 이 화면에서 확대의 목적이 "한 단계를 파고들어 그 안의 상태
+    /// 분화를 보는 것"(설계 §4)이므로, 화면 중심에 가장 가까운 태양을 파고드는
+    /// 목표로 삼는 것이 그 목적과 맞는다.
+    private func zoomAnchor(_ snapshot: OrbitSnapshot, metrics: OrbitMetrics) -> OrbitPoint? {
+        let centre = CGPoint(x: metrics.viewport.width / 2, y: metrics.viewport.height / 2)
+        return snapshot.systems.min {
+            squaredDistance(metrics.point($0.center), centre)
+                < squaredDistance(metrics.point($1.center), centre)
+        }?.center
+    }
+
+    private func squaredDistance(_ a: CGPoint, _ b: CGPoint) -> CGFloat {
+        let dx = a.x - b.x
+        let dy = a.y - b.y
+        return dx * dx + dy * dy
+    }
+
+    /// 배율 변경에 맞춰 팬을 다시 계산한다 — 확대와 축소가 다른 기준을 쓴다.
+    ///
+    /// 확대(`factor > 1`)할 때는 화면 중심에서 가장 가까운 태양(`zoomAnchor`)을
+    /// 화면 중심으로 끌어온다: `point(anchor) = viewport/2`가 되려면
+    /// `anchor * newScale + pan = 0`, 곧 `pan = -anchor * newScale`이어야 한다.
+    /// 축소이거나 화면에 태양이 없으면(첫 진입 등) 지금 화면 중심이 보던 논리
+    /// 좌표를 그대로 유지하는 비례 보정(`anchoredPan`)을 쓴다 — 축소는 시야를
+    /// 넓히는 동작이라 특정 태양으로 파고들 이유가 없고, 오히려 앵커를 옮기면
+    /// 화면이 어지럽다.
+    private func zoomPan(
+        factor: Double, oldScale: Double, newScale: Double,
+        snapshot: OrbitSnapshot, metrics: OrbitMetrics, extent: Double
+    ) -> CGSize {
+        guard factor > 1, let anchor = zoomAnchor(snapshot, metrics: metrics) else {
+            return anchoredPan(
+                scaleRatio: oldScale != 0 ? newScale / oldScale : 1,
+                extent: extent, newScale: newScale
+            )
+        }
+        return clampPan(
+            CGSize(width: -anchor.x * newScale, height: -anchor.y * newScale),
             extent: extent, scale: newScale
         )
     }
@@ -259,7 +316,9 @@ struct OrbitView: View {
             }
     }
 
-    private func magnify(viewport: CGSize, extent: Double) -> some Gesture {
+    private func magnify(
+        viewport: CGSize, extent: Double, snapshot: OrbitSnapshot, metrics: OrbitMetrics
+    ) -> some Gesture {
         MagnifyGesture()
             .onChanged { gestureScale = $0.magnification }
             .onEnded { value in
@@ -267,11 +326,11 @@ struct OrbitView: View {
                 let newScale = clampScale(oldScale * value.magnification,
                                           viewport: viewport, extent: extent)
                 scale = newScale
-                // step(_:viewport:extent:)와 같은 이유로 팬을 함께 보정한다 — 아래
-                // 그 함수의 주석 참고.
-                committedPan = anchoredPan(
-                    scaleRatio: oldScale != 0 ? newScale / oldScale : 1,
-                    extent: extent, newScale: newScale
+                // step(_:snapshot:metrics:viewport:extent:)와 같은 이유·같은 방식으로
+                // 팬을 보정한다 — 핀치도 확대이므로 같은 문제(zoomPan 주석 참고)를 갖는다.
+                committedPan = zoomPan(
+                    factor: value.magnification, oldScale: oldScale, newScale: newScale,
+                    snapshot: snapshot, metrics: metrics, extent: extent
                 )
                 gestureScale = 1
             }
@@ -279,11 +338,17 @@ struct OrbitView: View {
 
     /// 트랙패드가 없거나 키보드만 쓰는 경우의 경로. 궤도가 유일한 경로인 정보는
     /// 없으므로(레인이 항상 있다) 접근성 하한은 "조작 가능"이다.
-    private func zoomControls(viewport: CGSize, extent: Double) -> some View {
+    private func zoomControls(
+        viewport: CGSize, extent: Double, snapshot: OrbitSnapshot, metrics: OrbitMetrics
+    ) -> some View {
         HStack(spacing: density.tightGap) {
-            Button("−") { step(0.8, viewport: viewport, extent: extent) }
+            Button("−") {
+                step(0.8, snapshot: snapshot, metrics: metrics, viewport: viewport, extent: extent)
+            }
                 .keyboardShortcut("-", modifiers: .command)
-            Button("＋") { step(1.25, viewport: viewport, extent: extent) }
+            Button("＋") {
+                step(1.25, snapshot: snapshot, metrics: metrics, viewport: viewport, extent: extent)
+            }
                 .keyboardShortcut("=", modifiers: .command)
             Button("전체") {
                 // 팬·줌 상태 넷을 모두 되돌린다. `gestureScale`·`dragPan`은 제스처가
@@ -301,17 +366,17 @@ struct OrbitView: View {
         .padding(density.rowGap)
     }
 
-    private func step(_ factor: Double, viewport: CGSize, extent: Double) {
+    private func step(
+        _ factor: Double, snapshot: OrbitSnapshot, metrics: OrbitMetrics,
+        viewport: CGSize, extent: Double
+    ) {
         let oldScale = scale ?? OrbitMetrics.fitScale(viewport: viewport, extent: extent)
         let newScale = clampScale(oldScale * factor, viewport: viewport, extent: extent)
-        // `clampScale`이 상·하한에서 값을 잘라내므로 요청한 `factor`가 그대로
-        // 적용됐다고 가정할 수 없다 — 실제로 적용된 비율(`newScale / oldScale`)로
-        // 팬을 보정해야 화면 중심이 어긋나지 않는다(`anchoredPan` 주석 참고).
         withAnimation(reduceMotion ? nil : .easeOut(duration: 0.2)) {
             scale = newScale
-            committedPan = anchoredPan(
-                scaleRatio: oldScale != 0 ? newScale / oldScale : 1,
-                extent: extent, newScale: newScale
+            committedPan = zoomPan(
+                factor: factor, oldScale: oldScale, newScale: newScale,
+                snapshot: snapshot, metrics: metrics, extent: extent
             )
         }
     }
