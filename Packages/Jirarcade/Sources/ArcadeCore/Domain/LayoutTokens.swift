@@ -56,6 +56,9 @@ public enum LayoutTokens {
         case formMaxWidth
         /// 매핑 마법사처럼 라벨과 컨트롤이 좌우로 갈리는 것의 최대 폭.
         case wizardMaxWidth
+        /// 본문에 그리는 표의 한 칸 최대 폭. 칸 하나에 긴 문장이 들어 있으면 격자가
+        /// 화면 밖까지 늘어나므로 상한을 두고, 넘으면 그 칸 안에서 줄바꿈한다.
+        case tableCellMaxWidth
     }
 
     public struct WindowSize: Sendable, Equatable {
@@ -140,6 +143,8 @@ public enum LayoutTokens {
         case .sheetMinHeight:   pick((320, 400, 480), density)
         case .formMaxWidth:     pick((480, 560, 640), density)
         case .wizardMaxWidth:   pick((560, 660, 760), density)
+        // 카드 폭(`ticketCardWidth` × 2.8)에 세 칸이 들어가는 값. 표는 대개 두세 칸이다.
+        case .tableCellMaxWidth: pick((150, 170, 200), density)
         }
     }
 

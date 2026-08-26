@@ -1355,10 +1355,10 @@ public final class AppModel {
                 self.detailState = .loaded(IssueDetailView(
                     key: detail.key,
                     summary: detail.summary,
-                    descriptionText: detail.description.map(ADFRenderer.plainText(from:)) ?? "",
+                    description: detail.description.map(ADFRenderer.document(from:)) ?? .empty,
                     comments: comments.map {
                         CommentView(id: $0.id, authorName: $0.authorName, created: $0.created,
-                                    text: $0.body.map(ADFRenderer.plainText(from:)) ?? "")
+                                    body: $0.body.map(ADFRenderer.document(from:)) ?? .empty)
                     }
                 ))
             } catch JiraError.unauthorized {

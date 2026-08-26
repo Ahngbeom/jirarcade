@@ -19,9 +19,7 @@ struct CommentListView: View {
                             .arcadeType(.readout, .xs)
                             .foregroundStyle(theme.inkTertiary)
                     }
-                    Text(comment.text)
-                        .arcadeType(.prose, .xs)
-                        .foregroundStyle(theme.inkPrimary)
+                    RichTextView(document: comment.body)
                         .textSelection(.enabled)
                 }
             }

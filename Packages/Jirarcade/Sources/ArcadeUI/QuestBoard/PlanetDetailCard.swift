@@ -145,11 +145,15 @@ struct PlanetDetailCard: View {
         case .loaded(let detail) where detail.key == planet.id:
             VStack(alignment: .leading, spacing: metrics.sectionGap) {
                 section("본문") {
-                    Text(detail.descriptionText.isEmpty ? "본문이 없습니다" : detail.descriptionText)
-                        .arcadeType(.prose, .xs)
-                        .foregroundStyle(detail.descriptionText.isEmpty ? theme.inkTertiary : theme.inkPrimary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if detail.description.isEmpty {
+                        Text("본문이 없습니다")
+                            .arcadeType(.prose, .xs)
+                            .foregroundStyle(theme.inkTertiary)
+                    } else {
+                        RichTextView(document: detail.description)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
                 section(detail.comments.isEmpty ? "댓글" : "댓글 \(detail.comments.count)") {
                     if detail.comments.isEmpty {

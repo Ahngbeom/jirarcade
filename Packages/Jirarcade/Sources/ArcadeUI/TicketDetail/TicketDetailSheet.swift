@@ -104,11 +104,15 @@ struct TicketDetailSheet: View {
                 VStack(alignment: .leading, spacing: metrics.tightGap) {
                     Text("본문").arcadeType(.readout, .xs)
                         .foregroundStyle(theme.inkTertiary)
-                    Text(detail.descriptionText.isEmpty ? "본문이 없습니다" : detail.descriptionText)
-                        .arcadeType(.prose, .xs)
-                        .foregroundStyle(theme.inkPrimary)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                    if detail.description.isEmpty {
+                        Text("본문이 없습니다")
+                            .arcadeType(.prose, .xs)
+                            .foregroundStyle(theme.inkTertiary)
+                    } else {
+                        RichTextView(document: detail.description)
+                            .textSelection(.enabled)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
                 }
 
                 VStack(alignment: .leading, spacing: metrics.tightGap) {
