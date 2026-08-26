@@ -379,3 +379,62 @@ private func swiftFiles(in directory: URL) -> [URL] {
         }
     }
 }
+
+/// 저장소 루트(`Packages/Jirarcade/`의 두 단계 위).
+private func repositoryRoot() -> URL {
+    packageRoot().deletingLastPathComponent().deletingLastPathComponent()
+}
+
+private func markdownFiles() -> [URL] {
+    let docs = repositoryRoot().appendingPathComponent("docs")
+    guard let e = FileManager.default.enumerator(at: docs, includingPropertiesForKeys: nil)
+    else { return [] }
+    var files = e.compactMap { $0 as? URL }.filter { $0.pathExtension == "md" }
+    files.append(repositoryRoot().appendingPathComponent("README.md"))
+    return files
+}
+
+/// 문서에도 조직 특정 정보를 넣지 않는다.
+///
+/// 코드·테스트에만 걸려 있던 경계를 `docs/`까지 넓힌다. 문서는 실제 Jira를 쓰며 만들어져
+/// 실제 티켓 키와 사이트가 자연스럽게 흘러들고, 이 저장소는 공개돼 있다.
+///
+/// **금지 목록이 아니라 허용 목록으로 쓴다** — 금지할 이름을 적어 두면 이 파일 자체가
+/// 조직명을 저장소에 남긴다. `onlyTheExampleJiraSiteAppearsAnywhere`가 같은 이유로 같은
+/// 모양을 쓴다.
+///
+/// 상태명과 실측 수치는 여기서 못 막는다. 유효한 상태명은 열거할 수 없고, 어떤 수치가
+/// 조직을 드러내는지는 문맥이 정한다 — 그 둘은 README의 규칙과 리뷰가 지킨다.
+@Test func documentsUseOnlyPlaceholderIdentifiers() throws {
+    let files = markdownFiles()
+    #expect(!files.isEmpty, "docs 아래에서 .md 파일을 하나도 못 찾았다 — 경로가 깨졌다는 뜻이다")
+
+    let jiraHost = /[a-z0-9][a-z0-9.-]*\.atlassian\.net/
+    let issueKey = /\b([A-Z][A-Z0-9]{1,9})-[0-9]{1,6}\b/
+    // 우리 예시 키와, 문서가 실제로 인용하는 **공개** 트래커·표준의 키만 허용한다.
+    // 앞의 것은 이 저장소가 지어낸 이름이고, 뒤의 것들은 누구나 열람하는 외부 자료다.
+    let allowedKeyPrefixes: Set<String> = [
+        "DEMO",      // 이 저장소의 예시 프로젝트
+        "SE",        // Swift Evolution 제안
+        "ECO",       // Atlassian 생태계 공개 트래커
+        "OAUTH20",   // Atlassian OAuth 공개 트래커
+        "UTF",       // 문자 인코딩
+    ]
+
+    for file in files {
+        let text = try String(contentsOf: file, encoding: .utf8)
+
+        for match in text.lowercased().matches(of: jiraHost) {
+            #expect(String(match.output) == "example.atlassian.net",
+                    "\(file.lastPathComponent)에 예시가 아닌 Jira 사이트가 있다: \(match.output)")
+        }
+
+        for match in text.matches(of: issueKey) {
+            let prefix = String(match.output.1)
+            #expect(allowedKeyPrefixes.contains(prefix), """
+                \(file.lastPathComponent)에 예시가 아닌 티켓 키가 있다: \(match.output.0) \
+                — 번호가 가짜여도 접두사가 조직을 가리킨다. DEMO-를 쓴다
+                """)
+        }
+    }
+}
