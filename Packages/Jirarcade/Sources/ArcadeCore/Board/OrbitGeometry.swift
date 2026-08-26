@@ -69,3 +69,26 @@ public enum OrbitGeometry {
         }
     }
 }
+
+extension OrbitGeometry {
+    /// 배율을 바꿀 때 **커서 아래 논리 좌표가 커서 아래에 그대로 남도록** 팬을 다시 계산한다.
+    ///
+    /// 화면 좌표는 `viewport/2 + L·scale + pan`이다(`OrbitMetrics.point`). 커서의
+    /// 화면-중심 기준 오프셋을 `c`라 하면 `L = (c − pan) / scale`이고, 새 배율에서
+    /// 같은 `L`이 다시 `c`에 오려면 `pan' = c − L·scale'`이어야 한다.
+    ///
+    /// 화면 중심(`c = 0`)에서는 `pan' = pan · (scale'/scale)`로 접힌다 — 축소가 쓰는
+    /// 비례 보정과 같은 식이므로 두 경로가 서로 다른 답을 내지 않는다.
+    ///
+    /// 여기 있는 이유: 이 식은 pt와 배율만 알면 되는 순수 계산이고, `ArcadeUI`에는
+    /// 테스트 타깃이 없다. 뷰에 두면 부호 하나 틀린 것을 눈으로만 잡아야 한다.
+    public static func panKeepingPointUnderCursor(
+        cursorOffset: CGPoint, pan: CGSize, oldScale: Double, newScale: Double
+    ) -> CGSize {
+        guard oldScale != 0 else { return pan }
+        let logicalX = (cursorOffset.x - pan.width) / oldScale
+        let logicalY = (cursorOffset.y - pan.height) / oldScale
+        return CGSize(width: cursorOffset.x - logicalX * newScale,
+                      height: cursorOffset.y - logicalY * newScale)
+    }
+}
