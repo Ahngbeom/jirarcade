@@ -88,7 +88,7 @@ Sources/ArcadeUI/
                               discovered: [], partiallyRestored: [])
 
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-2", historyId: "2",
+        ([transitionIssue(key: "DEMO-2", historyId: "2",
                           at: iso("2023-03-01T00:00:00Z"), author: "acc-me")], nil),
     ])
     let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
@@ -123,9 +123,9 @@ Sources/ArcadeUI/
 @Test func progressIsPersistedEveryPage() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1",
+        ([transitionIssue(key: "DEMO-1", historyId: "1",
                           at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], "tok-2"),
-        ([transitionIssue(key: "MPT-2", historyId: "2",
+        ([transitionIssue(key: "DEMO-2", historyId: "2",
                           at: iso("2023-03-01T00:00:00Z"), author: "acc-me")], nil),
     ])
     let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
@@ -142,11 +142,11 @@ Sources/ArcadeUI/
 @MainActor
 @Test func supplementFetchesEveryChangelogPage() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
-    let truncated = transitionIssue(key: "MPT-1", historyId: "1",
+    let truncated = transitionIssue(key: "DEMO-1", historyId: "1",
                                     at: iso("2023-02-01T00:00:00Z"), author: "acc-me",
                                     total: 3)
     let source = ScriptedChangelogSource(pages: [([truncated], nil)])
-    source.supplementPages["MPT-1"] = [
+    source.supplementPages["DEMO-1"] = [
         JiraChangelogPage(startAt: 0, maxResults: 2, total: 3, histories: [
             JiraChangelogHistory(id: "1", createdAt: iso("2023-02-01T00:00:00Z"),
                                  authorAccountId: "acc-me",
@@ -171,7 +171,7 @@ Sources/ArcadeUI/
     let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
                                        progress: { _, _ in })
 
-    #expect(source.supplementStartAts["MPT-1"] == [0, 2], "두 번째 페이지까지 받는다")
+    #expect(source.supplementStartAts["DEMO-1"] == [0, 2], "두 번째 페이지까지 받는다")
     #expect(outcome.insertedEvents == 3)
     #expect(outcome.partiallyRestored.isEmpty)
 }
@@ -182,7 +182,7 @@ Sources/ArcadeUI/
 @Test func catalogFailureIsVisibleInTheOutcome() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1",
+        ([transitionIssue(key: "DEMO-1", historyId: "1",
                           at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], nil)
     ])
     source.catalogError = StubError()
@@ -217,7 +217,7 @@ Sources/ArcadeUI/
 @Test func resolvedFallbacksAreReturnedForScoring() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1",
+        ([transitionIssue(key: "DEMO-1", historyId: "1",
                           at: iso("2023-02-01T00:00:00Z"), author: "acc-me",
                           fromId: "10016", from: "In Progress",
                           toId: "10071", to: "Merged to Staging")], nil)
@@ -237,9 +237,9 @@ Sources/ArcadeUI/
 @Test func progressPassesTheTotalThrough() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1",
+        ([transitionIssue(key: "DEMO-1", historyId: "1",
                           at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], "tok-2"),
-        ([transitionIssue(key: "MPT-2", historyId: "2",
+        ([transitionIssue(key: "DEMO-2", historyId: "2",
                           at: iso("2023-03-01T00:00:00Z"), author: "acc-me")], nil),
     ])
     let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
@@ -315,7 +315,7 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
 @Test func transitionsByOthersScoreZero() {
     let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
     let event = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged,
+        issueKey: "DEMO-1", kind: .statusChanged,
         fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-12T00:00:00Z"), actorAccountId: "acc-someone-else",
         priorUpdatedAt: iso("2026-07-22T00:00:00Z")
@@ -327,7 +327,7 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
 @Test func transitionsByMeStillScore() {
     let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
     let event = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged,
+        issueKey: "DEMO-1", kind: .statusChanged,
         fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-12T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-07-22T00:00:00Z")
@@ -341,7 +341,7 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
 @Test func unknownIdentitySkipsTheActorFilter() {
     let awarder = XpAwarder(rules: .default, workflow: demoWorkflow, myAccountId: nil, calendar: utc)
     let event = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged,
+        issueKey: "DEMO-1", kind: .statusChanged,
         fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-12T00:00:00Z"), actorAccountId: "acc-anyone",
         priorUpdatedAt: iso("2026-07-22T00:00:00Z")
@@ -356,7 +356,7 @@ git commit -m "feat: RuleSet에 awardsOnlyOwnTransitions와 seasonDays 추가"
     rules.awardsOnlyOwnTransitions = false
     let awarder = XpAwarder(rules: rules, workflow: demoWorkflow, myAccountId: "acc-me", calendar: utc)
     let event = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged,
+        issueKey: "DEMO-1", kind: .statusChanged,
         fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-12T00:00:00Z"), actorAccountId: "acc-other",
         priorUpdatedAt: iso("2026-07-22T00:00:00Z")
@@ -437,8 +437,8 @@ git commit -m "feat: XpAwarder에 실행자 필터 추가 (남이 옮긴 전이�
                              myAccountId: "acc-me")
     let now = iso("2026-08-13T00:00:00Z")
     let events = [
-        makeTransition(key: "MPT-1", at: iso("2026-01-01T00:00:00Z")),   // 시즌 밖
-        makeTransition(key: "MPT-2", at: iso("2026-08-10T00:00:00Z")),   // 시즌 안
+        makeTransition(key: "DEMO-1", at: iso("2026-01-01T00:00:00Z")),   // 시즌 밖
+        makeTransition(key: "DEMO-2", at: iso("2026-08-10T00:00:00Z")),   // 시즌 안
     ]
 
     let lifetime = engine.recompute(events: events, issues: [:], now: now)
@@ -457,7 +457,7 @@ git commit -m "feat: XpAwarder에 실행자 필터 추가 (남이 옮긴 전이�
                              myAccountId: "acc-me")
     let boundary = iso("2026-07-14T00:00:00Z")
     let result = engine.recompute(
-        events: [makeTransition(key: "MPT-1", at: boundary)],
+        events: [makeTransition(key: "DEMO-1", at: boundary)],
         issues: [:], now: iso("2026-08-13T00:00:00Z"), since: boundary
     )
     #expect(result.scored.count == 1)
@@ -469,7 +469,7 @@ git commit -m "feat: XpAwarder에 실행자 필터 추가 (남이 옮긴 전이�
     let engine = ScoreEngine(rules: .default, workflow: demoWorkflow, calendar: utcCalendar,
                              myAccountId: "acc-me")
     let now = iso("2026-08-13T00:00:00Z")
-    let events = [makeTransition(key: "MPT-1", at: iso("2026-01-01T00:00:00Z"))]
+    let events = [makeTransition(key: "DEMO-1", at: iso("2026-01-01T00:00:00Z"))]
     let a = engine.recompute(events: events, issues: [:], now: now)
     let b = engine.recompute(events: events, issues: [:], now: now, since: nil)
     #expect(a.summary == b.summary)
@@ -588,7 +588,7 @@ git commit -m "feat: ScoreEngine에 시즌 범위(since)와 실행자 식별 추
     let when = iso("2026-08-13T09:00:00Z")
     try store.applySync(
         issues: [], events: [
-            DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+            DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
                         fromStatus: "To Do", toStatus: "In Progress",
                         observedAt: when, actorAccountId: "acc-me")
         ], observedAt: when
@@ -714,7 +714,7 @@ git commit -m "feat: 이벤트 레코드에 sourceHistoryId와 origin 추가"
 @Test func backfillEventsAreDeduplicatedByHistoryId() throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let event = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
+        issueKey: "DEMO-1", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2023-03-02T12:13:52Z"), actorAccountId: "acc-me"
     )
 
@@ -731,10 +731,10 @@ git commit -m "feat: 이벤트 레코드에 sourceHistoryId와 origin 추가"
 @Test func differentHistoryIdsAreDistinctEvents() throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let when = iso("2023-03-02T12:13:52Z")
-    let a = DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+    let a = DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
                         fromStatus: "To Do", toStatus: "In Progress",
                         observedAt: when, actorAccountId: "acc-me")
-    let b = DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+    let b = DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
                         fromStatus: "In Progress", toStatus: "To Do",
                         observedAt: when, actorAccountId: "acc-me")
 
@@ -753,7 +753,7 @@ git commit -m "feat: 이벤트 레코드에 sourceHistoryId와 origin 추가"
     try store.finishSyncRun(run, at: today, issueCount: 1, failure: nil)
 
     _ = try store.appendBackfillEvents([
-        DomainEvent(issueKey: "MPT-1", kind: .statusChanged,
+        DomainEvent(issueKey: "DEMO-1", kind: .statusChanged,
                     fromStatus: "To Do", toStatus: "In Progress",
                     observedAt: iso("2023-01-01T00:00:00Z"), actorAccountId: "acc-me")
     ], historyIds: ["1"])
@@ -851,7 +851,7 @@ import Foundation
 private let searchBody = """
 {
   "issues": [{
-    "key": "MPT-1647",
+    "key": "DEMO-1647",
     "fields": {
       "created": "2022-12-30T10:05:20.812+0900",
       "duedate": "2023-03-10"
@@ -894,7 +894,7 @@ private let searchBody = """
     #expect(issues.count == 1)
 
     let issue = issues[0]
-    #expect(issue.key == "MPT-1647")
+    #expect(issue.key == "DEMO-1647")
     #expect(issue.dueDate != nil)
     #expect(issue.changelog.histories.count == 2)
     #expect(issue.changelog.total == 2)
@@ -930,7 +930,7 @@ private let searchBody = """
 @Test func truncationIsDetected() throws {
     let body = """
     { "issues": [{
-        "key": "MPT-1", "fields": { "created": "2023-01-01T00:00:00.000+0900" },
+        "key": "DEMO-1", "fields": { "created": "2023-01-01T00:00:00.000+0900" },
         "changelog": { "startAt": 0, "maxResults": 10, "total": 42, "histories": [] }
     }] }
     """
@@ -947,7 +947,7 @@ private let searchBody = """
 @Test func missingOptionalFieldsAreTolerated() throws {
     let body = """
     { "issues": [{
-        "key": "MPT-2", "fields": { "created": "2023-01-01T00:00:00.000+0900" },
+        "key": "DEMO-2", "fields": { "created": "2023-01-01T00:00:00.000+0900" },
         "changelog": { "startAt": 0, "maxResults": 10, "total": 1, "histories": [
           { "id": "1", "created": "2023-01-02T00:00:00.000+0900", "items": [] }
         ] }
@@ -1277,14 +1277,14 @@ private let auth = try! APITokenAuth(site: "example.atlassian.net", email: "u@e.
     let stub = StubHTTPClient(status: 200, body: body)
     let client = JiraClient(auth: auth, http: stub)
 
-    let page = try await client.issueChangelog(issueKey: "MPT-1", startAt: 10)
+    let page = try await client.issueChangelog(issueKey: "DEMO-1", startAt: 10)
 
     // URLComponents로 파싱해 경로와 쿼리를 분리해서 본다. absoluteString.contains로
     // 보면 안 된다 — `?`가 `%3F`로 이스케이프돼 쿼리가 경로에 처박힌 URL도
     // contains("startAt=10")을 통과한다(실제로 그렇게 통과하는 걸 확인했다).
     let sent = try #require(stub.sentRequests.first?.url)
     let components = try #require(URLComponents(url: sent, resolvingAgainstBaseURL: false))
-    #expect(components.path.hasSuffix("/issue/MPT-1/changelog"))
+    #expect(components.path.hasSuffix("/issue/DEMO-1/changelog"))
     #expect(components.queryItems?.first { $0.name == "startAt" }?.value == "10")
     #expect(components.queryItems?.first { $0.name == "maxResults" }?.value == "100")
     #expect(page.startAt == 10)
@@ -1433,7 +1433,7 @@ public struct JiraStatusCatalogEntry: Sendable, Equatable, Decodable {
 `?`를 경로 문자로 보고 `%3F`로 이스케이프한다. 실측:
 
 ```
-https://x.atlassian.net/rest/api/3/issue/MPT-1/changelog%3FstartAt=10&maxResults=100
+https://example.atlassian.net/rest/api/3/issue/DEMO-1/changelog%3FstartAt=10&maxResults=100
 ```
 
 Jira는 이걸 경로로 해석해 404를 낸다. `JiraClient`가 쿼리스트링이 필요한 엔드포인트를
@@ -1772,7 +1772,7 @@ private func statusItem(fromId: String, from: String, toId: String, to: String) 
 }
 
 private func issue(
-    key: String = "MPT-1",
+    key: String = "DEMO-1",
     created: Date = iso("2023-01-01T00:00:00Z"),
     due: Date? = nil,
     histories: [JiraChangelogHistory]
@@ -1792,7 +1792,7 @@ private func issue(
                               toId: nil, toString: "new"),
             statusItem(fromId: "1", from: "To Do", toId: "2", to: "In Progress"),
             JiraChangelogItem(field: "Link", fromId: nil, fromString: nil,
-                              toId: nil, toString: "blocks MPT-2"),
+                              toId: nil, toString: "blocks DEMO-2"),
         ])
     ]))
     #expect(parsed.count == 1)
@@ -2206,15 +2206,15 @@ private func makeStore() throws -> ArcadeStore {
     let id = try store.beginBackfill(jql: "q", at: start, totalIssueCount: 200)
 
     try store.advanceBackfill(id, nextPageToken: "a", processedIssueCount: 100,
-                              discovered: ["Merged to Staging"], partiallyRestored: ["MPT-1"])
+                              discovered: ["Merged to Staging"], partiallyRestored: ["DEMO-1"])
     try store.advanceBackfill(id, nextPageToken: "b", processedIssueCount: 200,
-                              discovered: ["검수Done", "Merged to Staging"], partiallyRestored: ["MPT-2"])
+                              discovered: ["검수Done", "Merged to Staging"], partiallyRestored: ["DEMO-2"])
 
     // 저장 시점에 정렬하므로 읽을 때마다 순서가 같다. Set을 그대로 Array로 만들면
     // 순서가 비결정적이라 매핑 마법사의 후보 목록이 열 때마다 뒤바뀐다.
     let snapshot = try #require(try store.resumableBackfill())
     #expect(snapshot.discovered == ["Merged to Staging", "검수Done"].sorted())
-    #expect(snapshot.partiallyRestored == ["MPT-1", "MPT-2"])
+    #expect(snapshot.partiallyRestored == ["DEMO-1", "DEMO-2"])
 }
 ```
 
@@ -2785,9 +2785,9 @@ private func transitionIssue(
 @Test func backfillWalksEveryPage() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1",
+        ([transitionIssue(key: "DEMO-1", historyId: "1",
                           at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], "tok-2"),
-        ([transitionIssue(key: "MPT-2", historyId: "2",
+        ([transitionIssue(key: "DEMO-2", historyId: "2",
                           at: iso("2023-03-01T00:00:00Z"), author: "acc-me")], nil),
     ])
     let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
@@ -2807,7 +2807,7 @@ private func transitionIssue(
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     func makeSource() -> ScriptedChangelogSource {
         ScriptedChangelogSource(pages: [
-            ([transitionIssue(key: "MPT-1", historyId: "1",
+            ([transitionIssue(key: "DEMO-1", historyId: "1",
                               at: iso("2023-02-01T00:00:00Z"), author: "acc-me")], nil)
         ])
     }
@@ -2827,10 +2827,10 @@ private func transitionIssue(
 @Test func truncatedChangelogIsSupplemented() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
+        ([transitionIssue(key: "DEMO-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
                           author: "acc-me", total: 2)], nil)   // total 2 > histories 1
     ])
-    source.supplements["MPT-1"] = JiraChangelogPage(
+    source.supplements["DEMO-1"] = JiraChangelogPage(
         startAt: 0, maxResults: 100, total: 2,
         histories: [
             JiraChangelogHistory(id: "1", createdAt: iso("2023-02-01T00:00:00Z"),
@@ -2859,19 +2859,19 @@ private func transitionIssue(
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
         ([
-            transitionIssue(key: "MPT-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
+            transitionIssue(key: "DEMO-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
                             author: "acc-me", total: 5),
-            transitionIssue(key: "MPT-2", historyId: "2", at: iso("2023-03-01T00:00:00Z"),
+            transitionIssue(key: "DEMO-2", historyId: "2", at: iso("2023-03-01T00:00:00Z"),
                             author: "acc-me"),
         ], nil)
     ])
-    source.failSupplementFor = ["MPT-1"]
+    source.failSupplementFor = ["DEMO-1"]
     let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
 
     let outcome = try await engine.run(jql: "q", now: iso("2026-08-13T00:00:00Z"),
                                        progress: { _, _ in })
 
-    #expect(outcome.partiallyRestored == ["MPT-1"])
+    #expect(outcome.partiallyRestored == ["DEMO-1"])
     #expect(outcome.processedIssues == 2, "실패한 티켓도 처리 개수에는 든다")
     #expect(try store.loadEvents().count >= 2)
 }
@@ -2881,7 +2881,7 @@ private func transitionIssue(
 @Test func catalogFailureDegradesInsteadOfStopping() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
+        ([transitionIssue(key: "DEMO-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
                           author: "acc-me")], nil)
     ])
     source.catalogError = StubError()
@@ -2899,7 +2899,7 @@ private func transitionIssue(
 @Test func fallbackStatusesAreCollected() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
+        ([transitionIssue(key: "DEMO-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
                           author: "acc-me", fromId: "10016", from: "In Progress",
                           toId: "10071", to: "Merged to Staging")], nil)
     ])
@@ -2916,9 +2916,9 @@ private func transitionIssue(
 @Test func progressIsReportedPerPage() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = ScriptedChangelogSource(pages: [
-        ([transitionIssue(key: "MPT-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
+        ([transitionIssue(key: "DEMO-1", historyId: "1", at: iso("2023-02-01T00:00:00Z"),
                           author: "acc-me")], "t2"),
-        ([transitionIssue(key: "MPT-2", historyId: "2", at: iso("2023-03-01T00:00:00Z"),
+        ([transitionIssue(key: "DEMO-2", historyId: "2", at: iso("2023-03-01T00:00:00Z"),
                           author: "acc-me")], nil),
     ])
     let engine = BackfillEngine(source: source, store: store, workflow: demoWorkflow)
@@ -3327,7 +3327,7 @@ private func backfillIssue(
 @Test func backfillStoresEventsAndClearsProgress() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = StubChangelogSource(pages: [
-        ([backfillIssue(key: "MPT-1", historyId: "1",
+        ([backfillIssue(key: "DEMO-1", historyId: "1",
                         at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], nil)
     ])
     let workflow = InMemoryWorkflowStore(seeded: WorkflowMap(statusToStage: [
@@ -3350,7 +3350,7 @@ private func backfillIssue(
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     // "Merged to Staging"은 사용자 매핑에 없다. 카탈로그의 statusCategory로만 해석된다.
     let source = StubChangelogSource(
-        pages: [([backfillIssue(key: "MPT-1", historyId: "1",
+        pages: [([backfillIssue(key: "DEMO-1", historyId: "1",
                                 at: iso("2026-08-01T00:00:00Z"), author: "acc-me",
                                 fromId: "10009", from: "To Do",
                                 toId: "10071", to: "Merged to Staging")], nil)],
@@ -3381,7 +3381,7 @@ private func backfillIssue(
     try workflow.saveFallbacks(WorkflowMap(statusToStage: ["QA Passed": .verify]))
 
     let source = StubChangelogSource(
-        pages: [([backfillIssue(key: "MPT-1", historyId: "1",
+        pages: [([backfillIssue(key: "DEMO-1", historyId: "1",
                                 at: iso("2026-08-01T00:00:00Z"), author: "acc-me",
                                 toId: "10071", to: "Merged to Staging")], nil)],
         catalog: [JiraStatusCatalogEntry(id: "10071", name: "Merged to Staging",
@@ -3402,7 +3402,7 @@ private func backfillIssue(
 @Test func userMappingWinsOverStoredFallbackWhenScoring() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let event = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged,
+        issueKey: "DEMO-1", kind: .statusChanged,
         fromStatus: "In Progress", toStatus: "Merged to Staging",
         observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-08-01T00:00:00Z")
@@ -3430,7 +3430,7 @@ private func backfillIssue(
 @Test func failureKeepsStoredEventsAndLeavesAResumePoint() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = StubChangelogSource(pages: [
-        ([backfillIssue(key: "MPT-1", historyId: "1",
+        ([backfillIssue(key: "DEMO-1", historyId: "1",
                         at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], "tok-2"),
     ])
     source.failOnToken = .some("tok-2")   // 두 번째 페이지에서 실패
@@ -3484,7 +3484,7 @@ private func backfillIssue(
 @Test func startingTwiceRunsOnlyOnce() async throws {
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let source = StubChangelogSource(pages: [
-        ([backfillIssue(key: "MPT-1", historyId: "1",
+        ([backfillIssue(key: "DEMO-1", historyId: "1",
                         at: iso("2026-08-01T00:00:00Z"), author: "acc-me")], nil)
     ])
     let model = try makeModel(store: store, changelogSource: source)
@@ -3504,12 +3504,12 @@ private func backfillIssue(
     let store = ArcadeStore(container: try ArcadeStore.makeInMemoryContainer())
     let now = iso("2026-08-14T09:00:00Z")
     let old = DomainEvent(
-        issueKey: "MPT-1", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
+        issueKey: "DEMO-1", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-01-05T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2025-12-15T00:00:00Z")
     )
     let recent = DomainEvent(
-        issueKey: "MPT-2", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
+        issueKey: "DEMO-2", kind: .statusChanged, fromStatus: "To Do", toStatus: "In Progress",
         observedAt: iso("2026-08-10T00:00:00Z"), actorAccountId: "acc-me",
         priorUpdatedAt: iso("2026-07-20T00:00:00Z")
     )
@@ -4023,7 +4023,7 @@ private var utc: Calendar {
 
 private func backfilledEvents() -> [DomainEvent] {
     let issue = JiraIssueWithChangelog(
-        key: "MPT-1", createdAt: iso("2023-01-01T00:00:00Z"),
+        key: "DEMO-1", createdAt: iso("2023-01-01T00:00:00Z"),
         dueDate: iso("2023-03-01T00:00:00Z"),
         changelog: JiraChangelogPage(startAt: 0, maxResults: 100, total: 2, histories: [
             JiraChangelogHistory(id: "1", createdAt: iso("2023-02-01T00:00:00Z"),
@@ -4051,8 +4051,8 @@ private func backfilledEvents() -> [DomainEvent] {
 
     let withMirror = engine.recompute(
         events: events,
-        issues: ["MPT-1": ObservedIssue(
-            key: "MPT-1", summary: "s", statusName: "In Review", issueType: "개선",
+        issues: ["DEMO-1": ObservedIssue(
+            key: "DEMO-1", summary: "s", statusName: "In Review", issueType: "개선",
             priority: nil, assigneeAccountId: "acc-me", assigneeName: nil,
             dueDate: iso("2099-01-01T00:00:00Z"),   // 미러의 마감일을 극단적으로 바꾼다
             jiraUpdatedAt: now                       // 미러의 갱신 시각도 오늘로 덮는다
@@ -4110,7 +4110,7 @@ private func backfilledEvents() -> [DomainEvent] {
 /// 남이 옮긴 전이가 섞여도 statusEnteredAt은 갱신된다 — 정체일이 부풀지 않는다(스펙 §4.2).
 @Test func othersTransitionsStillAdvanceTheStagnationBaseline() throws {
     let issue = JiraIssueWithChangelog(
-        key: "MPT-1", createdAt: iso("2023-01-01T00:00:00Z"), dueDate: nil,
+        key: "DEMO-1", createdAt: iso("2023-01-01T00:00:00Z"), dueDate: nil,
         changelog: JiraChangelogPage(startAt: 0, maxResults: 100, total: 2, histories: [
             JiraChangelogHistory(id: "1", createdAt: iso("2023-02-01T00:00:00Z"),
                                  authorAccountId: "acc-other",
