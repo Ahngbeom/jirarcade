@@ -122,11 +122,15 @@ private func settle(_ model: AppModel, key: String) async throws {
     #expect(message.isEmpty == false)
 }
 
-/// 후보를 캐싱하지 않는다(v0.1 스펙 §8.5). 두 번 열면 두 번 묻고, 뒤의 답이 이긴다 —
-/// 관리자가 워크플로를 바꾸면 앞의 답은 즉시 틀린 값이기 때문이다.
+/// 두 번 열면 두 번 묻고, 뒤의 답이 이긴다 — 관리자가 워크플로를 바꾸면 앞의 답은
+/// 즉시 틀린 값이기 때문이다.
 ///
 /// 이슈 #5가 화면으로 확정하지 못한 질문이다. `.onAppear`가 다시 발화하는지는 여전히
 /// 눈으로 봐야 하지만, **발화했을 때 실제로 다시 묻는지**는 여기서 확정된다.
+///
+/// 두 번째로 열 때 `.loading`이 아니라 앞의 답이 **그대로 떠 있는** 것은 의도다: 미러에
+/// 있는 티켓이면 앞의 답이 자리를 채우고(`TransitionPrefetchTests` 참고), 새 답이 오면
+/// 교체된다. 미러에 없는 티켓은 여전히 `.loading`이다 — 그 경우는 아래 테스트가 고정한다.
 @MainActor
 @Test func everyLoadAsksJiraAgain() async throws {
     let stub = TransitionsStub([
@@ -134,20 +138,43 @@ private func settle(_ model: AppModel, key: String) async throws {
         ok([("31", "보류로", "보류"), ("41", "폐기로", "폐기")]),
     ])
     let model = try await signedIn(stub)
+    model.seedIssuesForTesting([issue(key: "DEMO-1", status: "진행 중")])
 
     model.loadTransitionOptions(for: "DEMO-1")
+    #expect(model.transitionOptions["DEMO-1"] == .loading)
     try await settle(model, key: "DEMO-1")
     #expect(readyIDs(model.transitionOptions["DEMO-1"]) == ["11"])
     #expect(stub.transitionRequests == 1)
 
     model.loadTransitionOptions(for: "DEMO-1")
-    // 두 번째 요청이 나가는 동안에는 앞의 목록이 화면에서 치워져 있어야 한다 —
-    // 낡은 전이 ID가 눌리는 창을 만들지 않는다.
-    #expect(model.transitionOptions["DEMO-1"] == .loading)
-    try await settle(model, key: "DEMO-1")
+    // 앞의 답이 자리를 채운 채로 다시 묻는다.
+    #expect(readyIDs(model.transitionOptions["DEMO-1"]) == ["11"])
+    // 고정 대기는 느린 러너에서 흔들린다(CI에서 실제로 80ms가 모자랐다). 답이 **바뀔**
+    // 때까지 기다린다 — `settle`은 `.loading`이 걷히기를 기다리는데 여기서는 처음부터
+    // `.ready`라 쓸 수 없다.
+    for _ in 0..<200 where readyIDs(model.transitionOptions["DEMO-1"]) == ["11"] {
+        try await Task.sleep(for: .milliseconds(5))
+    }
 
     #expect(readyIDs(model.transitionOptions["DEMO-1"]) == ["31", "41"])
     #expect(stub.transitionRequests == 2)
+}
+
+/// 미러에 없는 티켓(화면에 없는 티켓)의 앞의 답은 자리를 채우지 않는다 — 어느 상태에서
+/// 받은 답인지 확인할 길이 없기 때문이다.
+@MainActor
+@Test func aTicketOutsideTheMirrorAlwaysStartsCold() async throws {
+    let stub = TransitionsStub([ok([("11", "검토로", "검토")]), ok([("21", "완료로", "완료")])])
+    let model = try await signedIn(stub)
+
+    model.loadTransitionOptions(for: "DEMO-9")
+    try await settle(model, key: "DEMO-9")
+    #expect(readyIDs(model.transitionOptions["DEMO-9"]) == ["11"])
+
+    model.loadTransitionOptions(for: "DEMO-9")
+    #expect(model.transitionOptions["DEMO-9"] == .loading)
+    try await settle(model, key: "DEMO-9")
+    #expect(readyIDs(model.transitionOptions["DEMO-9"]) == ["21"])
 }
 
 /// 만료는 배너와 메뉴가 같은 사실을 말한다. 메뉴를 비워두면 "불러오는 중"으로 영원히

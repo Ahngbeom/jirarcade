@@ -47,9 +47,9 @@ private func readySeededWorkflow() -> InMemoryWorkflowStore {
         return
     }
     #expect(detail.summary == "제목")
-    #expect(detail.descriptionText == "본문")
+    #expect(detail.description.blocks == [.paragraph([RichRun(text: "본문")])])
     #expect(detail.comments.count == 1)
-    #expect(detail.comments[0].text == "댓글")
+    #expect(detail.comments[0].body.blocks == [.paragraph([RichRun(text: "댓글")])])
 }
 
 /// Jira가 준 사유를 화면에 옮기지 않는다. 시트 조회는 동기화의 축약 경로 밖에서

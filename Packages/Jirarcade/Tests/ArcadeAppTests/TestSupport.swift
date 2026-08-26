@@ -132,6 +132,17 @@ actor GatedHTTP: HTTPClient {
 
 let myselfBody = #"{"accountId":"acc-me","displayName":"Tester"}"#
 
+extension AppSettings {
+    /// 테스트 기본 설정. 전이 후보 사전 로드를 **끈다** — 응답을 큐로 대는 `ScriptedHTTP`는
+    /// 동기화 뒤에 예정에 없던 전이 조회가 나가면 다음 테스트 단계의 답을 집어삼킨다.
+    /// 사전 로드 자체는 `TransitionPrefetchTests`가 켜고 시험한다.
+    static var quiet: AppSettings {
+        var settings = AppSettings.default
+        settings.prefetchesTransitions = false
+        return settings
+    }
+}
+
 /// 특정 상황을 흉내내는 데만 쓰는, 내용 없는 에러. `Equatable`이라 `#expect(throws:)`에도 쓸 수 있다.
 struct StubError: Error, Equatable {}
 
@@ -150,7 +161,7 @@ func makeModel(
     signInHint: InMemorySignInHintStore = InMemorySignInHintStore(),
     http: @escaping () -> HTTPClient = { ScriptedHTTP(status: 200, body: myselfBody) },
     now: Date = iso("2026-08-14T09:00:00Z"),
-    settings: AppSettings = .default,
+    settings: AppSettings = .quiet,
     transitionSleep: (@Sendable (Duration) async throws -> Void)? = nil
 ) throws -> AppModel {
     var utc = Calendar(identifier: .gregorian)

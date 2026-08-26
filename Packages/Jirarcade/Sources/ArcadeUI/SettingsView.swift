@@ -45,6 +45,8 @@ struct SettingsView: View {
                 .foregroundStyle(theme.inkSecondary)
                 .fixedSize(horizontal: false, vertical: true)
 
+            rangeRow
+
             // "돌고 있는가"는 `isBackfilling`으로 판정한다. `backfillProgress != nil`로 보면
             // 첫 페이지를 다 처리할 때까지(실측 수십 초) 아래의 "과거 기록 불러오기" 버튼이
             // 활성 상태로 남아, 사용자에게는 버튼이 먹지 않은 것처럼 보인다.
@@ -91,6 +93,65 @@ struct SettingsView: View {
                     .foregroundStyle(theme.inkTertiary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+        }
+    }
+
+    /// 범위를 고르는 줄. 고른 범위에 몇 건이 걸리는지를 **누르기 전에** 보여준다 —
+    /// 조회가 얼마나 큰지 알아야 줄일지 판단할 수 있고, 그 숫자가 이 컨트롤이 있는 이유다.
+    ///
+    /// 백필이 도는 동안은 잠근다. 범위는 백필 JQL의 일부라, 도는 중에 바꾸면 이어받기가
+    /// 새 범위와 맞지 않아 중단 지점이 버려진다.
+    private var rangeRow: some View {
+        VStack(alignment: .leading, spacing: metrics.tightGap) {
+            HStack(spacing: metrics.rowGap) {
+                Text("범위")
+                    .arcadeType(.readout, .xs)
+                    .foregroundStyle(theme.inkTertiary)
+                Picker("범위", selection: Binding(
+                    get: { model.historyRange },
+                    set: { model.historyRange = $0 }
+                )) {
+                    ForEach(HistoryRange.allCases, id: \.self) { range in
+                        Text(rangeLabel(range)).tag(range)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .labelsHidden()
+                .fixedSize()
+                .disabled(model.isBackfilling)
+            }
+            Text(estimateLabel)
+                .arcadeType(.readout, .xs)
+                .foregroundStyle(theme.inkTertiary)
+                .monospacedDigit()
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        // 범위가 바뀔 때마다 다시 센다. 시트를 처음 열 때도 한 번 센다 — `id:`가 바뀌지
+        // 않아도 `.task`는 뷰가 나타날 때 실행된다.
+        .task(id: model.historyRange) { await model.estimateHistoryScope() }
+    }
+
+    private func rangeLabel(_ range: HistoryRange) -> String {
+        switch range {
+        case .quarter:  "3개월"
+        case .halfYear: "6개월"
+        case .year:     "1년"
+        case .all:      "전체"
+        }
+    }
+
+    /// 건수 문구. 근사값이라는 사실을 문장에 남긴다 — 서버가 인덱스 통계로 답하므로
+    /// 실제 진행률과 몇 건 어긋날 수 있고, 그때 "약"이 없으면 앱이 틀린 것처럼 보인다.
+    private var estimateLabel: String {
+        switch model.historyScopeEstimate {
+        case .none, .counting:
+            "이 범위의 티켓 수를 세는 중…"
+        case .approximately(let count):
+            model.historyRange == .all
+                ? "담당했던 모든 티켓 약 \(count.formatted())건의 이력을 읽습니다"
+                : "이 범위에 약 \(count.formatted())건 · 그 기간에 갱신된 티켓의 이력만 읽습니다"
+        case .unavailable:
+            "티켓 수를 세지 못했습니다. 불러오기는 그대로 할 수 있습니다"
         }
     }
 

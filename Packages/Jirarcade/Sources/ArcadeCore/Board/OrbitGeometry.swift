@@ -69,3 +69,32 @@ public enum OrbitGeometry {
         }
     }
 }
+
+extension OrbitGeometry {
+    /// 배율을 바꿀 때 **커서 아래 논리 좌표가 커서 아래에 그대로 남도록** 팬을 다시 계산한다.
+    ///
+    /// 화면 좌표는 `viewport/2 + L·scale + pan`이다(`OrbitMetrics.point`). 커서의
+    /// 화면-중심 기준 오프셋을 `c`라 하면 `L = (c − pan) / scale`이고, 새 배율에서
+    /// 같은 `L`이 다시 `c`에 오려면 `pan' = c − L·scale'`이어야 한다.
+    ///
+    /// 화면 중심(`c = 0`)에서는 `pan' = pan · (scale'/scale)`로 접힌다 — 축소가 쓰는
+    /// 비례 보정과 같은 식이므로 두 경로가 서로 다른 답을 내지 않는다.
+    ///
+    /// 여기 있는 이유: 이 식은 pt와 배율만 알면 되는 순수 계산이고, `ArcadeUI`에는
+    /// 테스트 타깃이 없다. 뷰에 두면 부호 하나 틀린 것을 눈으로만 잡아야 한다.
+    ///
+    /// 인자와 결과가 `CGPoint`·`CGSize`가 아니라 `Double` 쌍인 이유: 이 모듈은 화면을
+    /// 모르고, 그래서 CoreGraphics를 들이지 않는다. 그리고 실제로 문제가 됐다 —
+    /// CG 타입을 쓴 버전은 릴리즈 빌드(cross-module 최적화)에서 Swift 6.2·6.3 컴파일러가
+    /// 이 함수의 SIL을 역직렬화하다 크래시했다(signal 6). 뷰가 양쪽 끝에서 옮긴다.
+    public static func panKeepingPointUnderCursor(
+        cursorOffset: (x: Double, y: Double), pan: (x: Double, y: Double),
+        oldScale: Double, newScale: Double
+    ) -> (x: Double, y: Double) {
+        guard oldScale != 0 else { return pan }
+        let logicalX = (cursorOffset.x - pan.x) / oldScale
+        let logicalY = (cursorOffset.y - pan.y) / oldScale
+        return (x: cursorOffset.x - logicalX * newScale,
+                y: cursorOffset.y - logicalY * newScale)
+    }
+}

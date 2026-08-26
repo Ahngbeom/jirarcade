@@ -142,6 +142,37 @@ public final class AppModel {
         didSet { UserDefaults.standard.set(appearancePreference.rawValue, forKey: "appearance") }
     }
 
+    /// 과거 기록을 읽을 범위. 외관 설정과 같은 자리(UserDefaults)에 둔다 — 점수에
+    /// 영향을 주는 규칙이 아니라 "얼마나 읽을 것인가"라는 사용자의 선택이다.
+    ///
+    /// 바꾸면 범위 추정을 지운다 — 옛 범위의 건수가 새 범위 옆에 남아 있으면 그 숫자가
+    /// 무엇을 세는지 알 수 없다. 화면이 다시 묻는다(`estimateHistoryScope`).
+    public var historyRange: HistoryRange = .all {
+        didSet {
+            UserDefaults.standard.set(historyRange.rawValue, forKey: "historyRange")
+            if historyRange != oldValue { historyScopeEstimate = nil }
+        }
+    }
+
+    /// 지금 고른 범위에 티켓이 몇 건이나 걸리는가. 백필을 누르기 **전에** 보여주는 값이다 —
+    /// 조회가 얼마나 큰지 알아야 범위를 줄일지 판단할 수 있다.
+    public enum HistoryScopeEstimate: Sendable, Equatable {
+        case counting
+        /// 근사값이다. 서버가 인덱스 통계로 답하므로 실제와 조금 다를 수 있다.
+        case approximately(Int)
+        /// 묻지 못했다. 백필은 그래도 돌 수 있다 — 총계는 진행률 표시에만 쓰인다.
+        case unavailable
+    }
+    public private(set) var historyScopeEstimate: HistoryScopeEstimate?
+
+    /// 동기화 직후 미리 받아 둔 전이 후보. 티켓 키로 색인한다.
+    ///
+    /// `transitionOptions`가 "메뉴가 지금 보여주는 것"이라면 이것은 "메뉴를 열면 즉시
+    /// 보여줄 수 있는 것"이다. 둘을 가르는 이유: 메뉴는 열릴 때마다 반드시 다시 묻고
+    /// (`loadTransitionOptions`), 이 값은 그 답이 오기 전까지의 자리를 채운다.
+    private var warmTransitions: [String: WarmTransitions] = [:]
+    private var prefetchTask: Task<Void, Never>?
+
     private let store: ArcadeStore
     private let credentials: any CredentialStore
     private let workflow: any WorkflowStore
@@ -204,6 +235,10 @@ public final class AppModel {
         if let raw = UserDefaults.standard.string(forKey: "appearance"),
            let saved = AppearancePreference(rawValue: raw) {
             self.appearancePreference = saved
+        }
+        if let raw = UserDefaults.standard.string(forKey: "historyRange"),
+           let saved = HistoryRange(rawValue: raw) {
+            self.historyRange = saved
         }
         // 힌트는 `start()`보다 먼저 필요하다 — 자격증명이 아예 없는 첫 화면이
         // '토큰만 갱신' 모드로 떠야 하는지를 로그인 화면이 이 값으로 판단한다.
@@ -271,7 +306,13 @@ public final class AppModel {
         transitionFailures = [:]
         // 전이 후보는 이 계정의 워크플로에서 나온 값이다. 남겨두면 다음 로그인 직후
         // 남의 조직 상태명이 메뉴에 떠 있고, 그걸 누르면 존재하지 않는 전이 ID가 나간다.
+        // 미리 받아 둔 것도 같은 값이므로 같이 버리고, 받는 중이던 것은 끊는다.
         transitionOptions = [:]
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        warmTransitions = [:]
+        // 범위 추정도 이 계정의 Jira가 답한 건수다.
+        historyScopeEstimate = nil
         // 진행 중인 저장도 로그아웃의 대상이다. 남겨두면 다음 계정으로 로그인한 뒤
         // 완료 핸들러가 그 계정의 화면에 실패를 그리거나 동기화를 유발한다.
         // 전이 타이머와 같은 이유이며, 같은 사고가 실제로 출하된 적이 있다.
@@ -563,6 +604,10 @@ public final class AppModel {
         // 방금 들어온 이벤트를 곧바로 집계에 반영한다. 여기서 갱신하지 않으면 화면의
         // 레벨은 다음 인증이나 백필 종료까지 옛 값에 머문다.
         await recomputeFromLog()
+        // `recomputeFromLog()`가 `issues`를 채운 **뒤**여야 한다 — 사전 로드는 그 목록을
+        // 돈다. 어느 티켓이 어느 상태에 있는지 방금 확정됐고, 메뉴가 열리기 전까지는
+        // 시간이 있다.
+        prefetchTransitions()
     }
 
     private func refreshUnmapped(against map: WorkflowMap) {
@@ -669,6 +714,31 @@ public final class AppModel {
         backfillTask?.cancel()
     }
 
+    /// 지금 범위에 걸리는 티켓 수를 물어 `historyScopeEstimate`에 채운다.
+    ///
+    /// 백필과 같은 소스(`changelogSourceFactory`)에 묻는다 — 백필이 진행률에 쓰는 총계와
+    /// 같은 질문이라 두 숫자가 서로 다르면 안 된다. 묻는 동안 범위가 바뀌었거나 계정이
+    /// 바뀌었으면 그 답은 버린다.
+    public func estimateHistoryScope() async {
+        guard let client else { return }
+        let range = historyRange
+        let generation = syncGeneration
+        historyScopeEstimate = .counting
+        let source = changelogSourceFactory(client)
+        let result: HistoryScopeEstimate
+        do {
+            result = .approximately(try await source.approximateIssueCount(jql: range.backfillJQL))
+        } catch JiraError.unauthorized {
+            guard generation == syncGeneration else { return }
+            phase = .expired
+            result = .unavailable
+        } catch {
+            result = .unavailable
+        }
+        guard generation == syncGeneration, range == historyRange else { return }
+        historyScopeEstimate = result
+    }
+
     private func launchBackfill(resume: Bool) async {
         // 이미 돌고 있으면 두 번 시작하지 않는다 — 같은 페이지를 두 곳에서 훑으면
         // 진행률이 뒤엉킨다(이벤트 중복은 historyId가 막지만 카운터는 못 막는다).
@@ -696,8 +766,9 @@ public final class AppModel {
     private func runBackfill(resume: Bool) async {
         guard let client else { return }
         // 동기화(`performSync`)와 달리 statusCategory로 좁히지 않는다 — 이미 Done인
-        // 티켓의 과거 전이야말로 소급해야 할 것들이다.
-        let jql = "assignee = currentUser()"
+        // 티켓의 과거 전이야말로 소급해야 할 것들이다. 대신 사용자가 고른 기간으로
+        // 좁힌다 — 조직이 오래됐을수록 이 조회가 커지고, 전부 읽을 이유는 없다.
+        let jql = historyRange.backfillJQL
 
         // 진행 상태 저장(begin/advance/finish)은 엔진이 직접 한다 — 페이지 경계마다
         // 저장해야 하는데 여기서는 루프 안을 볼 수 없다. 여기서 또 부르면 이중 기록이 된다.
@@ -1039,16 +1110,19 @@ public final class AppModel {
         return Set(result.issues.map(\.statusName)).sorted()
     }
 
-    /// 이 티켓에서 지금 고를 수 있는 전이. **캐싱하지 않는다** — 관리자가 워크플로를
-    /// 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 된다.
     /// 전이 후보를 **매번 새로** 받아 `transitionOptions`에 채운다.
     ///
-    /// 캐싱하지 않는다: 관리자가 워크플로를 바꾸면 캐시된 전이 ID는 즉시 틀린 값이 되고,
-    /// 그 ID로 보낸 요청은 Jira가 거부한다. 그래서 시작할 때 `.loading`으로 덮어 이전
-    /// 답을 화면에서 먼저 치운다 — 낡은 목록이 잠깐이라도 눌리는 창을 만들지 않는다.
+    /// 관리자가 워크플로를 바꾸면 받아 둔 전이 ID는 그 순간 틀린 값이 되고, 그 ID로
+    /// 보낸 요청은 Jira가 거부한다. 그래서 메뉴는 열릴 때마다 반드시 다시 묻는다.
+    ///
+    /// 다만 답이 오기 전까지의 자리는 미리 받아 둔 것(`warmTransitions`)이 채운다 —
+    /// 있다면 `.loading` 대신 곧바로 `.ready`로 뜬다. 낡은 목록이 눌릴 수 있는 창은
+    /// "관리자가 워크플로를 바꾼 뒤 다음 동기화까지"로 좁고, 그 안에서 눌러도 Jira가
+    /// 거부해 실패 안내(`transitionFailureMessage`)로 돌아온다. 그 창을 없애려고
+    /// 메뉴를 열 때마다 왕복을 기다리게 하는 쪽이 매일 더 자주 겪는 비용이었다.
     public func loadTransitionOptions(for issueKey: String) {
         let generation = syncGeneration
-        transitionOptions[issueKey] = .loading
+        transitionOptions[issueKey] = warmOptions(for: issueKey).map(TransitionOptions.ready) ?? .loading
         Task { [weak self] in
             guard let self else { return }
             do {
@@ -1057,6 +1131,7 @@ public final class AppModel {
                 // 받아오는 동안 계정이 바뀌었으면 이 답은 남의 것이다.
                 guard generation == self.syncGeneration else { return }
                 self.transitionOptions[issueKey] = .ready(options)
+                self.storeWarm(options, for: issueKey)
             } catch JiraError.unauthorized {
                 guard generation == self.syncGeneration else { return }
                 // 만료 배너와 같은 사실을 말한다. 여기서 아무것도 안 채우면 메뉴가
@@ -1066,6 +1141,87 @@ public final class AppModel {
             } catch {
                 guard generation == self.syncGeneration else { return }
                 self.transitionOptions[issueKey] = .failed(Self.transitionOptionsFailureMessage(error))
+            }
+        }
+    }
+
+    /// 미리 받아 둔 후보 중 지금 쓸 수 있는 것. 티켓이 미러에 없거나, 받아 둘 때의
+    /// 상태가 지금 상태와 다르거나, 너무 오래됐으면 nil이다.
+    private func warmOptions(for issueKey: String) -> [JiraTransition]? {
+        guard let warm = warmTransitions[issueKey],
+              let current = issues.first(where: { $0.key == issueKey }),
+              warm.statusName == current.statusName,
+              clock().timeIntervalSince(warm.fetchedAt) < settings.transitionWarmth.fullSeconds
+        else { return nil }
+        return warm.options
+    }
+
+    private func storeWarm(_ options: [JiraTransition], for issueKey: String) {
+        guard let current = issues.first(where: { $0.key == issueKey }) else { return }
+        warmTransitions[issueKey] = WarmTransitions(
+            statusName: current.statusName, options: options, fetchedAt: clock()
+        )
+    }
+
+    /// 미러의 티켓 중 아직 받아 두지 않았거나 상태가 바뀐 것의 전이 후보를 미리 받는다.
+    ///
+    /// 동시 요청 수를 제한하는 이유는 429다 — 티켓 수만큼 한꺼번에 보내면 Jira가
+    /// 막고, 그러면 이 기능이 지연을 줄이기는커녕 메뉴까지 막는다. 429나 401을 만나면
+    /// 남은 것을 포기한다: 같은 답을 수십 번 더 들을 이유가 없다. 다른 실패는 그 티켓만
+    /// 건너뛴다 — 메뉴를 열면 어차피 다시 묻는다.
+    ///
+    /// 실행 중이던 것이 있으면 취소하고 새로 시작한다. 방금 동기화가 미러를 바꿨으니
+    /// 이전 실행이 보던 목록은 이미 낡았다.
+    private func prefetchTransitions() {
+        prefetchTask?.cancel()
+        prefetchTask = nil
+        guard settings.prefetchesTransitions, let client else { return }
+        // 이미 받아 둔 것은 다시 받지 않는다. 낡은 항목(상태가 바뀐 것)은 함께 지운다 —
+        // 남겨 두면 `warmOptions`가 매번 걸러내긴 하지만 딕셔너리만 계속 자란다.
+        let stale = warmTransitions.filter { key, warm in
+            issues.first(where: { $0.key == key })?.statusName != warm.statusName
+        }
+        for key in stale.keys { warmTransitions[key] = nil }
+        let keys = issues.map(\.key).filter { warmOptions(for: $0) == nil }
+        guard !keys.isEmpty else { return }
+
+        let generation = syncGeneration
+        let width = settings.transitionPrefetchConcurrency
+        prefetchTask = Task { [weak self] in
+            // 창(`width`)만큼씩 잘라 보낸다. 세마포어 없이도 동시 요청 수가 상한을
+            // 넘지 않고, 한 묶음의 실패 판정이 다음 묶음의 출발을 막을 수 있다.
+            var cursor = keys.startIndex
+            while cursor < keys.endIndex, !Task.isCancelled {
+                let batch = keys[cursor..<min(cursor + width, keys.endIndex)]
+                cursor += width
+                let answers = await withTaskGroup(
+                    of: (key: String, result: Result<[JiraTransition], any Error>).self
+                ) { group in
+                    for key in batch {
+                        group.addTask {
+                            do { return (key, .success(try await client.transitions(issueKey: key))) }
+                            catch { return (key, .failure(error)) }
+                        }
+                    }
+                    var collected: [(key: String, result: Result<[JiraTransition], any Error>)] = []
+                    for await answer in group { collected.append(answer) }
+                    return collected
+                }
+                guard let self, generation == self.syncGeneration, !Task.isCancelled else { return }
+                for (key, result) in answers {
+                    switch result {
+                    case .success(let options):
+                        self.storeWarm(options, for: key)
+                    case .failure(JiraError.unauthorized):
+                        // 만료 배너와 같은 사실이다. 남은 요청은 전부 같은 답을 받는다.
+                        self.phase = .expired
+                        return
+                    case .failure(JiraError.rateLimited):
+                        return
+                    case .failure:
+                        continue
+                    }
+                }
             }
         }
     }
@@ -1199,10 +1355,10 @@ public final class AppModel {
                 self.detailState = .loaded(IssueDetailView(
                     key: detail.key,
                     summary: detail.summary,
-                    descriptionText: detail.description.map(ADFRenderer.plainText(from:)) ?? "",
+                    description: detail.description.map(ADFRenderer.document(from:)) ?? .empty,
                     comments: comments.map {
                         CommentView(id: $0.id, authorName: $0.authorName, created: $0.created,
-                                    text: $0.body.map(ADFRenderer.plainText(from:)) ?? "")
+                                    body: $0.body.map(ADFRenderer.document(from:)) ?? .empty)
                     }
                 ))
             } catch JiraError.unauthorized {
@@ -1431,6 +1587,11 @@ public final class AppModel {
     /// 못한다 — `signOut()`이 타이머를 실제로 취소·정리하는지(딕셔너리만 비우고 태스크는
     /// 살려두는 게 아닌지)를 이 통로 없이는 검증할 수 없다.
     var transitionTaskCountForTesting: Int { transitionTasks.count }
+
+    /// 미리 받아 둔 전이 후보의 수. `warmTransitions`는 `private`이라 테스트가 직접 보지
+    /// 못한다 — 사전 로드는 별도 태스크라 "요청이 나갔다"와 "답을 받아 두었다" 사이에
+    /// 틈이 있고, 테스트는 후자를 기다려야 한다.
+    var warmTransitionCountForTesting: Int { warmTransitions.count }
 }
 
 /// `performSync()`가 던지는, 이미 안전하게 줄여둔 실패. `SyncScheduler`는 이 문자열을
