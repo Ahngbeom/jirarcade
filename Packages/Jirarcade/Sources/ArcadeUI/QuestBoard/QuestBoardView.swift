@@ -8,7 +8,7 @@ struct QuestBoardView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: AppModel
     @Namespace private var cardNamespace
-    @State private var mode: BoardViewMode = .lanes
+    @State private var mode: BoardViewMode = .default
     @State private var detailTarget: DetailTarget?
 
     /// 동기화 전과 "티켓이 없다"를 구분한다. `ObservationCabinet`이 쓰는 것과 같은
