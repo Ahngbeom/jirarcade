@@ -434,14 +434,13 @@ struct OrbitView: View {
         at location: CGPoint, viewport: CGSize, extent: Double,
         oldScale: Double, newScale: Double
     ) -> CGSize {
-        let offset = CGPoint(x: location.x - viewport.width / 2,
-                             y: location.y - viewport.height / 2)
-        return clampPan(
-            OrbitGeometry.panKeepingPointUnderCursor(
-                cursorOffset: offset, pan: committedPan, oldScale: oldScale, newScale: newScale
-            ),
-            extent: extent, scale: newScale
+        let kept = OrbitGeometry.panKeepingPointUnderCursor(
+            cursorOffset: (x: location.x - viewport.width / 2,
+                           y: location.y - viewport.height / 2),
+            pan: (x: committedPan.width, y: committedPan.height),
+            oldScale: oldScale, newScale: newScale
         )
+        return clampPan(CGSize(width: kept.x, height: kept.y), extent: extent, scale: newScale)
     }
 
     /// 트랙패드가 없거나 키보드만 쓰는 경우의 경로. 궤도가 유일한 경로인 정보는

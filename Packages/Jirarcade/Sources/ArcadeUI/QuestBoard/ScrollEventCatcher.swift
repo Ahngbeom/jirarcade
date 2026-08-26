@@ -62,7 +62,9 @@ struct ScrollEventCatcher: NSViewRepresentable {
             }
         }
 
-        deinit { removeMonitor() }
+        /// 창에서 떨어질 때 이미 풀렸다면 nil이라 아무 일도 없다. `isolated`인 이유:
+        /// 보통의 `deinit`은 격리가 없어 메인 액터의 `monitor`를 만질 수 없다(Swift 6).
+        isolated deinit { removeMonitor() }
 
         private func removeMonitor() {
             if let monitor { NSEvent.removeMonitor(monitor) }

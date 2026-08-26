@@ -1,6 +1,5 @@
 import Testing
 import Foundation
-import CoreGraphics
 @testable import ArcadeCore
 
 /// 해시값을 리터럴로 굳혀 둔다. 이것이 `String.hashValue`로 되돌아가는 것을 막는
@@ -74,8 +73,8 @@ import CoreGraphics
 /// `L = (c − pan) / scale`이고, 새 배율에서 같은 `L`이 `c`에 오려면
 /// `pan' = c − L·scale'`이다.
 @Test func zoomingKeepsThePointUnderTheCursorStill() {
-    let cursor = CGPoint(x: 120, y: -40)      // 화면 중심 기준 오프셋
-    let pan = CGSize(width: 30, height: 10)
+    let cursor = (x: 120.0, y: -40.0)      // 화면 중심 기준 오프셋
+    let pan = (x: 30.0, y: 10.0)
     let oldScale = 200.0, newScale = 300.0
 
     let kept = OrbitGeometry.panKeepingPointUnderCursor(
@@ -83,40 +82,36 @@ import CoreGraphics
     )
 
     // 확대 전 커서 아래 논리 좌표
-    let logicalX = (cursor.x - pan.width) / oldScale
-    let logicalY = (cursor.y - pan.height) / oldScale
+    let logicalX = (cursor.x - pan.x) / oldScale
+    let logicalY = (cursor.y - pan.y) / oldScale
     // 확대 후 그 논리 좌표의 화면 위치는 여전히 커서다
-    #expect(abs(logicalX * newScale + kept.width - cursor.x) < 1e-9)
-    #expect(abs(logicalY * newScale + kept.height - cursor.y) < 1e-9)
+    #expect(abs(logicalX * newScale + kept.x - cursor.x) < 1e-9)
+    #expect(abs(logicalY * newScale + kept.y - cursor.y) < 1e-9)
 }
 
 /// 커서가 화면 중심에 있으면 `anchoredPan`(비례 보정)과 같은 답이어야 한다 — 두 식이
 /// 다른 답을 내면 어느 쪽이 맞는지 알 수 없다.
 @Test func zoomingAtTheCentreIsPlainProportionalScaling() {
-    let pan = CGSize(width: 50, height: -20)
-
     let kept = OrbitGeometry.panKeepingPointUnderCursor(
-        cursorOffset: CGPoint(x: 0, y: 0), pan: pan, oldScale: 100, newScale: 250
+        cursorOffset: (x: 0, y: 0), pan: (x: 50, y: -20), oldScale: 100, newScale: 250
     )
 
-    #expect(abs(kept.width - 125) < 1e-9)
-    #expect(abs(kept.height - -50) < 1e-9)
+    #expect(abs(kept.x - 125) < 1e-9)
+    #expect(abs(kept.y - -50) < 1e-9)
 }
 
 /// 배율이 그대로면 팬도 그대로다.
 @Test func anUnchangedScaleLeavesThePanAlone() {
-    let pan = CGSize(width: 7, height: 9)
     let kept = OrbitGeometry.panKeepingPointUnderCursor(
-        cursorOffset: CGPoint(x: 300, y: 200), pan: pan, oldScale: 80, newScale: 80
+        cursorOffset: (x: 300, y: 200), pan: (x: 7, y: 9), oldScale: 80, newScale: 80
     )
-    #expect(kept.width == pan.width && kept.height == pan.height)
+    #expect(kept.x == 7 && kept.y == 9)
 }
 
 /// 배율 0은 나눌 수 없다. 죽는 대신 팬을 그대로 둔다 — 화면이 멈추는 것보다 낫다.
 @Test func aZeroScaleDoesNotDivide() {
-    let pan = CGSize(width: 7, height: 9)
     let kept = OrbitGeometry.panKeepingPointUnderCursor(
-        cursorOffset: CGPoint(x: 10, y: 10), pan: pan, oldScale: 0, newScale: 80
+        cursorOffset: (x: 10, y: 10), pan: (x: 7, y: 9), oldScale: 0, newScale: 80
     )
-    #expect(kept.width == pan.width && kept.height == pan.height)
+    #expect(kept.x == 7 && kept.y == 9)
 }
