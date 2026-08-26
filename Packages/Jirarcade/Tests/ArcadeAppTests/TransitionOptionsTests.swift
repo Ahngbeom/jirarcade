@@ -149,7 +149,12 @@ private func settle(_ model: AppModel, key: String) async throws {
     model.loadTransitionOptions(for: "DEMO-1")
     // 앞의 답이 자리를 채운 채로 다시 묻는다.
     #expect(readyIDs(model.transitionOptions["DEMO-1"]) == ["11"])
-    try await Task.sleep(for: .milliseconds(80))
+    // 고정 대기는 느린 러너에서 흔들린다(CI에서 실제로 80ms가 모자랐다). 답이 **바뀔**
+    // 때까지 기다린다 — `settle`은 `.loading`이 걷히기를 기다리는데 여기서는 처음부터
+    // `.ready`라 쓸 수 없다.
+    for _ in 0..<200 where readyIDs(model.transitionOptions["DEMO-1"]) == ["11"] {
+        try await Task.sleep(for: .milliseconds(5))
+    }
 
     #expect(readyIDs(model.transitionOptions["DEMO-1"]) == ["31", "41"])
     #expect(stub.transitionRequests == 2)
