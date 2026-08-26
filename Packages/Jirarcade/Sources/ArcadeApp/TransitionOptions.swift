@@ -17,3 +17,13 @@ public enum TransitionOptions: Sendable, Equatable {
     /// 묻지 못했다. 문구는 앱이 짓는다 — Jira 응답 본문은 화면에 닿지 않는다.
     case failed(String)
 }
+
+/// 동기화 직후 미리 받아 둔 전이 후보 하나.
+///
+/// 상태명을 같이 적는 이유: 전이 후보는 티켓의 **현재 상태**에서 나온다. 다음 동기화가
+/// 상태 변화를 감지하면 이 항목은 그 자리에서 낡은 것이 되고, 상태명이 다르면 쓰지 않는다.
+struct WarmTransitions: Sendable, Equatable {
+    let statusName: String
+    let options: [JiraTransition]
+    let fetchedAt: Date
+}

@@ -12,6 +12,8 @@ struct OrbitView: View {
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     let model: AppModel
     let cardNamespace: Namespace.ID
+    /// 상세 시트를 연다. 카드는 읽기 전용이라 고치려면 레인과 같은 시트로 간다.
+    let onOpenDetail: (String) -> Void
 
     /// nil이면 "전체가 보이는 배율". 창 크기가 바뀌어도 따라가게 하려고
     /// 절대값 대신 nil을 기본으로 둔다.
@@ -49,7 +51,7 @@ struct OrbitView: View {
                     systemView(system, snapshot: snapshot, metrics: metrics)
                 }
                 driftView(snapshot, metrics: metrics)
-                detailOverlay(snapshot)
+                detailOverlay(snapshot, viewport: proxy.size)
             }
             // 트리거는 스냅샷 전체가 아니라 `membershipSignature`다 — 태양 중심은
             // `zoomProgress`에 따라서도 움직이는데, 스냅샷 전체를 걸면 확대할 때마다
@@ -193,7 +195,7 @@ struct OrbitView: View {
             // 않고 부풀거나 옅어지며 등장·소멸한다.
             .transition(.opacity.combined(with: .scale(scale: 0.3)))
             .position(point)
-            .onTapGesture { selected = planet.id }
+            .onTapGesture { select(planet.id) }
 
         if metrics.showsPlanetLabels {
             Text(planet.issue.key)
@@ -205,6 +207,33 @@ struct OrbitView: View {
         }
     }
 
+    /// 행성을 고른다. 미러의 값은 카드가 즉시 그리고, Jira 본문·댓글은 여기서 시작한
+    /// 요청이 도착하는 대로 채운다 — 시트가 쓰는 `openDetail`과 같은 경로다.
+    ///
+    /// 같은 행성을 다시 누르면 다시 묻는다. 이미 받은 것을 아끼려고 건너뛰면, 그 사이
+    /// 시트가 같은 슬롯(`detailState`)을 다른 티켓으로 바꿔 놓았을 때 카드가 빈 채로
+    /// 남는다.
+    private func select(_ id: String) {
+        selected = id
+        Task { await model.openDetail(issueKey: id) }
+    }
+
+    /// 카드를 닫는다. 날아가고 있던 본문·댓글 요청도 함께 끊는다 — 닫은 뒤에도 Jira에
+    /// 계속 말을 걸 이유가 없다.
+    private func dismissCard() {
+        model.closeDetail()
+        selected = nil
+    }
+
+    /// 카드에서 시트로 넘어간다. `dismissCard()`를 쓰지 **않는다** — 시트가 곧 같은
+    /// 티켓을 다시 묻는데(`TicketDetailSheet.task`), 여기서 `closeDetail()`을 부르면
+    /// 순서에 따라 시트의 요청이 취소된다. 시트가 열리면 그 요청이 카드의 것을
+    /// 대체하고(`detailToken`), 시트가 닫힐 때 시트가 스스로 정리한다.
+    private func openEditor(_ id: String) {
+        selected = nil
+        onOpenDetail(id)
+    }
+
     /// 고른 행성의 상세를 궤도 위에 띄운다.
     ///
     /// `.popover`를 쓰지 않는 이유: macOS에서 팝오버는 **별도 윈도우**로 떠서 앱 창
@@ -213,8 +242,12 @@ struct OrbitView: View {
     ///
     /// 성계를 가리지 않고 살짝 어둡게만 덮는 이유는 맥락이다. "어느 행성을 눌렀는지"가
     /// 뒤에 계속 보여야 카드가 어디서 나왔는지 읽힌다.
+    ///
+    /// 고른 행성이 스냅샷에서 사라지면(동기화가 그 티켓을 지운 경우) 카드도 사라진다.
+    /// 그때 날아가던 요청은 끊지 않는다 — 결과가 와도 `detailState`에 앉을 뿐 어느
+    /// 화면도 그 키를 그리지 않고, 다음 열기가 토큰으로 대체한다.
     @ViewBuilder
-    private func detailOverlay(_ snapshot: OrbitSnapshot) -> some View {
+    private func detailOverlay(_ snapshot: OrbitSnapshot, viewport: CGSize) -> some View {
         if let id = selected,
            let planet = (snapshot.systems.flatMap(\.planets) + snapshot.drifters)
                .first(where: { $0.id == id }) {
@@ -222,11 +255,16 @@ struct OrbitView: View {
                 // 바깥을 눌러 닫는다. `contentShape`가 없으면 투명한 곳이 탭을 받지 않는다.
                 theme.surfaceBase.opacity(0.72)
                     .contentShape(Rectangle())
-                    .onTapGesture { selected = nil }
+                    .onTapGesture { dismissCard() }
 
-                PlanetDetailCard(planet: planet, siteHost: model.siteHost) {
-                    selected = nil
-                }
+                PlanetDetailCard(
+                    planet: planet, model: model,
+                    // 위아래로 거터만큼 남긴다 — 카드가 뷰포트에 꽉 차면 카드인지
+                    // 새 화면인지 읽히지 않는다.
+                    maxHeight: max(viewport.height - density.gutter * 2, 200),
+                    onClose: { dismissCard() },
+                    onOpenEditor: { openEditor(planet.id) }
+                )
             }
             .transition(.opacity)
         }

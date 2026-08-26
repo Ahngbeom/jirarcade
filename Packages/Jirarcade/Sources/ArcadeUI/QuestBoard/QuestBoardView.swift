@@ -66,7 +66,8 @@ struct QuestBoardView: View {
                         case .lanes:
                             lanes(width: geometry.size.width)
                         case .orbit:
-                            OrbitView(model: model, cardNamespace: cardNamespace)
+                            OrbitView(model: model, cardNamespace: cardNamespace,
+                                      onOpenDetail: { key in detailTarget = DetailTarget(id: key) })
                         }
                     }
                     // 카드와 행성이 같은 `cardNamespace`를 쓰므로, 모드가 바뀔 때
