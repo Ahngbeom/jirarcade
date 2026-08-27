@@ -66,7 +66,8 @@ macOS는 인터넷에서 받은 미공증 앱에 격리 표시(`com.apple.quaran
   브라우저와 달리 `curl`에는 그 선언(`LSFileQuarantineEnabled`)이 없습니다. 대신 Gatekeeper의
   보증도 못 받으므로, 스크립트가 릴리즈의 `.sha256`과 대조해 무결성을 확인하고 어긋나면
   설치하지 않습니다. `sudo`는 부르지 않습니다.
-- **브라우저로 zip을 직접 받았다면** 표시를 직접 떼야 합니다. macOS 15부터는 Control-클릭 →
+- **브라우저로 [릴리즈 페이지](https://github.com/Ahngbeom/jirarcade/releases)에서 zip을
+  직접 받았다면** 표시를 직접 떼야 합니다. macOS 15부터는 Control-클릭 →
   열기 우회가 없어져 이 명령이 유일한 출구입니다:
 
   ```bash
