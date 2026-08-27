@@ -202,6 +202,13 @@ jobs:
 
       # 사용자가 칠 명령을 그대로 친다. verify-bundle.sh의 압축 왕복 검사와 같은
       # 발상이다 — 받는 쪽 경로를 먼저 밟아본다.
+      #
+      # verify-install.sh 실패 시 uninstall을 건너뛰어도 재실행이 안전한 것은 이
+      # 잡이 GitHub-hosted 러너(매 실행 새 VM)에서 돈다는 전제 때문이다. 설치된
+      # 앱이 다음 실행까지 남지 않으니 "Re-run failed jobs"는 항상 install부터
+      # 다시 시작한다. self-hosted나 영속 러너로 옮기면 이 전제가 깨진다 — 그때는
+      # brew install에 --force를 주거나, 스모크 앞에 기존 cask 제거 단계를 넣어
+      # 이미 설치된 상태를 견디게 만들어야 한다.
       - name: brew 설치 스모크
         if: needs.release.outputs.prerelease == 'false'
         env:
