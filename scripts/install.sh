@@ -141,13 +141,16 @@ install_bundle() {
     if ! mv "$staged" "$dest"; then
         echo "✗ 새 번들을 설치하지 못했습니다: $dest" >&2
         if [[ -n "$backup_dir" ]]; then
-            if mv "$backup_dir/${APP_NAME}" "$dest"; then
-                echo "▸ 기존 앱을 되돌렸습니다" >&2
+            # 여기서 bare mv를 다시 쓰면 restore_backup이 고치려던 바로 그 버그가
+            # 재발한다: mv "$staged" "$dest"가 부분적으로만 실패했을 수 있어(예:
+            # TMPDIR이 다른 볼륨이라 cross-device mv가 copy+delete로 풀리다 중단)
+            # $dest에 이미 무언가 있을 수 있고, 그러면 BSD mv가 백업을 그 안으로
+            # 옮겨 넣고도 0을 반환해 되돌렸다는 메시지가 거짓이 된다.
+            if restore_backup "${backup_dir}/${APP_NAME}" "$dest_dir"; then
+                rm -rf "$backup_dir"
             else
-                echo "✗ 되돌리기도 실패했습니다. 기존 앱은 여기 있습니다: ${backup_dir}/${APP_NAME}" >&2
                 return 1
             fi
-            rm -rf "$backup_dir"
         fi
         return 1
     fi
