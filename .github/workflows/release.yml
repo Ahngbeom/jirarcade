@@ -143,3 +143,83 @@ jobs:
             "Jirarcade-${VERSION}.zip" \
             "Jirarcade-${VERSION}.zip.sha256"
           gh release edit "${GITHUB_REF_NAME}" --draft=false
+
+  # 릴리즈 공개는 되돌릴 수 없다. 그 뒤의 실패에는 재실행 경로를 준다 — 별도 잡이면
+  # "Re-run failed jobs"가 릴리즈를 다시 만들지 않고 이 잡만 다시 돈다.
+  install-channels:
+    needs: release
+    runs-on: macos-26
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+
+      # 프리릴리즈는 '최신 릴리즈' 자리를 차지하지 않는다. tap도 같다 —
+      # brew 사용자는 안정판만 받는다.
+      - name: tap 갱신
+        if: needs.release.outputs.prerelease == 'false'
+        env:
+          TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+          VERSION: ${{ needs.release.outputs.version }}
+          SHA256: ${{ needs.release.outputs.sha256 }}
+        run: |
+          # 조용히 건너뛰면 릴리즈가 나가도 tap이 갱신되지 않은 것을 아무도 모른다.
+          # make-app.sh가 codesign 실패를 삼키지 않기로 한 것과 같은 판단이다.
+          if [ -z "$TAP_TOKEN" ]; then
+            echo "✗ HOMEBREW_TAP_TOKEN 시크릿이 없습니다 — tap을 갱신할 수 없습니다" >&2
+            echo "  fine-grained PAT (ahngbeom/homebrew-tap, Contents: Read and write)를" >&2
+            echo "  이 저장소의 Actions secret으로 등록하세요." >&2
+            exit 1
+          fi
+
+          git clone "https://x-access-token:${TAP_TOKEN}@github.com/ahngbeom/homebrew-tap.git" tap
+          ./scripts/make-cask.sh --version "$VERSION" --sha256 "$SHA256" --output tap/Casks/jirarcade.rb
+
+          cd tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+          if git diff --quiet -- Casks/jirarcade.rb; then
+            echo "▸ cask에 변경이 없습니다 — 이미 최신입니다"
+            exit 0
+          fi
+
+          git add Casks/jirarcade.rb
+          git commit -m "Brew cask update for jirarcade version v${VERSION}"
+
+          # tap은 다른 프로젝트도 함께 쓴다. 동시 릴리즈가 겹치면 non-fast-forward로
+          # 밀린다. 재실행으로도 회복되지만, 여기서 세 번까지는 스스로 붙여본다.
+          for attempt in 1 2 3; do
+            if git push; then
+              echo "✓ tap 갱신 완료: v${VERSION}"
+              exit 0
+            fi
+            echo "▸ push 충돌 — rebase 후 재시도 (${attempt}/3)"
+            git pull --rebase
+          done
+
+          echo "✗ tap push에 실패했습니다" >&2
+          exit 1
+
+      # 사용자가 칠 명령을 그대로 친다. verify-bundle.sh의 압축 왕복 검사와 같은
+      # 발상이다 — 받는 쪽 경로를 먼저 밟아본다.
+      - name: brew 설치 스모크
+        if: needs.release.outputs.prerelease == 'false'
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: 1
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          brew install --cask ahngbeom/tap/jirarcade
+          ./scripts/verify-install.sh /Applications/Jirarcade.app "$VERSION"
+          brew uninstall --cask jirarcade
+
+      # 워크스페이스의 스크립트를 돌린다. raw.githubusercontent가 아니라 이 커밋의
+      # 파일을 검증하려는 것이다.
+      #
+      # 프리릴리즈에서는 releases/latest가 이 태그를 찾지 못한다. JIRARCADE_VERSION이
+      # 존재하는 이유가 이것이고, 프리릴리즈 리허설에서 curl 경로를 검증하는 방법이다.
+      - name: curl 설치 스모크
+        env:
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          JIRARCADE_VERSION="$VERSION" bash scripts/install.sh
+          ./scripts/verify-install.sh /Applications/Jirarcade.app "$VERSION"
