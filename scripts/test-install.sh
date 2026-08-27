@@ -115,6 +115,32 @@ mkdir -p "$TMP/staged4/Jirarcade.app"
 assert_fails "없는 번들 거부"      install_bundle "$TMP/nonexistent/Jirarcade.app" "$TMP/dest1"
 assert_fails "없는 설치 위치 거부" install_bundle "$TMP/staged4/Jirarcade.app" "$TMP/nowhere"
 
+# BACKUP_DIR 계약 검증 — 설치 후 검증이 통과할 때까지 백업을 유지해야 한다.
+# 새 설치 후 (기존 앱 없음): BACKUP_DIR이 비어 있어야 한다
+BACKUP_DIR=""
+mkdir -p "$TMP/dest5" "$TMP/staged5/Jirarcade.app/Contents"
+printf 'new' > "$TMP/staged5/Jirarcade.app/Contents/marker"
+install_bundle "$TMP/staged5/Jirarcade.app" "$TMP/dest5" >/dev/null 2>&1
+assert_eq "새 설치 후 BACKUP_DIR 비어 있음" "$BACKUP_DIR" ""
+
+# 기존 앱이 있을 때: BACKUP_DIR이 백업 디렉터리 경로를 가져야 한다
+BACKUP_DIR=""
+mkdir -p "$TMP/dest6/Jirarcade.app/Contents" "$TMP/staged6/Jirarcade.app/Contents"
+printf 'old' > "$TMP/dest6/Jirarcade.app/Contents/marker"
+printf 'new' > "$TMP/staged6/Jirarcade.app/Contents/marker"
+install_bundle "$TMP/staged6/Jirarcade.app" "$TMP/dest6" >/dev/null 2>&1
+if [[ -n "$BACKUP_DIR" ]]; then
+    pass "기존 앱 교체 후 BACKUP_DIR 설정됨"
+else
+    fail "기존 앱 교체 후 BACKUP_DIR 설정됨"
+fi
+if [[ -d "$BACKUP_DIR/Jirarcade.app" ]]; then
+    pass "BACKUP_DIR에 백업 앱이 있음"
+else
+    fail "BACKUP_DIR에 백업 앱이 있음"
+fi
+assert_eq "BACKUP_DIR의 앱 내용" "$(cat "$BACKUP_DIR/Jirarcade.app/Contents/marker")" "old"
+
 if [[ $FAILED -eq 1 ]]; then
     echo "" >&2
     echo "✗ install.sh 테스트 실패" >&2

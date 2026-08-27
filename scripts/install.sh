@@ -29,9 +29,11 @@ MIN_MACOS_MAJOR=15
 # 정리 대상. main이 설정하고 trap이 읽는다. main의 지역 변수로 두면 trap이
 # 실행되는 시점에는 이미 사라지고 없다.
 WORKDIR=""
+BACKUP_DIR=""
 
 cleanup() {
     [[ -n "$WORKDIR" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"
+    [[ -n "$BACKUP_DIR" && -d "$BACKUP_DIR" ]] && rm -rf "$BACKUP_DIR"
     return 0
 }
 
@@ -73,6 +75,10 @@ verify_checksum() {
 # 검증을 통과한 번들만 여기 온다. 기존 앱을 옆으로 치우고 새것을 넣은 뒤, 실패하면
 # 되돌린다. 디렉터리 교체라 진짜 원자적일 수는 없다 — 창을 좁히는 것이 할 수 있는
 # 전부이고, 그 창을 0으로 만드는 것은 이 규모에서 과하다.
+#
+# 성공하면 기존 앱의 백업을 삭제하지 않고 전역 BACKUP_DIR에 그 경로를 기록한다.
+# main이 설치 후 검증을 돌린 뒤, 그 검증이 통과해야 비로소 백업을 삭제한다.
+# 검증 실패 시 main이 백업에서 복구할 수 있도록 하기 위해서다.
 install_bundle() {
     local staged="$1" dest_dir="$2"
     local dest="${dest_dir}/${APP_NAME}"
@@ -110,7 +116,9 @@ install_bundle() {
         return 1
     fi
 
-    [[ -n "$backup_dir" ]] && rm -rf "$backup_dir"
+    # 성공했다면 백업 경로를 전역 BACKUP_DIR에 기록하고, main의 설치 후 검증이
+    # 성공할 때까지 그것을 두어 필요하면 복구할 수 있게 한다.
+    BACKUP_DIR="$backup_dir"
     return 0
 }
 
@@ -183,12 +191,42 @@ main() {
 
     # 설치 후 재확인. verify-install.sh를 부르지 않는 이유: 이 스크립트는 curl로
     # 단독 실행돼 옆에 형제 파일이 없다.
-    codesign --verify --strict "${INSTALL_DIR}/${APP_NAME}"
+    # 이 검증 단계에서 실패하면 설치 전 앱으로 되돌려야 한다.
+    # 그러므로 기존 앱의 백업은 이 검증이 성공할 때까지 유지된다.
+    if ! codesign --verify --strict "${INSTALL_DIR}/${APP_NAME}"; then
+        echo "✗ 설치한 앱의 서명이 유효하지 않습니다" >&2
+        if [[ -n "$BACKUP_DIR" ]]; then
+            if mv "${BACKUP_DIR}/${APP_NAME}" "${INSTALL_DIR}/${APP_NAME}"; then
+                echo "▸ 이전 버전으로 되돌렸습니다" >&2
+            else
+                echo "✗ 이전 버전으로의 복구도 실패했습니다. 이전 앱은 여기 있습니다: ${BACKUP_DIR}/${APP_NAME}" >&2
+                BACKUP_DIR=""
+                exit 1
+            fi
+        fi
+        BACKUP_DIR=""
+        exit 1
+    fi
+
     if xattr -p com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}" >/dev/null 2>&1; then
         echo "✗ 격리 표시가 붙어 있습니다 — curl 경로에서는 나올 수 없는 상태입니다" >&2
         echo "  떼는 명령: xattr -dr com.apple.quarantine ${INSTALL_DIR}/${APP_NAME}" >&2
+        if [[ -n "$BACKUP_DIR" ]]; then
+            if mv "${BACKUP_DIR}/${APP_NAME}" "${INSTALL_DIR}/${APP_NAME}"; then
+                echo "▸ 이전 버전으로 되돌렸습니다" >&2
+            else
+                echo "✗ 이전 버전으로의 복구도 실패했습니다. 이전 앱은 여기 있습니다: ${BACKUP_DIR}/${APP_NAME}" >&2
+                BACKUP_DIR=""
+                exit 1
+            fi
+        fi
+        BACKUP_DIR=""
         exit 1
     fi
+
+    # 검증이 모두 통과했으므로 백업을 정리한다.
+    [[ -n "$BACKUP_DIR" ]] && rm -rf "$BACKUP_DIR"
+    BACKUP_DIR=""
 
     echo "✓ ${INSTALL_DIR}/${APP_NAME} (${version})"
     echo "  실행: open ${INSTALL_DIR}/${APP_NAME}"
