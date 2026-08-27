@@ -52,3 +52,17 @@ jobs:
         run: |
           ./scripts/make-app.sh --config release --version 0.0.0-ci --build 0
           ./scripts/verify-bundle.sh Packages/Jirarcade/.build/Jirarcade.app 0.0.0-ci
+
+      # install.sh·make-cask.sh·verify-install.sh도 v* 태그를 밀기 전까지 한 번도
+      # 실행되지 않으면, 버그가 공개된 태그 위에서만 드러난다. 번들 스모크와 같은
+      # 이유로 여기서 돌린다.
+      #
+      # 앞 스텝이 만든 0.0.0-ci 번들을 검사 대상으로 재사용한다. 로컬에서 만든
+      # 번들에는 격리 표시가 없으므로 verify-install.sh의 성공 경로가 그대로 성립한다.
+      - name: 설치 스크립트 스모크
+        working-directory: .
+        run: |
+          bash -n scripts/install.sh
+          ./scripts/test-install.sh
+          ./scripts/test-make-cask.sh
+          ./scripts/verify-install.sh Packages/Jirarcade/.build/Jirarcade.app 0.0.0-ci
