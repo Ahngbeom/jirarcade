@@ -11,6 +11,12 @@ permissions:
 jobs:
   release:
     runs-on: macos-26
+    # 설치 채널 잡이 릴리즈 잡의 결과를 읽는다. sha256을 다시 계산하지 않는 것이
+    # 요점이다 — 두 곳이 따로 계산하면 어긋나도 아무도 모른다.
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      prerelease: ${{ steps.version.outputs.prerelease }}
+      sha256: ${{ steps.checksum.outputs.sha256 }}
     steps:
       - uses: actions/checkout@v7
 
@@ -82,6 +88,26 @@ jobs:
             Packages/Jirarcade/.build/Jirarcade.app \
             "Jirarcade-${{ steps.version.outputs.version }}.zip"
 
+      # 릴리즈 공개 **전**이다. make-cask.sh의 버그나 문법 오류는 여기서 죽어야
+      # 하고, 그러면 아무것도 나가지 않는다. 공개 후에 죽으면 되돌릴 수 없다.
+      #
+      # 체크섬은 여기서 한 번만 계산해 릴리즈 자산과 cask 양쪽에 넣는다.
+      - name: 체크섬과 cask 생성
+        id: checksum
+        run: |
+          VERSION="${{ steps.version.outputs.version }}"
+          ZIP="Jirarcade-${VERSION}.zip"
+          shasum -a 256 "$ZIP" > "${ZIP}.sha256"
+          SHA="$(awk '{print $1}' "${ZIP}.sha256")"
+          echo "sha256=$SHA" >> "$GITHUB_OUTPUT"
+          echo "--- ${ZIP}.sha256 ---"
+          cat "${ZIP}.sha256"
+
+          ./scripts/make-cask.sh --version "$VERSION" --sha256 "$SHA" --output jirarcade.rb
+          ruby -c jirarcade.rb
+          echo "--- 생성된 cask ---"
+          cat jirarcade.rb
+
       # --notes-file과 --generate-notes를 함께 넘겼을 때 합쳐지는 방식이
       # 문서화돼 있지 않아, 생성 노트를 API로 직접 받아 헤더 뒤에 붙인다.
       - name: 릴리즈 노트 작성
@@ -113,5 +139,7 @@ jobs:
           if [[ "${{ steps.version.outputs.prerelease }}" == "true" ]]; then
             ARGS+=(--prerelease)
           fi
-          gh release create "${GITHUB_REF_NAME}" "${ARGS[@]}" "Jirarcade-${VERSION}.zip"
+          gh release create "${GITHUB_REF_NAME}" "${ARGS[@]}" \
+            "Jirarcade-${VERSION}.zip" \
+            "Jirarcade-${VERSION}.zip.sha256"
           gh release edit "${GITHUB_REF_NAME}" --draft=false
