@@ -41,14 +41,22 @@ fi
 # 없습니다"를 만난다. cask의 postflight가 조용히 실패해도 brew install은 성공으로
 # 끝나므로, 여기서 보지 않으면 아무도 모른다. "명령이 성공했다"와 "결과가 옳다"는
 # 다르다 — verify-bundle.sh가 아이콘의 매직 넘버까지 확인하는 것과 같은 계열이다.
-if xattr -p com.apple.quarantine "$APP" >/dev/null 2>&1; then
+#
+# 격리 표시는 번들의 중첩 파일에 붙을 수 있다. postflight는 xattr -dr로 재귀
+# 삭제하므로, 검사도 재귀적으로 봐야 그 삭제가 완전했는지 알 수 있다.
+# grep -q로 파이프하면 set -e 아래에서 SIGPIPE로 전체 파이프라인이 실패하므로,
+# 먼저 변수에 캡처하고 그것을 테스트한다.
+QUARANTINE="$(xattr -rp com.apple.quarantine "$APP" 2>/dev/null || true)"
+if [[ -n "$QUARANTINE" ]]; then
     fail "격리 표시가 남아 있습니다 — 첫 실행이 차단됩니다"
 else
     pass "격리 표시 없음"
 fi
 
 ACTUAL_VERSION="$(plutil -extract CFBundleShortVersionString raw "$APP/Contents/Info.plist" 2>/dev/null || echo "<없음>")"
-if [[ -z "$EXPECTED_VERSION" ]]; then
+if [[ "$ACTUAL_VERSION" == "<없음>" ]]; then
+    fail "Info.plist에서 버전을 읽을 수 없습니다"
+elif [[ -z "$EXPECTED_VERSION" ]]; then
     pass "버전: $ACTUAL_VERSION (확인 생략)"
 elif [[ "$ACTUAL_VERSION" == "$EXPECTED_VERSION" ]]; then
     pass "버전: $ACTUAL_VERSION"
