@@ -70,10 +70,133 @@ verify_checksum() {
     return 0
 }
 
+# 검증을 통과한 번들만 여기 온다. 기존 앱을 옆으로 치우고 새것을 넣은 뒤, 실패하면
+# 되돌린다. 디렉터리 교체라 진짜 원자적일 수는 없다 — 창을 좁히는 것이 할 수 있는
+# 전부이고, 그 창을 0으로 만드는 것은 이 규모에서 과하다.
+install_bundle() {
+    local staged="$1" dest_dir="$2"
+    local dest="${dest_dir}/${APP_NAME}"
+    local backup_dir=""
+
+    if [[ ! -d "$staged" ]]; then
+        echo "✗ 설치할 번들이 없습니다: $staged" >&2
+        return 1
+    fi
+    if [[ ! -d "$dest_dir" ]]; then
+        echo "✗ 설치 위치가 없습니다: $dest_dir" >&2
+        return 1
+    fi
+
+    if [[ -e "$dest" ]]; then
+        backup_dir="$(mktemp -d)"
+        if ! mv "$dest" "$backup_dir/"; then
+            echo "✗ 기존 앱을 옮기지 못했습니다: $dest" >&2
+            rm -rf "$backup_dir"
+            return 1
+        fi
+    fi
+
+    if ! mv "$staged" "$dest"; then
+        echo "✗ 새 번들을 설치하지 못했습니다: $dest" >&2
+        if [[ -n "$backup_dir" ]]; then
+            if mv "$backup_dir/${APP_NAME}" "$dest"; then
+                echo "▸ 기존 앱을 되돌렸습니다" >&2
+            else
+                echo "✗ 되돌리기도 실패했습니다. 기존 앱은 여기 있습니다: ${backup_dir}/${APP_NAME}" >&2
+                return 1
+            fi
+            rm -rf "$backup_dir"
+        fi
+        return 1
+    fi
+
+    [[ -n "$backup_dir" ]] && rm -rf "$backup_dir"
+    return 0
+}
+
+main() {
+    if [[ "$(uname -s)" != "Darwin" ]]; then
+        echo "✗ macOS 전용입니다" >&2
+        exit 1
+    fi
+
+    local os_version
+    os_version="$(sw_vers -productVersion)"
+    if ! macos_version_ok "$os_version"; then
+        echo "✗ macOS ${MIN_MACOS_MAJOR} 이상이 필요합니다 (현재: ${os_version})" >&2
+        exit 1
+    fi
+
+    # 실행 중인 앱을 덮어쓰면 그 프로세스가 사라진 파일을 붙들고 이상하게 동작한다.
+    #
+    # `pgrep … && { …; exit 1; }` 형태로 쓰지 않는다 — pgrep이 아무것도 못 찾으면
+    # 그 목록 전체가 실패로 평가돼 set -e가 스크립트를 죽인다. 앱이 안 켜져 있는
+    # 정상 경로에서 죽는 것이다.
+    if pgrep -x JirarcadeApp >/dev/null 2>&1; then
+        echo "✗ Jirarcade가 실행 중입니다. 종료한 뒤 다시 실행하세요" >&2
+        exit 1
+    fi
+
+    if [[ ! -w "$INSTALL_DIR" ]]; then
+        echo "✗ ${INSTALL_DIR}에 쓸 권한이 없습니다" >&2
+        echo "  이 스크립트는 sudo를 부르지 않습니다. 권한을 확인한 뒤 다시 실행하세요." >&2
+        exit 1
+    fi
+
+    local version="${JIRARCADE_VERSION:-}"
+    if [[ -z "$version" ]]; then
+        local tag
+        # releases/latest는 초안과 프리릴리즈를 제외한다. 프리릴리즈를 받으려면
+        # JIRARCADE_VERSION으로 직접 지정해야 한다.
+        tag="$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" 2>/dev/null | parse_tag_name || true)"
+        if [[ -z "$tag" ]]; then
+            echo "✗ 최신 버전을 확인하지 못했습니다 (요청 실패 또는 API 레이트 리밋)" >&2
+            echo "  미인증 요청은 IP당 시간 60회로 제한됩니다. 버전을 직접 지정하면 이 요청을 건너뜁니다:" >&2
+            echo "    JIRARCADE_VERSION=0.2.0 로 시작하는 형태로 다시 실행하세요" >&2
+            exit 1
+        fi
+        version="${tag#v}"
+    fi
+
+    local base="https://github.com/${REPO}/releases/download/v${version}"
+    WORKDIR="$(mktemp -d)"
+    trap cleanup EXIT
+
+    echo "▸ Jirarcade ${version} 내려받는 중…"
+    curl -fL --progress-bar -o "${WORKDIR}/app.zip" "${base}/Jirarcade-${version}.zip"
+    curl -fsSL -o "${WORKDIR}/app.zip.sha256" "${base}/Jirarcade-${version}.zip.sha256"
+
+    echo "▸ 체크섬 확인 중…"
+    verify_checksum "${WORKDIR}/app.zip" "${WORKDIR}/app.zip.sha256"
+
+    # unzip이 아니라 ditto다. unzip은 확장 속성을 잃어 압축을 푼 .app의 서명이 깨진다.
+    # 릴리즈 워크플로도 같은 이유로 ditto로 압축한다 — 양쪽이 짝을 이룬다.
+    echo "▸ 압축 푸는 중…"
+    ditto -x -k "${WORKDIR}/app.zip" "${WORKDIR}/unpacked"
+
+    # 교체보다 검증이 먼저다. 여기서 죽으면 기존 앱이 그대로 남는다.
+    echo "▸ 서명 확인 중…"
+    codesign --verify --strict "${WORKDIR}/unpacked/${APP_NAME}"
+
+    echo "▸ 설치 중…"
+    install_bundle "${WORKDIR}/unpacked/${APP_NAME}" "$INSTALL_DIR"
+
+    # 설치 후 재확인. verify-install.sh를 부르지 않는 이유: 이 스크립트는 curl로
+    # 단독 실행돼 옆에 형제 파일이 없다.
+    codesign --verify --strict "${INSTALL_DIR}/${APP_NAME}"
+    if xattr -p com.apple.quarantine "${INSTALL_DIR}/${APP_NAME}" >/dev/null 2>&1; then
+        echo "✗ 격리 표시가 붙어 있습니다 — curl 경로에서는 나올 수 없는 상태입니다" >&2
+        echo "  떼는 명령: xattr -dr com.apple.quarantine ${INSTALL_DIR}/${APP_NAME}" >&2
+        exit 1
+    fi
+
+    echo "✓ ${INSTALL_DIR}/${APP_NAME} (${version})"
+    echo "  실행: open ${INSTALL_DIR}/${APP_NAME}"
+}
+
 # 이 파일이 source될 때는 main을 돌리지 않는다 — 테스트가 함수만 꺼내 쓴다.
 # curl | bash로 실행되면 BASH_SOURCE[0]이 없으므로 $0으로 대체해 참이 된다.
 # ${BASH_SOURCE[0]:-$0}의 :- 가 없으면 set -u 아래에서 unbound variable로 죽는다.
 if [[ "${BASH_SOURCE[0]:-$0}" == "$0" ]]; then
-    echo "✗ main이 아직 구현되지 않았습니다" >&2
-    exit 1
+    main "$@"
 fi

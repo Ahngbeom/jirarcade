@@ -81,6 +81,40 @@ assert_fails "형식이 깨진 체크섬 파일 거부" verify_checksum "$TMP/pa
 printf '' > "$TMP/empty.sha256"
 assert_fails "빈 체크섬 파일 거부" verify_checksum "$TMP/payload" "$TMP/empty.sha256"
 
+# --- install_bundle ---
+# 기존 앱이 없을 때
+mkdir -p "$TMP/dest1" "$TMP/staged1/Jirarcade.app/Contents"
+printf 'new' > "$TMP/staged1/Jirarcade.app/Contents/marker"
+assert_ok "새 설치" install_bundle "$TMP/staged1/Jirarcade.app" "$TMP/dest1"
+assert_eq "새 설치 내용" \
+    "$(cat "$TMP/dest1/Jirarcade.app/Contents/marker" 2>/dev/null || echo MISSING)" "new"
+
+# 기존 앱이 있을 때 — brew upgrade와 재설치가 밟는 경로다
+mkdir -p "$TMP/dest2/Jirarcade.app/Contents" "$TMP/staged2/Jirarcade.app/Contents"
+printf 'old' > "$TMP/dest2/Jirarcade.app/Contents/marker"
+printf 'new' > "$TMP/staged2/Jirarcade.app/Contents/marker"
+assert_ok "기존 앱 교체" install_bundle "$TMP/staged2/Jirarcade.app" "$TMP/dest2"
+assert_eq "교체 후 내용" "$(cat "$TMP/dest2/Jirarcade.app/Contents/marker")" "new"
+
+# 롤백 — 이 설계의 핵심 안전 성질이다. 새 번들을 넣지 못하면 기존 앱이 남아야 한다.
+#
+# mv는 원본의 **부모 디렉터리**에 쓰기 권한이 있어야 항목을 지울 수 있다. 부모를
+# 읽기 전용으로 만들면 기존 앱을 치우는 첫 mv는 성공하고 새것을 넣는 두 번째 mv만
+# 실패한다 — 정확히 롤백 경로를 밟게 하는 조건이다.
+mkdir -p "$TMP/dest3/Jirarcade.app/Contents" "$TMP/ro/Jirarcade.app/Contents"
+printf 'old' > "$TMP/dest3/Jirarcade.app/Contents/marker"
+printf 'new' > "$TMP/ro/Jirarcade.app/Contents/marker"
+chmod 500 "$TMP/ro"
+assert_fails "옮기지 못하면 실패" install_bundle "$TMP/ro/Jirarcade.app" "$TMP/dest3"
+assert_eq "실패 후 기존 앱 보존" \
+    "$(cat "$TMP/dest3/Jirarcade.app/Contents/marker" 2>/dev/null || echo MISSING)" "old"
+chmod 700 "$TMP/ro"
+
+# 잘못된 인자
+mkdir -p "$TMP/staged4/Jirarcade.app"
+assert_fails "없는 번들 거부"      install_bundle "$TMP/nonexistent/Jirarcade.app" "$TMP/dest1"
+assert_fails "없는 설치 위치 거부" install_bundle "$TMP/staged4/Jirarcade.app" "$TMP/nowhere"
+
 if [[ $FAILED -eq 1 ]]; then
     echo "" >&2
     echo "✗ install.sh 테스트 실패" >&2
