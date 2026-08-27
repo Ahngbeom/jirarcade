@@ -141,6 +141,30 @@ else
 fi
 assert_eq "BACKUP_DIR의 앱 내용" "$(cat "$BACKUP_DIR/Jirarcade.app/Contents/marker")" "old"
 
+# --- restore_backup ---
+# 복구할 때 대상에 실패한 앱이 이미 있으면 그것을 치우고 백업을 넣어야 한다.
+# BSD mv는 기존 디렉터리 대상을 "그 안에 옮기기"로 취급하므로 이를 제대로 처리해야 한다.
+# 이것이 가장 중요한 테스트다 — 버그가 있으면 복구된 앱이 한 단계 깊게 내장된다.
+mkdir -p "$TMP/backup_src/Jirarcade.app/Contents" "$TMP/restore_dest/Jirarcade.app/Contents"
+printf 'recovered' > "$TMP/backup_src/Jirarcade.app/Contents/marker"
+printf 'failed-app' > "$TMP/restore_dest/Jirarcade.app/Contents/marker"
+assert_ok "대상이 있을 때 복구" restore_backup "$TMP/backup_src/Jirarcade.app" "$TMP/restore_dest"
+assert_eq "복구 후 내용 (실패한 앱이 있었을 때)" \
+    "$(cat "$TMP/restore_dest/Jirarcade.app/Contents/marker" 2>/dev/null || echo MISSING)" "recovered"
+# 중요: 내장되지 않았는지 확인 — Jirarcade.app/Jirarcade.app 구조가 생기면 안 된다
+if [[ ! -d "$TMP/restore_dest/Jirarcade.app/Jirarcade.app" ]]; then
+    pass "복구 후 내장되지 않음"
+else
+    fail "복구 후 내장되지 않음 — 앱이 한 단계 깊게 내장되었습니다"
+fi
+
+# 대상이 없을 때도 작동해야 한다
+mkdir -p "$TMP/backup_src2/Jirarcade.app/Contents" "$TMP/restore_empty"
+printf 'new-recovered' > "$TMP/backup_src2/Jirarcade.app/Contents/marker"
+assert_ok "대상이 없을 때 복구" restore_backup "$TMP/backup_src2/Jirarcade.app" "$TMP/restore_empty"
+assert_eq "복구 후 내용 (대상이 없었을 때)" \
+    "$(cat "$TMP/restore_empty/Jirarcade.app/Contents/marker" 2>/dev/null || echo MISSING)" "new-recovered"
+
 if [[ $FAILED -eq 1 ]]; then
     echo "" >&2
     echo "✗ install.sh 테스트 실패" >&2

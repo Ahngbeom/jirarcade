@@ -33,7 +33,43 @@ BACKUP_DIR=""
 
 cleanup() {
     [[ -n "$WORKDIR" && -d "$WORKDIR" ]] && rm -rf "$WORKDIR"
-    [[ -n "$BACKUP_DIR" && -d "$BACKUP_DIR" ]] && rm -rf "$BACKUP_DIR"
+    # 중단 시 BACKUP_DIR이 남아 있으면 사용자에게 그 위치를 알린다.
+    # 임시 디렉터리의 백업 복사본은 시간이 지나면서 OS가 정리한다.
+    # 백업을 자동으로 삭제하면 사용자의 앱이 사라진다 — 복구 기회를 잃게 된다.
+    if [[ -n "$BACKUP_DIR" && -d "$BACKUP_DIR" ]]; then
+        echo "▸ 백업이 여기 있습니다: ${BACKUP_DIR}/${APP_NAME}" >&2
+    fi
+    return 0
+}
+
+# 백업에서 앱을 복구한다. 대상에 실패한 앱이 이미 있으면 그것을 치우고 백업을
+# 넣는다. BSD mv는 기존 디렉터리 대상을 "그 안에 옮기기"로 취급하므로, 먼저
+# 기존 것을 치워야 한다.
+restore_backup() {
+    local backup_app="$1" dest_dir="$2"
+    local dest="${dest_dir}/${APP_NAME}"
+
+    if [[ ! -d "$backup_app" ]]; then
+        echo "✗ 백업 번들을 찾을 수 없습니다: $backup_app" >&2
+        return 1
+    fi
+
+    # 대상에 있는 실패한 앱을 치운다.
+    if [[ -e "$dest" ]]; then
+        if ! rm -rf "$dest"; then
+            echo "✗ 실패한 앱을 지우지 못했습니다: $dest" >&2
+            echo "✗ 이전 버전으로의 복구도 실패했습니다. 이전 앱은 여기 있습니다: $backup_app" >&2
+            return 1
+        fi
+    fi
+
+    # 백업을 대상에 넣는다.
+    if ! mv "$backup_app" "$dest"; then
+        echo "✗ 이전 버전으로의 복구도 실패했습니다. 이전 앱은 여기 있습니다: $backup_app" >&2
+        return 1
+    fi
+
+    echo "▸ 이전 버전으로 되돌렸습니다" >&2
     return 0
 }
 
@@ -196,13 +232,10 @@ main() {
     if ! codesign --verify --strict "${INSTALL_DIR}/${APP_NAME}"; then
         echo "✗ 설치한 앱의 서명이 유효하지 않습니다" >&2
         if [[ -n "$BACKUP_DIR" ]]; then
-            if mv "${BACKUP_DIR}/${APP_NAME}" "${INSTALL_DIR}/${APP_NAME}"; then
-                echo "▸ 이전 버전으로 되돌렸습니다" >&2
-            else
-                echo "✗ 이전 버전으로의 복구도 실패했습니다. 이전 앱은 여기 있습니다: ${BACKUP_DIR}/${APP_NAME}" >&2
+            restore_backup "${BACKUP_DIR}/${APP_NAME}" "$INSTALL_DIR" || {
                 BACKUP_DIR=""
                 exit 1
-            fi
+            }
         fi
         BACKUP_DIR=""
         exit 1
@@ -212,13 +245,10 @@ main() {
         echo "✗ 격리 표시가 붙어 있습니다 — curl 경로에서는 나올 수 없는 상태입니다" >&2
         echo "  떼는 명령: xattr -dr com.apple.quarantine ${INSTALL_DIR}/${APP_NAME}" >&2
         if [[ -n "$BACKUP_DIR" ]]; then
-            if mv "${BACKUP_DIR}/${APP_NAME}" "${INSTALL_DIR}/${APP_NAME}"; then
-                echo "▸ 이전 버전으로 되돌렸습니다" >&2
-            else
-                echo "✗ 이전 버전으로의 복구도 실패했습니다. 이전 앱은 여기 있습니다: ${BACKUP_DIR}/${APP_NAME}" >&2
+            restore_backup "${BACKUP_DIR}/${APP_NAME}" "$INSTALL_DIR" || {
                 BACKUP_DIR=""
                 exit 1
-            fi
+            }
         fi
         BACKUP_DIR=""
         exit 1
