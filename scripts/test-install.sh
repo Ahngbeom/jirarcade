@@ -1,0 +1,173 @@
+#!/bin/bash
+# install.sh의 함수를 직접 불러 검사한다.
+#
+# 이 스크립트를 source하면 main이 돌지 않는다(BASH_SOURCE 가드). 덕분에 실제
+# 릴리즈나 네트워크 없이 판정 로직 전체를 검증할 수 있다. 설치 대상 디렉터리도
+# 인자로 받으므로 /Applications를 건드리지 않는다.
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+FAILED=0
+fail() { echo "✗ $1" >&2; FAILED=1; }
+pass() { echo "✓ $1"; }
+
+assert_eq() {
+    local label="$1" actual="$2" expected="$3"
+    if [[ "$actual" == "$expected" ]]; then
+        pass "$label"
+    else
+        fail "$label — 기대 '$expected', 실제 '$actual'"
+    fi
+}
+
+assert_ok() {
+    local label="$1"; shift
+    if "$@" >/dev/null 2>&1; then pass "$label"; else fail "$label — 성공해야 합니다"; fi
+}
+
+assert_fails() {
+    local label="$1"; shift
+    if "$@" >/dev/null 2>&1; then fail "$label — 실패해야 합니다"; else pass "$label"; fi
+}
+
+# main이 돌면 여기서 /Applications에 설치를 시도한다. 돌지 않아야 한다.
+# shellcheck source=./install.sh
+source "$SCRIPT_DIR/install.sh"
+
+TMP="$(mktemp -d)"
+trap 'rm -rf "$TMP"' EXIT
+
+# --- macos_version_ok ---
+# Info.plist의 LSMinimumSystemVersion 15.0과 같은 경계여야 한다.
+assert_ok    "macOS 15.0 허용"   macos_version_ok "15.0"
+assert_ok    "macOS 15.4.1 허용" macos_version_ok "15.4.1"
+assert_ok    "macOS 26.2 허용"   macos_version_ok "26.2"
+assert_fails "macOS 14.7 거부"   macos_version_ok "14.7"
+assert_fails "빈 값 거부"        macos_version_ok ""
+assert_fails "숫자 아닌 값 거부" macos_version_ok "sequoia"
+
+# --- parse_tag_name ---
+# jq를 쓰지 않는다. 사용자 기계에 있다고 보장할 수 없다.
+assert_eq "tag_name 추출" \
+    "$(printf '{"url":"x","tag_name":"v0.2.0","name":"Jirarcade 0.2.0"}' | parse_tag_name)" \
+    "v0.2.0"
+assert_eq "공백이 있어도 추출" \
+    "$(printf '{ "tag_name" : "v1.0.0-rc.1" }' | parse_tag_name)" \
+    "v1.0.0-rc.1"
+assert_eq "tag_name이 없으면 빈 출력" \
+    "$(printf '{"message":"Not Found"}' | parse_tag_name)" \
+    ""
+
+# --- verify_checksum ---
+printf 'jirarcade' > "$TMP/payload"
+GOOD="$(shasum -a 256 "$TMP/payload" | awk '{print $1}')"
+
+# 릴리즈 자산은 shasum 원본 형식(<해시><공백2><파일명>)이다.
+printf '%s  Jirarcade-0.2.0.zip\n' "$GOOD" > "$TMP/good.sha256"
+assert_ok "일치하는 체크섬 통과" verify_checksum "$TMP/payload" "$TMP/good.sha256"
+
+# 파일명이 달라도 통과해야 한다 — 임시 파일명은 자산명과 다르다.
+# 이것이 `shasum -c`를 쓰지 않는 이유다.
+printf '%s  전혀-다른-이름.zip\n' "$GOOD" > "$TMP/renamed.sha256"
+assert_ok "파일명이 달라도 통과" verify_checksum "$TMP/payload" "$TMP/renamed.sha256"
+
+printf '%064d  Jirarcade-0.2.0.zip\n' 0 > "$TMP/bad.sha256"
+assert_fails "불일치 체크섬 거부" verify_checksum "$TMP/payload" "$TMP/bad.sha256"
+
+printf 'not-a-hash  Jirarcade-0.2.0.zip\n' > "$TMP/malformed.sha256"
+assert_fails "형식이 깨진 체크섬 파일 거부" verify_checksum "$TMP/payload" "$TMP/malformed.sha256"
+
+printf '' > "$TMP/empty.sha256"
+assert_fails "빈 체크섬 파일 거부" verify_checksum "$TMP/payload" "$TMP/empty.sha256"
+
+# --- install_bundle ---
+# 기존 앱이 없을 때
+mkdir -p "$TMP/dest1" "$TMP/staged1/Jirarcade.app/Contents"
+printf 'new' > "$TMP/staged1/Jirarcade.app/Contents/marker"
+assert_ok "새 설치" install_bundle "$TMP/staged1/Jirarcade.app" "$TMP/dest1"
+assert_eq "새 설치 내용" \
+    "$(cat "$TMP/dest1/Jirarcade.app/Contents/marker" 2>/dev/null || echo MISSING)" "new"
+
+# 기존 앱이 있을 때 — brew upgrade와 재설치가 밟는 경로다
+mkdir -p "$TMP/dest2/Jirarcade.app/Contents" "$TMP/staged2/Jirarcade.app/Contents"
+printf 'old' > "$TMP/dest2/Jirarcade.app/Contents/marker"
+printf 'new' > "$TMP/staged2/Jirarcade.app/Contents/marker"
+assert_ok "기존 앱 교체" install_bundle "$TMP/staged2/Jirarcade.app" "$TMP/dest2"
+assert_eq "교체 후 내용" "$(cat "$TMP/dest2/Jirarcade.app/Contents/marker")" "new"
+
+# 롤백 — 이 설계의 핵심 안전 성질이다. 새 번들을 넣지 못하면 기존 앱이 남아야 한다.
+#
+# mv는 원본의 **부모 디렉터리**에 쓰기 권한이 있어야 항목을 지울 수 있다. 부모를
+# 읽기 전용으로 만들면 기존 앱을 치우는 첫 mv는 성공하고 새것을 넣는 두 번째 mv만
+# 실패한다 — 정확히 롤백 경로를 밟게 하는 조건이다.
+mkdir -p "$TMP/dest3/Jirarcade.app/Contents" "$TMP/ro/Jirarcade.app/Contents"
+printf 'old' > "$TMP/dest3/Jirarcade.app/Contents/marker"
+printf 'new' > "$TMP/ro/Jirarcade.app/Contents/marker"
+chmod 500 "$TMP/ro"
+assert_fails "옮기지 못하면 실패" install_bundle "$TMP/ro/Jirarcade.app" "$TMP/dest3"
+assert_eq "실패 후 기존 앱 보존" \
+    "$(cat "$TMP/dest3/Jirarcade.app/Contents/marker" 2>/dev/null || echo MISSING)" "old"
+chmod 700 "$TMP/ro"
+
+# 잘못된 인자
+mkdir -p "$TMP/staged4/Jirarcade.app"
+assert_fails "없는 번들 거부"      install_bundle "$TMP/nonexistent/Jirarcade.app" "$TMP/dest1"
+assert_fails "없는 설치 위치 거부" install_bundle "$TMP/staged4/Jirarcade.app" "$TMP/nowhere"
+
+# BACKUP_DIR 계약 검증 — 설치 후 검증이 통과할 때까지 백업을 유지해야 한다.
+# 새 설치 후 (기존 앱 없음): BACKUP_DIR이 비어 있어야 한다
+BACKUP_DIR=""
+mkdir -p "$TMP/dest5" "$TMP/staged5/Jirarcade.app/Contents"
+printf 'new' > "$TMP/staged5/Jirarcade.app/Contents/marker"
+install_bundle "$TMP/staged5/Jirarcade.app" "$TMP/dest5" >/dev/null 2>&1
+assert_eq "새 설치 후 BACKUP_DIR 비어 있음" "$BACKUP_DIR" ""
+
+# 기존 앱이 있을 때: BACKUP_DIR이 백업 디렉터리 경로를 가져야 한다
+BACKUP_DIR=""
+mkdir -p "$TMP/dest6/Jirarcade.app/Contents" "$TMP/staged6/Jirarcade.app/Contents"
+printf 'old' > "$TMP/dest6/Jirarcade.app/Contents/marker"
+printf 'new' > "$TMP/staged6/Jirarcade.app/Contents/marker"
+install_bundle "$TMP/staged6/Jirarcade.app" "$TMP/dest6" >/dev/null 2>&1
+if [[ -n "$BACKUP_DIR" ]]; then
+    pass "기존 앱 교체 후 BACKUP_DIR 설정됨"
+else
+    fail "기존 앱 교체 후 BACKUP_DIR 설정됨"
+fi
+if [[ -d "$BACKUP_DIR/Jirarcade.app" ]]; then
+    pass "BACKUP_DIR에 백업 앱이 있음"
+else
+    fail "BACKUP_DIR에 백업 앱이 있음"
+fi
+assert_eq "BACKUP_DIR의 앱 내용" "$(cat "$BACKUP_DIR/Jirarcade.app/Contents/marker")" "old"
+
+# --- restore_backup ---
+# 복구할 때 대상에 실패한 앱이 이미 있으면 그것을 치우고 백업을 넣어야 한다.
+# BSD mv는 기존 디렉터리 대상을 "그 안에 옮기기"로 취급하므로 이를 제대로 처리해야 한다.
+# 이것이 가장 중요한 테스트다 — 버그가 있으면 복구된 앱이 한 단계 깊게 내장된다.
+mkdir -p "$TMP/backup_src/Jirarcade.app/Contents" "$TMP/restore_dest/Jirarcade.app/Contents"
+printf 'recovered' > "$TMP/backup_src/Jirarcade.app/Contents/marker"
+printf 'failed-app' > "$TMP/restore_dest/Jirarcade.app/Contents/marker"
+assert_ok "대상이 있을 때 복구" restore_backup "$TMP/backup_src/Jirarcade.app" "$TMP/restore_dest"
+assert_eq "복구 후 내용 (실패한 앱이 있었을 때)" \
+    "$(cat "$TMP/restore_dest/Jirarcade.app/Contents/marker" 2>/dev/null || echo MISSING)" "recovered"
+# 중요: 내장되지 않았는지 확인 — Jirarcade.app/Jirarcade.app 구조가 생기면 안 된다
+if [[ ! -d "$TMP/restore_dest/Jirarcade.app/Jirarcade.app" ]]; then
+    pass "복구 후 내장되지 않음"
+else
+    fail "복구 후 내장되지 않음 — 앱이 한 단계 깊게 내장되었습니다"
+fi
+
+# 대상이 없을 때도 작동해야 한다
+mkdir -p "$TMP/backup_src2/Jirarcade.app/Contents" "$TMP/restore_empty"
+printf 'new-recovered' > "$TMP/backup_src2/Jirarcade.app/Contents/marker"
+assert_ok "대상이 없을 때 복구" restore_backup "$TMP/backup_src2/Jirarcade.app" "$TMP/restore_empty"
+assert_eq "복구 후 내용 (대상이 없었을 때)" \
+    "$(cat "$TMP/restore_empty/Jirarcade.app/Contents/marker" 2>/dev/null || echo MISSING)" "new-recovered"
+
+if [[ $FAILED -eq 1 ]]; then
+    echo "" >&2
+    echo "✗ install.sh 테스트 실패" >&2
+    exit 1
+fi
+echo "✓ install.sh 테스트 통과"

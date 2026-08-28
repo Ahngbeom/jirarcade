@@ -43,16 +43,42 @@ XP는 **상태를 보고 주지 않고 변화를 보고 줍니다.** 이미 완�
 
 ## 설치
 
-[릴리즈 페이지](https://github.com/Ahngbeom/jirarcade/releases)에서 최신 `Jirarcade-x.y.z.zip`을
-내려받아 압축을 풀고 `Jirarcade.app`을 `/Applications`로 옮긴 뒤, 터미널에서 한 번 실행합니다:
-
 ```bash
-xattr -d com.apple.quarantine /Applications/Jirarcade.app
+brew install --cask ahngbeom/tap/jirarcade
 ```
 
-이 앱은 Apple 공증(notarization)을 받지 않았습니다. macOS는 인터넷에서 받은 미공증 앱에
-격리 표시를 붙이고 실행을 막으면서 "손상되었기 때문에 열 수 없습니다"라고 말합니다 —
-실제로 손상된 게 아니라 표시가 붙었을 뿐이고, 위 명령이 그 표시를 뗍니다.
+Homebrew를 쓰지 않는다면:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/Ahngbeom/jirarcade/main/scripts/install.sh | bash
+```
+
+업데이트는 `brew upgrade --cask jirarcade`, 또는 같은 `curl` 명령을 다시 실행하면 됩니다.
+
+<details>
+<summary>이 앱은 Apple 공증을 받지 않았습니다 — 위 두 명령이 그것을 어떻게 다루는지</summary>
+
+macOS는 인터넷에서 받은 미공증 앱에 격리 표시(`com.apple.quarantine`)를 붙이고 실행을 막으면서
+"손상되었기 때문에 열 수 없습니다"라고 말합니다. 실제로 손상된 게 아니라 표시가 붙었을 뿐입니다.
+
+- **`brew`** — Homebrew가 붙인 표시를 cask가 설치 직후 뗍니다.
+- **`curl`** — 표시가 애초에 붙지 않습니다. 격리 표시는 파일을 내려받은 프로세스가 붙이는데,
+  브라우저와 달리 `curl`에는 그 선언(`LSFileQuarantineEnabled`)이 없습니다. 대신 Gatekeeper의
+  보증도 못 받으므로, 스크립트가 릴리즈의 `.sha256`과 대조해 무결성을 확인하고 어긋나면
+  설치하지 않습니다. `sudo`는 부르지 않습니다.
+- **브라우저로 [릴리즈 페이지](https://github.com/Ahngbeom/jirarcade/releases)에서 zip을
+  직접 받았다면** 표시를 직접 떼야 합니다. macOS 15부터는 Control-클릭 →
+  열기 우회가 없어져 이 명령이 유일한 출구입니다:
+
+  ```bash
+  xattr -dr com.apple.quarantine /Applications/Jirarcade.app
+  ```
+
+</details>
+
+**알려진 동작:** 새 버전으로 올릴 때마다 macOS가 Keychain 접근을 한 번 더 묻습니다.
+Keychain 항목의 접근 권한은 앱의 코드 서명에 묶이는데, 이 앱의 ad-hoc 서명은 값이 빌드마다
+바뀌기 때문입니다. Developer ID로 서명하면 사라지는 마찰입니다.
 
 소스에서 직접 빌드하려면 아래를 따르세요.
 

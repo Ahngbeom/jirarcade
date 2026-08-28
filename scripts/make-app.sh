@@ -127,8 +127,14 @@ echo "▸ 아이콘 생성 중…"
 # 없고, 그런데도 실패했다면 서명 없는 번들이 조용히 릴리즈되는 것보다 여기서
 # 죽는 편이 낫다.
 #
-# 공증 확장 지점: Developer ID가 생기면 `-` 자리에 identity를 넣고, 아래에
-# `xcrun notarytool submit --wait`와 `xcrun stapler staple`을 잇는다.
+# 공증 확장 지점. Developer ID가 생기면 순서대로:
+#   1. `-` 자리에 identity를 넣고 `--options runtime --timestamp`를 더한다.
+#      hardened runtime과 타임스탬프가 없으면 공증이 거부된다
+#   2. 번들을 ditto로 감싸 `xcrun notarytool submit --wait`에 넘긴다
+#   3. `xcrun stapler staple`로 티켓을 번들에 박는다 — 이게 있어야 네트워크 없이도 열린다
+#
+# 그 뒤 cask의 postflight(xattr) 블록을 지운다. install.sh는 손대지 않는다 —
+# 격리 표시를 떼는 로직이 애초에 없고, 부재를 확인하는 단계는 공증 이후에도 유효하다.
 echo "▸ ad-hoc 서명 중…"
 codesign --force --sign - "$APP"
 codesign --verify --strict "$APP"
